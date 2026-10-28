@@ -1,0 +1,12 @@
+.env
+.env.*
+node_modules/
+__pycache__/
+.venv/
+dist/
+.DS_Store
+# Camera pictures stay out of the public repo; the demo page loads its own consented set.
+pictures/
+*.jpg
+*.jpeg
+*.png
