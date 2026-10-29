@@ -1,0 +1,26 @@
+{
+  "name": "streamatic-meta-service",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.9.0"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "outline": "tsx --env-file=../.env src/cli/outline.ts",
+    "setup": "tsx --env-file=../.env src/cli/setup.ts",
+    "replay": "tsx --env-file=../.env src/cli/replay.ts"
+  },
+  "dependencies": {
+    "@meta-sam/parser": "0.1.0",
+    "sharp": "0.35.5",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.5",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vitest": "5.0.5"
+  }
+}
