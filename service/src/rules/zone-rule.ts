@@ -49,6 +49,8 @@ export interface ZoneAlert {
   // On a SAM zone, the outline SAM drew on the alert's picture nearest the zone; null if it found none there.
   outline: Outline | null;
   clip: Frame[];
+  // Each picture the deciding check looked at, with the outline SAM drew nearest the zone (none on a box zone).
+  judged: Array<{ at: number; outline: Outline | null }>;
 }
 
 // A pixel counts as changed past this grey-level difference; the zone changes when this share of its pixels does.
@@ -83,10 +85,14 @@ export async function runZoneRule({
     if (!zoneChanged(frames[i - 1]!, current, box)) continue;
 
     const window = pickWindow(frames, i, rule);
-    const { verdict, shownIn, outline } =
+    const { verdict, shownIn, outline, judged } =
       rule.zone.kind === 'outline'
         ? await judgeOutline(sam, rule.zone.word, rule.zone.reference, window)
-        : { ...(await judgeBox(judge, rule.question ?? rule.sentence, box, window, crop)), outline: null };
+        : {
+            ...(await judgeBox(judge, rule.question ?? rule.sentence, box, window, crop)),
+            outline: null,
+            judged: window.map((f) => ({ at: f.at, outline: null })),
+          };
     checks.push({ at: current.at, pictures: window.map((f) => f.at), verdict, shownIn });
 
     if (verdict) {
@@ -99,6 +105,7 @@ export async function runZoneRule({
         picture,
         outline,
         clip: picture ? [] : frames.filter((f) => f.at >= current.at && f.at <= last.at),
+        judged,
       });
       quietUntil = current.at + rule.cooldownMs;
     }
@@ -122,12 +129,14 @@ async function judgeOutline(sam: Outliner, word: string, reference: Box, window:
   let shownIn: number | null = null;
   let outline: Outline | null = null;
   let leastLike = 1;
+  const judged: ZoneAlert['judged'] = [];
   for (const [k, frame] of window.entries()) {
     const outlines = (await sam.outlineAll(frame.picture, [word]))[word] ?? [];
     const nearest = outlines.reduce<Outline | null>(
       (best, o) => (best === null || boxOverlap(o.box, reference) > boxOverlap(best.box, reference) ? o : best),
       null,
     );
+    judged.push({ at: frame.at, outline: nearest });
     const overlap = nearest ? boxOverlap(nearest.box, reference) : 0;
     if (overlap < SAME_OUTLINE_OVERLAP && overlap < leastLike) {
       leastLike = overlap;
@@ -135,7 +144,7 @@ async function judgeOutline(sam: Outliner, word: string, reference: Box, window:
       outline = overlap > 0 ? nearest : null;
     }
   }
-  return { verdict: shownIn !== null, shownIn, outline };
+  return { verdict: shownIn !== null, shownIn, outline, judged };
 }
 
 async function judgeBox(
@@ -183,4 +192,11 @@ function isActive(rule: ZoneRule, at: number, timeZone: string): boolean {
   const hour = Number(new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hourCycle: 'h23', timeZone }).format(at));
   const { from, to } = rule.activeHours;
   return from <= to ? hour >= from && hour < to : hour >= from || hour < to;
+}
+
+// The zone as an SVG path in picture pixels, for drawing it on an alert or marking it for the second opinion.
+export function zoneOutline(zone: Zone): string {
+  if (zone.kind === 'outline') return zone.path;
+  const { left, top, right, bottom } = zone.box;
+  return `M${left} ${top}H${right}V${bottom}H${left}Z`;
 }

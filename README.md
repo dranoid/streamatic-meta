@@ -31,12 +31,22 @@ client.
 | Model | Where | Used for |
 |---|---|---|
 | SAM 3.1 | Meta Model API | Outlining the scene at setup and on each event |
-| Muse Spark 1.3 | Meta Model API | Planning: reading the rule, choosing what to watch, answering questions |
-| Muse Spark Open | Baseten | The second opinion on each alert |
+| Muse Spark Open | Baseten | Listing what a camera sees, suggesting rules, judging drawn zones, the second opinion on each alert, answering questions |
 
-## Status
+## Running it
 
-Work in progress. Setup instructions and the demo page address will be added as each part lands.
+Work in progress; the demo page address will be added when it is up. To run it on your own computer, put
+`META_MODEL_API_KEY` (Meta Model API) and `BASETEN_API_KEY` (Baseten) in `.env` at the repository root, then:
+
+```
+cd service && npm install && npm test
+cd ../web && npm install && npm run build
+cd ../service && npm run serve -- <app folder>
+```
+
+The app folder holds `cameras/<id>/` (a `camera.json` naming the camera, its site and its day, dusk and night
+pictures), and the app keeps its rules and events there. `web/` is the app (React and Tailwind); `service/` is
+the API, the camera setup, the rules and the alerts.
 
 ## Licence
 

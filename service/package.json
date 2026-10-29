@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "outline": "tsx --env-file=../.env src/cli/outline.ts",
     "setup": "tsx --env-file=../.env src/cli/setup.ts",
-    "replay": "tsx --env-file=../.env src/cli/replay.ts"
+    "replay": "tsx --env-file=../.env src/cli/replay.ts",
+    "serve": "tsx --env-file=../.env src/cli/serve.ts"
   },
   "dependencies": {
     "@meta-sam/parser": "0.1.0",

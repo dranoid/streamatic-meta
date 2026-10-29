@@ -50,6 +50,30 @@ describe('TelegramSender', () => {
     expect(form?.get('photo')).toBeInstanceOf(Blob);
   });
 
+  it('sends several pictures as one album, captioned on the first', async () => {
+    let url = '';
+    let form: FormData | undefined;
+    const sender = new TelegramSender({
+      botToken: 'TOKEN',
+      chatId: '42',
+      fetch: async (u, init) => {
+        url = String(u);
+        form = init?.body as FormData;
+        return new Response(JSON.stringify({ ok: true, result: [{ message_id: 11 }, { message_id: 12 }] }));
+      },
+    });
+
+    const id = await sender.sendPictures([Uint8Array.of(1), Uint8Array.of(2)], 'Front door opened');
+
+    expect(id).toBe(11);
+    expect(url).toBe('https://api.telegram.org/botTOKEN/sendMediaGroup');
+    expect(JSON.parse(String(form?.get('media')))).toEqual([
+      { type: 'photo', media: 'attach://picture0', caption: 'Front door opened' },
+      { type: 'photo', media: 'attach://picture1' },
+    ]);
+    expect(form?.get('picture1')).toBeInstanceOf(Blob);
+  });
+
   it('sends a clip as a video', async () => {
     let url = '';
     const sender = new TelegramSender({

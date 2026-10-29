@@ -7,8 +7,9 @@ export interface SparkClientOptions {
   retryDelayMs?: number;
 }
 
-const CHAT_URL = 'https://api.meta.ai/v1/chat/completions';
-const MODEL = 'muse-spark-1.3';
+// Muse Spark Open, Meta's open-weights model, served by Baseten.
+const CHAT_URL = 'https://inference.baseten.co/v1/chat/completions';
+const MODEL = 'meta-models/muse-spark-open-1026';
 const MAX_ATTEMPTS = 6;
 
 export class SparkError extends Error {}
@@ -39,22 +40,22 @@ export class SparkClient {
     try {
       parsed = JSON.parse(content.slice(content.indexOf('{'), content.lastIndexOf('}') + 1));
     } catch {
-      throw new SparkError(`Muse Spark did not reply with JSON: ${content.slice(0, 200)}`);
+      throw new SparkError(`Muse Spark Open did not reply with JSON: ${content.slice(0, 200)}`);
     }
     const result = shape.safeParse(parsed);
     if (!result.success) {
-      throw new SparkError(`Muse Spark's reply did not have the asked shape: ${content.slice(0, 200)}`);
+      throw new SparkError(`Muse Spark Open's reply did not have the asked shape: ${content.slice(0, 200)}`);
     }
     return result.data;
   }
 
   async #ask(content: unknown[]): Promise<string> {
-    // Reasoning cannot be switched off on Spark; minimal keeps it to a few hundred tokens.
-    const body = JSON.stringify({ model: MODEL, reasoning_effort: 'minimal', messages: [{ role: 'user', content }] });
+    // Spark Open always reasons; no effort setting reliably shortens it, so none is sent.
+    const body = JSON.stringify({ model: MODEL, messages: [{ role: 'user', content }] });
     for (let attempt = 1; ; attempt++) {
       const response = await this.#fetch(CHAT_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.#apiKey}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Api-Key ${this.#apiKey}` },
         body,
       });
       if (response.status === 429 && attempt < MAX_ATTEMPTS) {
@@ -62,7 +63,7 @@ export class SparkClient {
         continue;
       }
       if (!response.ok) {
-        throw new SparkError(`Muse Spark returned ${response.status}.`);
+        throw new SparkError(`Muse Spark Open returned ${response.status}.`);
       }
       const reply = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
       return reply.choices?.[0]?.message?.content ?? '';

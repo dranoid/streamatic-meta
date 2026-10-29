@@ -1,0 +1,114 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+/* Streamatic's colours, type and radius, so this app reads as part of the product. */
+:root {
+  --background: #f5f6f8;
+  --foreground: #1a1d24;
+  --card: #ffffff;
+  --card-foreground: #1a1d24;
+  --primary: #3b6fc4;
+  --primary-foreground: #ffffff;
+  --muted: #eef0f3;
+  --muted-foreground: #5f6776;
+  --accent: #e8eaee;
+  --accent-foreground: #1a1d24;
+  --destructive: #dc2626;
+  --destructive-foreground: #fafafa;
+  --border: #dfe1e6;
+  --input: #dfe1e6;
+  --ring: #3b6fc4;
+  --sidebar: #eef0f3;
+  --sidebar-accent: #f8f9fb;
+  --success: #0d7a56;
+  --warning: #c2410c;
+  --gold: #e8c547;
+  --alert: #ef4444;
+  --radius: 0.75rem;
+}
+
+.dark {
+  --background: #121212;
+  --foreground: #c1c1c1;
+  --card: #121212;
+  --card-foreground: #c1c1c1;
+  --primary: #538ee7;
+  --primary-foreground: #121212;
+  --muted: #222222;
+  --muted-foreground: #888888;
+  --accent: #333333;
+  --accent-foreground: #c1c1c1;
+  --destructive: #ef4444;
+  --destructive-foreground: #c1c1c1;
+  --border: #444444;
+  --input: #222222;
+  --ring: #5387e7;
+  --sidebar: #121212;
+  --sidebar-accent: #333333;
+  --success: #34d399;
+  --warning: #fb923c;
+  --gold: #e8c547;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-gold: var(--gold);
+  --color-alert: var(--alert);
+
+  --font-sans: 'JetBrains Mono', ui-monospace, monospace;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --shadow-xs: 0px 1px 4px 0px hsl(0 0% 0% / 0.03);
+  --shadow-sm: 0px 1px 4px 0px hsl(0 0% 0% / 0.05), 0px 1px 2px -1px hsl(0 0% 0% / 0.05);
+  --shadow-lg: 0px 1px 4px 0px hsl(0 0% 0% / 0.05), 0px 4px 6px -1px hsl(0 0% 0% / 0.05);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  html {
+    @apply overflow-x-hidden;
+  }
+  body {
+    @apply bg-background text-foreground min-h-svh w-full font-sans antialiased;
+  }
+  button:not(:disabled),
+  [role='button']:not(:disabled) {
+    cursor: pointer;
+  }
+  @media screen and (max-width: 767px) {
+    input,
+    select,
+    textarea {
+      font-size: 16px !important;
+    }
+  }
+}

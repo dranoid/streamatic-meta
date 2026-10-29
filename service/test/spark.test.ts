@@ -13,18 +13,26 @@ const pictures = [
 ];
 
 describe('SparkClient.json', () => {
-  it('asks Muse Spark with minimal reasoning, labelling each picture', async () => {
+  it('asks Muse Spark Open on Baseten, labelling each picture', async () => {
     let sent: any;
+    let url = '';
+    let auth = '';
     const spark = new SparkClient({
       apiKey: 'test',
-      fetch: async (_url, init) => ((sent = JSON.parse(String(init?.body))), reply('{"items":["gate"]}')),
+      fetch: async (u, init) => {
+        url = String(u);
+        auth = new Headers(init?.headers).get('Authorization') ?? '';
+        sent = JSON.parse(String(init?.body));
+        return reply('{"items":["gate"]}');
+      },
     });
 
     const answer = await spark.json('List things.', pictures, z.object({ items: z.array(z.string()) }));
 
     expect(answer).toEqual({ items: ['gate'] });
-    expect(sent.model).toBe('muse-spark-1.3');
-    expect(sent.reasoning_effort).toBe('minimal');
+    expect(url).toBe('https://inference.baseten.co/v1/chat/completions');
+    expect(auth).toBe('Api-Key test');
+    expect(sent.model).toBe('meta-models/muse-spark-open-1026');
     expect(sent.messages[0].content).toEqual([
       { type: 'text', text: 'List things.' },
       { type: 'text', text: 'Picture: day' },

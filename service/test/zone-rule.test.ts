@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Picture } from '../src/sam/client.js';
 import type { Outline } from '../src/sam/outlines.js';
-import { runZoneRule, type Frame, type ZoneRule } from '../src/rules/zone-rule.js';
+import { runZoneRule, zoneOutline, type Frame, type ZoneRule } from '../src/rules/zone-rule.js';
 
 const LAGOS_2124 = Date.UTC(2026, 9, 28, 20, 24, 0);
 const SECOND = 1000;
@@ -78,6 +78,19 @@ describe('runZoneRule on a SAM zone', () => {
     expect(result.alerts[0]!.outline?.box).toEqual(doorLeaf);
   });
 
+  it('keeps the outline SAM drew on each picture it judged, for the clip player', async () => {
+    const frames = doorFrames();
+    const sam = fakeSam((tag) => (tag === frames[6]!.at ? doorLeaf : tag === frames[9]!.at ? null : doorClosed));
+
+    const result = await run(doorRule, frames, sam);
+
+    expect(result.alerts[0]!.judged.map((j) => ({ at: j.at, box: j.outline?.box ?? null }))).toEqual([
+      { at: frames[3]!.at, box: doorClosed },
+      { at: frames[6]!.at, box: doorLeaf },
+      { at: frames[9]!.at, box: null },
+    ]);
+  });
+
   it('records a check but does not alert when the door is still closed in every picture', async () => {
     const sam = fakeSam(() => doorClosed);
 
@@ -152,5 +165,12 @@ describe('runZoneRule on a box zone', () => {
 
     expect(result.alerts[0]!.picture).toBeNull();
     expect(result.alerts[0]!.clip.map((f) => f.at)).toEqual(frames.slice(3).map((f) => f.at));
+  });
+});
+
+describe('zoneOutline', () => {
+  it("gives an outline zone's path from setup and a drawn box's rectangle", () => {
+    expect(zoneOutline({ name: 'door', kind: 'outline', word: 'door', reference: doorClosed, path: 'M60 20Z' })).toBe('M60 20Z');
+    expect(zoneOutline({ name: 'doorway', kind: 'box', box: doorClosed })).toBe('M60 20H90V80H60Z');
   });
 });
