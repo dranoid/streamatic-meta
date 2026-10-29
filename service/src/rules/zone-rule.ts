@@ -1,5 +1,5 @@
 import type { Picture } from '../sam/client.js';
-import type { Box } from '../sam/outlines.js';
+import type { Box, Outline } from '../sam/outlines.js';
 import type { LabelledPicture, Outliner } from '../setup/camera-setup.js';
 
 export interface Gray {
@@ -46,6 +46,8 @@ export interface ZoneAlert {
   zone: string;
   at: number;
   picture: Frame | null;
+  // On a SAM zone, the outline SAM drew on the alert's picture nearest the zone; null if it found none there.
+  outline: Outline | null;
   clip: Frame[];
 }
 
@@ -81,10 +83,10 @@ export async function runZoneRule({
     if (!zoneChanged(frames[i - 1]!, current, box)) continue;
 
     const window = pickWindow(frames, i, rule);
-    const { verdict, shownIn } =
+    const { verdict, shownIn, outline } =
       rule.zone.kind === 'outline'
         ? await judgeOutline(sam, rule.zone.word, rule.zone.reference, window)
-        : await judgeBox(judge, rule.question ?? rule.sentence, box, window, crop);
+        : { ...(await judgeBox(judge, rule.question ?? rule.sentence, box, window, crop)), outline: null };
     checks.push({ at: current.at, pictures: window.map((f) => f.at), verdict, shownIn });
 
     if (verdict) {
@@ -95,6 +97,7 @@ export async function runZoneRule({
         zone: rule.zone.name,
         at: picture?.at ?? current.at,
         picture,
+        outline,
         clip: picture ? [] : frames.filter((f) => f.at >= current.at && f.at <= last.at),
       });
       quietUntil = current.at + rule.cooldownMs;
@@ -117,16 +120,22 @@ function pickWindow(frames: Frame[], start: number, rule: ZoneRule): Frame[] {
 
 async function judgeOutline(sam: Outliner, word: string, reference: Box, window: Frame[]) {
   let shownIn: number | null = null;
+  let outline: Outline | null = null;
   let leastLike = 1;
   for (const [k, frame] of window.entries()) {
     const outlines = (await sam.outlineAll(frame.picture, [word]))[word] ?? [];
-    const overlap = Math.max(0, ...outlines.map((o) => boxOverlap(o.box, reference)));
+    const nearest = outlines.reduce<Outline | null>(
+      (best, o) => (best === null || boxOverlap(o.box, reference) > boxOverlap(best.box, reference) ? o : best),
+      null,
+    );
+    const overlap = nearest ? boxOverlap(nearest.box, reference) : 0;
     if (overlap < SAME_OUTLINE_OVERLAP && overlap < leastLike) {
       leastLike = overlap;
       shownIn = k + 1;
+      outline = overlap > 0 ? nearest : null;
     }
   }
-  return { verdict: shownIn !== null, shownIn };
+  return { verdict: shownIn !== null, shownIn, outline };
 }
 
 async function judgeBox(

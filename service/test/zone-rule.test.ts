@@ -75,6 +75,7 @@ describe('runZoneRule on a SAM zone', () => {
     expect(result.alerts).toHaveLength(1);
     expect(result.alerts[0]!.picture?.at).toBe(opened);
     expect(result.alerts[0]!.zone).toBe('front door');
+    expect(result.alerts[0]!.outline?.box).toEqual(doorLeaf);
   });
 
   it('records a check but does not alert when the door is still closed in every picture', async () => {
