@@ -22,23 +22,31 @@ const tagOf = (p: Picture) => Number(new TextDecoder().decode(p.bytes));
 const doorClosed = { left: 60, top: 20, right: 90, bottom: 80 };
 const doorLeaf = { left: 60, top: 20, right: 68, bottom: 80 };
 
-// SAM stand-in: returns the door's box for each picture by its tag, and records what it was asked.
-function fakeSam(boxFor: (tag: number) => typeof doorClosed | null) {
+// SAM stand-in: returns each word's box for each picture by its tag, and records what it was asked.
+function fakeSam(boxFor: (tag: number, word: string) => typeof doorClosed | null) {
   const asked: number[] = [];
+  const words: string[][] = [];
   return {
     asked,
-    async outlineAll(p: Picture, words: string[]) {
+    words,
+    async outlineAll(p: Picture, asking: string[]) {
       asked.push(tagOf(p));
-      const box = boxFor(tagOf(p));
-      const outlines: Outline[] = box ? [{ word: words[0]!, objectId: '0', box, path: '' }] : [];
-      return { [words[0]!]: outlines };
+      words.push(asking);
+      return Object.fromEntries(
+        asking.map((word) => {
+          const box = boxFor(tagOf(p), word);
+          const outlines: Outline[] = box ? [{ word, objectId: '0', box, path: `M${box.left} ${box.top}Z` }] : [];
+          return [word, outlines];
+        }),
+      );
     },
   };
 }
 
+const frontDoor = { name: 'front door', kind: 'outline', word: 'door', reference: doorClosed, path: '' } as const;
 const doorRule: ZoneRule = {
   sentence: 'Alert me if the front door opens after 9 pm.',
-  zone: { name: 'front door', kind: 'outline', word: 'door', reference: doorClosed, path: '' },
+  zones: [frontDoor],
   activeHours: { from: 21, to: 6 },
   samples: 3,
   sampleGapMs: 3 * SECOND,
@@ -74,8 +82,8 @@ describe('runZoneRule on a SAM zone', () => {
     expect(sam.asked).toEqual([frames[3]!.at, frames[6]!.at, frames[9]!.at]);
     expect(result.alerts).toHaveLength(1);
     expect(result.alerts[0]!.picture?.at).toBe(opened);
-    expect(result.alerts[0]!.zone).toBe('front door');
-    expect(result.alerts[0]!.outline?.box).toEqual(doorLeaf);
+    expect(result.alerts[0]!.zones).toEqual(['front door']);
+    expect(result.alerts[0]!.outlines.map((o) => o.box)).toEqual([doorLeaf]);
   });
 
   it('keeps the outline SAM drew on each picture it judged, for the clip player', async () => {
@@ -84,10 +92,10 @@ describe('runZoneRule on a SAM zone', () => {
 
     const result = await run(doorRule, frames, sam);
 
-    expect(result.alerts[0]!.judged.map((j) => ({ at: j.at, box: j.outline?.box ?? null }))).toEqual([
-      { at: frames[3]!.at, box: doorClosed },
-      { at: frames[6]!.at, box: doorLeaf },
-      { at: frames[9]!.at, box: null },
+    expect(result.alerts[0]!.judged.map((j) => ({ at: j.at, boxes: j.outlines.map((o) => o.box) }))).toEqual([
+      { at: frames[3]!.at, boxes: [doorClosed] },
+      { at: frames[6]!.at, boxes: [doorLeaf] },
+      { at: frames[9]!.at, boxes: [] },
     ]);
   });
 
@@ -136,8 +144,7 @@ describe('runZoneRule on a box zone', () => {
   const counterRule: ZoneRule = {
     ...doorRule,
     sentence: 'Alert me if anyone is behind the counter after 9 pm.',
-    zone: { name: 'behind the counter', kind: 'box', box: doorClosed },
-    question: 'Is anyone behind the counter?',
+    zones: [{ name: 'behind the counter', kind: 'box', box: doorClosed, question: 'Is anyone behind the counter?' }],
   };
 
   it("asks the judge about the zone's crops and sends the picture it names", async () => {
@@ -168,9 +175,52 @@ describe('runZoneRule on a box zone', () => {
   });
 });
 
+describe('runZoneRule on two zones', () => {
+  // The light sits top left, in picture pixels 10–30 by 10–30; its change-check pixel is (2, 2).
+  const lightOn = { left: 10, top: 10, right: 30, bottom: 30 };
+  const lightRule: ZoneRule = {
+    ...doorRule,
+    sentence: 'Alert me if the light is off while the front door is open.',
+    zones: [frontDoor, { name: 'ceiling light', kind: 'outline', word: 'ceiling light', reference: lightOn, path: '' }],
+  };
+  const sam = (doorOpenAt: number | null, lightOffAt: number | null) =>
+    fakeSam((tag, word) => (word === 'door' ? (tag === doorOpenAt ? doorLeaf : doorClosed) : tag === lightOffAt ? null : lightOn));
+
+  it('alerts when every zone shows its change in the same check, naming both and outlining each', async () => {
+    const frames = doorFrames();
+    const opened = frames[6]!.at;
+
+    const result = await run(lightRule, frames, sam(opened, opened));
+
+    expect(result.alerts).toHaveLength(1);
+    expect(result.alerts[0]!.zones).toEqual(['front door', 'ceiling light']);
+    expect(result.alerts[0]!.picture?.at).toBe(opened);
+    expect(result.alerts[0]!.outlines.map((o) => o.box)).toEqual([doorLeaf]);
+  });
+
+  it('does not alert when only one of the zones changes', async () => {
+    const frames = doorFrames();
+
+    const result = await run(lightRule, frames, sam(frames[6]!.at, null));
+
+    expect(result.checks).toHaveLength(1);
+    expect(result.alerts).toEqual([]);
+  });
+
+  it('starts the check on a change in any of its zones, and asks SAM once a picture for all their words', async () => {
+    const frames = Array.from({ length: 10 }, (_, i) => frame(LAGOS_2124 + i * SECOND, i === 3 ? [[2, 2]] : []));
+    const s = sam(null, null);
+
+    await run(lightRule, frames, s);
+
+    expect(s.asked).toEqual([frames[3]!.at, frames[6]!.at, frames[9]!.at]);
+    expect(s.words[0]).toEqual(['door', 'ceiling light']);
+  });
+});
+
 describe('zoneOutline', () => {
   it("gives an outline zone's path from setup and a drawn box's rectangle", () => {
     expect(zoneOutline({ name: 'door', kind: 'outline', word: 'door', reference: doorClosed, path: 'M60 20Z' })).toBe('M60 20Z');
-    expect(zoneOutline({ name: 'doorway', kind: 'box', box: doorClosed })).toBe('M60 20H90V80H60Z');
+    expect(zoneOutline({ name: 'doorway', kind: 'box', box: doorClosed, question: 'Is the door open?' })).toBe('M60 20H90V80H60Z');
   });
 });

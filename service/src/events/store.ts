@@ -1,5 +1,4 @@
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
-import type { SecondOpinion } from '../alerts/second-opinion.js';
 
 export interface NewEvent {
   camera: string;
@@ -15,7 +14,6 @@ export interface NewEvent {
 
 export interface StoredEvent extends NewEvent {
   id: number;
-  secondOpinion: SecondOpinion | null;
 }
 
 // A picture around the event, as a file in the media folder; outline is SAM's, on the pictures the deciding check judged.
@@ -44,8 +42,6 @@ interface Row {
   clip: string | null;
   outline: string | null;
   reference: string | null;
-  opinion_confirmed: number | null;
-  opinion_reason: string | null;
 }
 
 // The database does the counting, so an answer about events can be checked against the rows behind it.
@@ -66,9 +62,7 @@ export class EventStore {
       picture TEXT,
       clip TEXT,
       outline TEXT,
-      reference TEXT,
-      opinion_confirmed INTEGER,
-      opinion_reason TEXT
+      reference TEXT
     )`);
     this.#db.exec(`CREATE TABLE IF NOT EXISTS event_frames (
       event_id INTEGER NOT NULL REFERENCES events (id),
@@ -103,11 +97,6 @@ export class EventStore {
     return row ? toEvent(row) : null;
   }
 
-  setSecondOpinion(id: number, opinion: SecondOpinion): void {
-    const confirmed = opinion.confirmed === null ? null : Number(opinion.confirmed);
-    this.#db.prepare('UPDATE events SET opinion_confirmed = ?, opinion_reason = ? WHERE id = ?').run(confirmed, opinion.reason, id);
-  }
-
   count(filter: EventFilter): number {
     const { where, values } = whereClause(filter);
     const row = this.#db.prepare(`SELECT count(*) AS n FROM events ${where}`).get(...values) as { n: number };
@@ -129,6 +118,11 @@ export class EventStore {
     return this.#db
       .prepare('SELECT at, file, outline FROM event_frames WHERE event_id = ? ORDER BY at')
       .all(eventId) as unknown as EventFrame[];
+  }
+
+  // Events keep the zone's name as it was, so a rename carries them along to keep counts by zone whole.
+  renameZone(camera: string, from: string, to: string): number {
+    return Number(this.#db.prepare('UPDATE events SET zone = ? WHERE camera = ? AND zone = ?').run(to, camera, from).changes);
   }
 
   places(): Array<{ camera: string; zone: string }> {
@@ -165,9 +159,5 @@ function toEvent(row: Row): StoredEvent {
     clip: row.clip,
     outline: row.outline,
     reference: row.reference,
-    secondOpinion:
-      row.opinion_reason === null
-        ? null
-        : { confirmed: row.opinion_confirmed === null ? null : row.opinion_confirmed === 1, reason: row.opinion_reason },
   };
 }

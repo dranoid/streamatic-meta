@@ -18,11 +18,12 @@ client.
   (gate, wall, car, keke, person), by day and at night. Muse Spark picks what matters for that site and
   suggests the rules worth having, keeping SAM's own names so every rule is written in words SAM answers to.
 - **Rules on outlines.** A rule watches the outline SAM drew, not a box someone dragged by hand. SAM 3.1
-  looks again only when something changes there.
+  looks again only when something changes there. A rule can watch several zones at once ("the light is off
+  while the door is open") and alerts only when all of them change together.
+- **Zones named once.** Each zone is matched across the day, dusk and night pictures by its place. You name
+  it once and confirm it on every picture; SAM keeps searching by its own word.
 - **A guide that does the setup with you.** Type one sentence. The guide shows its plan as a checklist,
   then works the app in front of you. A step is ticked only when the app shows it done and you confirm it.
-- **A second opinion on every alert.** Muse Spark Open, Meta's open model, judges each alert's picture again
-  without seeing the first verdict. If it disagrees, the alert says so.
 - **Questions about the week.** "How many times was the gate open after 10 pm?" Muse Spark picks the query,
   the events table does the counting, and every answer opens the moment it refers to.
 
@@ -31,7 +32,7 @@ client.
 | Model | Where | Used for |
 |---|---|---|
 | SAM 3.1 | Meta Model API | Outlining the scene at setup and on each event |
-| Muse Spark Open | Baseten | Listing what a camera sees, suggesting rules, judging drawn zones, the second opinion on each alert, answering questions |
+| Muse Spark Open | Baseten | Listing what a camera sees, suggesting rules, judging drawn zones and naming the picture that shows the change, answering questions |
 
 ## Running it
 

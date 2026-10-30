@@ -20,7 +20,7 @@ const setupResult: CameraSetup = {
       item: 'door',
       seenAt: ['day', 'night'],
       outlines: {
-        day: [{ word: 'door', objectId: '0', box: { left: 1, top: 1, right: 5, bottom: 5 }, path: 'M1 1Z' }],
+        day: [{ word: 'door', objectId: '0', box: { left: 1, top: 1, right: 6, bottom: 6 }, path: 'M1 1Z' }],
         night: [
           { word: 'door', objectId: '0', box: { left: 2, top: 2, right: 6, bottom: 6 }, path: 'M2 2Z' },
           { word: 'door', objectId: '1', box: doorBox, path: 'M869 317Z' },
@@ -93,7 +93,9 @@ async function start({ plan, setUp }: { plan?: Plan; setUp?: () => Promise<Camer
   };
   const post = (path: string, body: unknown) =>
     json(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  return { base, eventId, questions, setUpCalls, json, post };
+  const patch = (path: string, body: unknown) =>
+    json(path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  return { base, eventId, questions, setUpCalls, json, post, patch };
 }
 
 describe('pages', () => {
@@ -153,7 +155,7 @@ describe('cameras', () => {
   it('lists each camera with its pictures, before setup has run', async () => {
     const { json, base } = await start();
     expect((await json('/api/cameras')).body).toEqual([
-      { id: 'table-parlour', name: 'Table parlour', site: 'a family home', baseWords: ['door'], pictures: { day: 'day.jpg', night: 'night.jpg' }, setup: null },
+      { id: 'table-parlour', name: 'Table parlour', site: 'a family home', baseWords: ['door'], pictures: { day: 'day.jpg', night: 'night.jpg' }, setup: null, zones: [] },
     ]);
     expect(await (await fetch(`${base}/camera-pictures/table-parlour/day.jpg`)).text()).toBe('day bytes');
     expect((await fetch(`${base}/camera-pictures/table-parlour/..%2Fcamera.json`)).status).toBe(404);
@@ -185,26 +187,26 @@ describe('cameras', () => {
   });
 });
 
-describe('rules', () => {
-  const outlineRule = {
-    camera: 'table-parlour',
-    sentence: 'Alert me if the front door opens after 9 pm.',
-    zone: { kind: 'outline', name: 'front door', word: 'door', label: 'night', objectId: '1' },
-    activeHours: { from: 21, to: 6 },
-  };
+const outlineRule = {
+  camera: 'table-parlour',
+  sentence: 'Alert me if the front door opens after 9 pm.',
+  zones: [{ kind: 'outline', word: 'door', label: 'night', objectId: '1' }],
+  activeHours: { from: 21, to: 6 },
+};
 
-  it("saves an outline zone with the box and outline SAM drew at setup, then lists and removes it", async () => {
+describe('rules', () => {
+  it("saves an outline zone under its zone's name, with the box and outline SAM drew at setup, then lists and removes it", async () => {
     const { json, post } = await start();
     await post('/api/cameras/table-parlour/setup', {});
     const saved = await post('/api/rules', outlineRule);
     expect(saved.status).toBe(201);
     expect(saved.body).toMatchObject({
       camera: 'table-parlour',
-      zone: { name: 'front door', kind: 'outline', word: 'door', reference: doorBox, path: 'M869 317Z' },
-      question: null,
+      zones: [{ name: 'door 2', kind: 'outline', word: 'door', reference: doorBox, path: 'M869 317Z' }],
       activeHours: { from: 21, to: 6 },
     });
     expect((await json('/api/rules?camera=table-parlour')).body.map((r: any) => r.id)).toEqual([saved.body.id]);
+    expect((await json('/api/cameras')).body[0].zones.map((z: any) => [z.name, z.rules])).toEqual([['door 1', []], ['door 2', [saved.body.id]]]);
     expect((await json(`/api/rules/${saved.body.id}`, { method: 'DELETE' })).status).toBe(200);
     expect((await json('/api/rules')).body).toEqual([]);
   });
@@ -212,7 +214,7 @@ describe('rules', () => {
   it('refuses an outline that setup did not produce, and saves nothing', async () => {
     const { json, post } = await start();
     await post('/api/cameras/table-parlour/setup', {});
-    const refused = await post('/api/rules', { ...outlineRule, zone: { ...outlineRule.zone, objectId: '7' } });
+    const refused = await post('/api/rules', { ...outlineRule, zones: [{ ...outlineRule.zones[0], objectId: '7' }] });
     expect(refused.status).toBe(400);
     expect(refused.body.error).toMatch(/outline/i);
     expect((await json('/api/rules')).body).toEqual([]);
@@ -221,9 +223,66 @@ describe('rules', () => {
   it('saves a drawn box with its question, and refuses one without a question', async () => {
     const { post } = await start();
     const box = { kind: 'box', name: 'doorway', box: { left: 10, top: 20, right: 30, bottom: 40 } };
-    expect((await post('/api/rules', { ...outlineRule, zone: box })).status).toBe(400);
-    const saved = await post('/api/rules', { ...outlineRule, zone: { ...box, question: 'Is the door open?' } });
+    expect((await post('/api/rules', { ...outlineRule, zones: [box] })).status).toBe(400);
+    const saved = await post('/api/rules', { ...outlineRule, zones: [{ ...box, question: 'Is the door open?' }] });
     expect(saved.status).toBe(201);
-    expect(saved.body).toMatchObject({ zone: { kind: 'box', name: 'doorway', box: box.box }, question: 'Is the door open?' });
+    expect(saved.body).toMatchObject({ zones: [{ kind: 'box', name: 'doorway', box: box.box, question: 'Is the door open?' }] });
+  });
+
+  it('saves a rule on two zones of the same picture, each under its own name', async () => {
+    const { post } = await start();
+    await post('/api/cameras/table-parlour/setup', {});
+    const both = [outlineRule.zones[0], { kind: 'outline', word: 'door', label: 'night', objectId: '0' }];
+    const saved = await post('/api/rules', { ...outlineRule, sentence: 'Alert me if both doors are open.', zones: both });
+    expect(saved.status).toBe(201);
+    expect(saved.body.zones.map((z: any) => z.name)).toEqual(['door 2', 'door 1']);
+  });
+
+  it('refuses a drawn box named like an outlined zone on the same camera', async () => {
+    const { post } = await start();
+    await post('/api/cameras/table-parlour/setup', {});
+    const box = { kind: 'box', name: 'Door 1', box: { left: 10, top: 20, right: 30, bottom: 40 }, question: 'Is the door open?' };
+    const refused = await post('/api/rules', { ...outlineRule, zones: [box] });
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toContain('door 1');
+  });
+});
+
+describe('zone names', () => {
+  const frontDoor = { word: 'door', label: 'night', objectId: '1' };
+
+  it('renames a zone, and the rules and events on it take the new name while the other door keeps its own', async () => {
+    const { json, post, patch, eventId } = await start();
+    await post('/api/cameras/table-parlour/setup', {});
+    const onFront = (await post('/api/rules', outlineRule)).body.id;
+    const onOther = (await post('/api/rules', { ...outlineRule, zones: [{ kind: 'outline', word: 'door', label: 'day', objectId: '0' }] })).body.id;
+
+    expect((await patch('/api/cameras/table-parlour/zones', { ...frontDoor, name: 'front door' })).body).toMatchObject({ rules: 1, events: 0 });
+    const renamed = await patch('/api/cameras/table-parlour/zones', { ...frontDoor, name: 'Shop door' });
+    expect(renamed.status).toBe(200);
+    expect(renamed.body).toMatchObject({ rules: 1, events: 1 });
+
+    expect((await json('/api/cameras')).body[0].zones.map((z: any) => z.name)).toEqual(['door 1', 'Shop door']);
+    const names = Object.fromEntries((await json('/api/rules')).body.map((r: any) => [r.id, r.zones[0].name]));
+    expect(names).toEqual({ [onFront]: 'Shop door', [onOther]: 'door 1' });
+    expect((await json(`/api/events/${eventId}`)).body.zone).toBe('Shop door');
+  });
+
+  it('keeps the names when setup runs again', async () => {
+    const { json, post, patch } = await start();
+    await post('/api/cameras/table-parlour/setup', {});
+    await patch('/api/cameras/table-parlour/zones', { ...frontDoor, name: 'front door' });
+    await post('/api/cameras/table-parlour/setup', {});
+    expect((await json('/api/cameras')).body[0].zones.map((z: any) => z.name)).toEqual(['door 1', 'front door']);
+  });
+
+  it('refuses a name another zone on the camera already has, and an outline setup did not produce', async () => {
+    const { json, post, patch } = await start();
+    await post('/api/cameras/table-parlour/setup', {});
+    const taken = await patch('/api/cameras/table-parlour/zones', { ...frontDoor, name: 'Door 1' });
+    expect(taken.status).toBe(409);
+    expect(taken.body.error).toContain('door 1');
+    expect((await patch('/api/cameras/table-parlour/zones', { ...frontDoor, objectId: '7', name: 'front door' })).status).toBe(400);
+    expect((await json('/api/cameras')).body[0].zones.map((z: any) => z.name)).toEqual(['door 1', 'door 2']);
   });
 });

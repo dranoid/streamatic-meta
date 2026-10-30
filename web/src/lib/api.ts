@@ -25,6 +25,16 @@ export interface CameraSetup {
   rules: Array<{ sentence: string; zones: string[] }>;
 }
 
+// One thing SAM outlined, matched across the pictures, under the name people use for it.
+export interface CameraZone {
+  word: string;
+  name: string;
+  // Per picture, in pieces where SAM cut the thing up.
+  outlines: Record<string, Outline[]>;
+  // The saved rules that watch this zone.
+  rules: number[];
+}
+
 export interface Camera {
   id: string;
   name: string;
@@ -32,23 +42,23 @@ export interface Camera {
   baseWords: string[];
   pictures: Record<string, string>;
   setup: CameraSetup | null;
+  zones: CameraZone[];
 }
 
 export type Zone =
   | { name: string; kind: 'outline'; word: string; reference: Box; path: string }
-  | { name: string; kind: 'box'; box: Box };
+  | { name: string; kind: 'box'; box: Box; question: string };
 
 export interface SavedRule {
   id: number;
   camera: string;
   sentence: string;
-  zone: Zone;
-  question: string | null;
+  zones: Zone[];
   activeHours: { from: number; to: number } | null;
 }
 
 export type NewZone =
-  | { kind: 'outline'; name: string; word: string; label: string; objectId: string }
+  | { kind: 'outline'; word: string; label: string; objectId: string }
   | { kind: 'box'; name: string; box: Box; question: string };
 
 export interface StoredEvent {
@@ -61,7 +71,6 @@ export interface StoredEvent {
   clip: string | null;
   outline: string | null;
   reference: string | null;
-  secondOpinion: { confirmed: boolean | null; reason: string } | null;
 }
 
 export interface EventFrame {
@@ -93,8 +102,13 @@ export const api = {
   cameras: () => request<Camera[]>('/api/cameras'),
   runSetup: (camera: string) => request<CameraSetup>(`/api/cameras/${encodeURIComponent(camera)}/setup`, { method: 'POST' }),
   rules: (camera?: string) => request<SavedRule[]>(`/api/rules${camera ? `?camera=${encodeURIComponent(camera)}` : ''}`),
-  addRule: (rule: { camera: string; sentence: string; zone: NewZone; activeHours: { from: number; to: number } | null }) =>
+  addRule: (rule: { camera: string; sentence: string; zones: NewZone[]; activeHours: { from: number; to: number } | null }) =>
     request<SavedRule>('/api/rules', { method: 'POST', body: JSON.stringify(rule) }),
+  renameZone: (camera: string, zone: { word: string; label: string; objectId: string; name: string }) =>
+    request<{ zones: CameraZone[]; rules: number; events: number }>(`/api/cameras/${encodeURIComponent(camera)}/zones`, {
+      method: 'PATCH',
+      body: JSON.stringify(zone),
+    }),
   removeRule: (id: number) => request<{ removed: true }>(`/api/rules/${id}`, { method: 'DELETE' }),
   events: () => request<StoredEvent[]>('/api/events'),
   event: (id: number) => request<StoredEvent>(`/api/events/${id}`),

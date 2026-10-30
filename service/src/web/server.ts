@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { basename, extname, join } from 'node:path';
 import { z } from 'zod';
 import type { Camera, CameraFolder } from '../cameras/camera-folder.js';
+import { zoneAt, type CameraZone } from '../cameras/camera-zones.js';
 import type { EventStore } from '../events/store.js';
 import { answerQuestion, type QuestionPlanner } from '../questions/answer.js';
 import type { NewRule, RuleStore } from '../rules/rule-store.js';
@@ -18,6 +19,7 @@ const ASSET_TYPES: Record<string, string> = {
   '.woff2': 'font/woff2',
 };
 const MAX_BODY_BYTES = 4_000;
+const MAX_ZONES_PER_RULE = 4;
 
 const hour = z.number().int().min(0).max(23);
 const text = (max: number) => z.string().trim().min(1).max(max);
@@ -27,13 +29,19 @@ const box = z
 const ruleInput = z.object({
   camera: text(80),
   sentence: text(300),
-  // An outline zone names one of setup's outlines; its box and path are read from setup.json, never taken from the request.
-  zone: z.discriminatedUnion('kind', [
-    z.object({ kind: z.literal('outline'), name: text(60), word: text(60), label: text(30), objectId: text(10) }),
-    z.object({ kind: z.literal('box'), name: text(60), box, question: text(300) }),
-  ]),
+  // An outline zone names one of setup's outlines; its name, box and path are read from the camera, never taken from the request.
+  zones: z
+    .array(
+      z.discriminatedUnion('kind', [
+        z.object({ kind: z.literal('outline'), word: text(60), label: text(30), objectId: text(10) }),
+        z.object({ kind: z.literal('box'), name: text(60), box, question: text(300) }),
+      ]),
+    )
+    .min(1)
+    .max(MAX_ZONES_PER_RULE),
   activeHours: z.object({ from: hour, to: hour }).nullable(),
 });
+const zoneNameInput = z.object({ word: text(60), label: text(30), objectId: text(10), name: text(60) });
 
 class RequestError extends Error {
   constructor(
@@ -111,7 +119,7 @@ export function appHandler({
       return send(response, 200, { text: answer.text, count: answer.count, eventIds: answer.events.map((e) => e.id), plan: answer.plan });
     }
 
-    if (method === 'GET' && path === '/api/cameras') return send(response, 200, await cameras.list());
+    if (method === 'GET' && path === '/api/cameras') return send(response, 200, (await cameras.list()).map(withRules));
     if (method === 'GET' && (match = /^\/camera-pictures\/([^/]+)\/([^/]+)$/.exec(path))) {
       const file = decodeURIComponent(match[2]!);
       return sendFile(response, file, await cameras.picture(decodeURIComponent(match[1]!), file));
@@ -119,11 +127,16 @@ export function appHandler({
     if (method === 'POST' && (match = /^\/api\/cameras\/([^/]+)\/setup$/.exec(path))) {
       return send(response, 200, await runSetup(decodeURIComponent(match[1]!)));
     }
+    if (method === 'PATCH' && (match = /^\/api\/cameras\/([^/]+)\/zones$/.exec(path))) {
+      const parsed = zoneNameInput.safeParse(await readJson(request));
+      if (!parsed.success) throw new RequestError(400, 'Choose a zone and type its new name.');
+      return send(response, 200, await renameZone(decodeURIComponent(match[1]!), parsed.data));
+    }
 
     if (method === 'GET' && path === '/api/rules') return send(response, 200, rules.list(url.searchParams.get('camera') ?? undefined));
     if (method === 'POST' && path === '/api/rules') {
       const parsed = ruleInput.safeParse(await readJson(request));
-      if (!parsed.success) throw new RequestError(400, 'The rule needs a sentence, a zone with a name and, for a drawn box, a question.');
+      if (!parsed.success) throw new RequestError(400, `The rule needs a sentence and 1 to ${MAX_ZONES_PER_RULE} zones; a drawn box needs a name and a question.`);
       const rule = await resolveRule(parsed.data);
       return send(response, 201, rules.get(rules.add(rule)));
     }
@@ -138,6 +151,18 @@ export function appHandler({
       return;
     }
     send(response, 404, { error: 'Not found.' });
+  }
+
+  // Each zone with the rules that watch it, found by place, so the camera page can tell active zones from the rest.
+  function withRules(camera: Camera) {
+    const onCamera = rules.list(camera.id);
+    return {
+      ...camera,
+      zones: camera.zones.map((zone) => ({
+        ...zone,
+        rules: onCamera.filter((r) => r.zones.some((z) => z.kind === 'outline' && zoneAt(camera.zones, z.word, z.reference) === zone)).map((r) => r.id),
+      })),
+    };
   }
 
   async function runSetup(id: string): Promise<CameraSetup> {
@@ -158,16 +183,56 @@ export function appHandler({
   async function resolveRule(input: z.infer<typeof ruleInput>): Promise<NewRule> {
     const camera = await cameras.get(input.camera);
     if (!camera) throw new RequestError(400, 'No such camera.');
-    const base = { camera: camera.id, sentence: input.sentence, activeHours: input.activeHours };
-    if (input.zone.kind === 'box') {
-      const zone: Zone = { name: input.zone.name, kind: 'box', box: input.zone.box };
-      return { ...base, zone, question: input.zone.question };
-    }
-    const { name, word, label, objectId } = input.zone;
-    const outline = camera.setup?.zones.find((z) => z.name === word)?.outlines[label]?.find((o) => o.objectId === objectId);
-    if (!outline) throw new RequestError(400, 'That outline is not in this camera’s setup. Run setup again and choose an outline.');
-    return { ...base, zone: { name, kind: 'outline', word, reference: outline.box, path: outline.path }, question: null };
+    const zones = input.zones.map((given): Zone => {
+      if (given.kind === 'box') {
+        const taken = sameName(camera.zones, given.name);
+        if (taken) throw new RequestError(409, `A zone on this camera is already called “${taken.name}”. Give the box another name.`);
+        return { name: given.name, kind: 'box', box: given.box, question: given.question };
+      }
+      const { word, label, objectId } = given;
+      const zone = outlinedZone(camera, word, label, objectId);
+      const outline = zone.outlines[label]!.find((o) => o.objectId === objectId)!;
+      return { name: zone.name, kind: 'outline', word, reference: outline.box, path: outline.path };
+    });
+    return { camera: camera.id, sentence: input.sentence, zones, activeHours: input.activeHours };
   }
+
+  // A rule keeps its zone's box, so it finds its zone again by place; the name travels to its rules and their events.
+  async function renameZone(id: string, input: z.infer<typeof zoneNameInput>) {
+    const camera = await cameras.get(id);
+    if (!camera) throw new RequestError(404, 'No such camera.');
+    const zone = outlinedZone(camera, input.word, input.label, input.objectId);
+    const onCamera = rules.list(camera.id);
+    const taken =
+      sameName(camera.zones.filter((z) => z !== zone), input.name) ??
+      onCamera.flatMap((r) => r.zones).find((z) => z.kind === 'box' && z.name.toLowerCase() === input.name.toLowerCase());
+    if (taken) throw new RequestError(409, `Another zone on this camera is already called “${taken.name}”.`);
+
+    const isThisZone = (z: Zone) => z.kind === 'outline' && zoneAt(camera.zones, z.word, z.reference) === zone;
+    const onZone = onCamera.filter((r) => r.zones.some(isThisZone));
+    const names = (await cameras.zoneNames(camera.id)).filter((n) => n.word !== zone.word || zoneAt([zone], n.word, n.box) === null);
+    await cameras.saveZoneNames(camera.id, [...names, { word: zone.word, box: Object.values(zone.outlines)[0]![0]!.box, name: input.name }]);
+    const oldNames = new Set([zone.name]);
+    for (const rule of onZone) {
+      rule.zones.filter(isThisZone).forEach((z) => oldNames.add(z.name));
+      rules.setZones(rule.id, rule.zones.map((z) => (isThisZone(z) ? { ...z, name: input.name } : z)));
+    }
+    let renamedEvents = 0;
+    for (const old of oldNames) {
+      if (old !== input.name) renamedEvents += events.renameZone(camera.name, old, input.name);
+    }
+    return { zones: withRules((await cameras.get(camera.id))!).zones, rules: onZone.length, events: renamedEvents };
+  }
+}
+
+function outlinedZone(camera: Camera, word: string, label: string, objectId: string): CameraZone {
+  const zone = camera.zones.find((z) => z.word === word && z.outlines[label]?.some((o) => o.objectId === objectId));
+  if (!zone) throw new RequestError(400, 'That outline is not in this camera’s setup. Run setup again and choose an outline.');
+  return zone;
+}
+
+function sameName(zones: CameraZone[], name: string): CameraZone | undefined {
+  return zones.find((z) => z.name.toLowerCase() === name.toLowerCase());
 }
 
 function send(response: ServerResponse, status: number, body: unknown): void {

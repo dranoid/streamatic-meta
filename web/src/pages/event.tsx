@@ -1,10 +1,9 @@
 import type { ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { BellRing, Cctv, Clock, ScanSearch, ShieldCheck, Target } from 'lucide-react';
+import { BellRing, Cctv, Clock, ScanSearch, Target } from 'lucide-react';
 import { ClipPlayer } from '@/components/clip-player';
 import { PageHeader } from '@/components/layout/page-header';
-import { SecondOpinionBadge } from '@/components/second-opinion';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Notice } from '@/components/ui/notice';
 import { Skeleton } from '@/components/ui/skeleton';
 import { api } from '@/lib/api';
@@ -24,7 +23,6 @@ export function EventPage({ id }: { id: number }) {
         trail={[{ href: '/events', label: 'Events' }]}
         icon={<BellRing />}
         title={`${sentence(e.zone)} · ${dateAndTime(e.at)}`}
-        badges={<SecondOpinionBadge opinion={e.secondOpinion} />}
         description={e.rule}
       />
       <div className='grid gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]'>
@@ -44,22 +42,6 @@ export function EventPage({ id }: { id: number }) {
                 <Fact icon={<Cctv />} term='Camera' value={e.camera} />
                 <Fact icon={<Clock />} term='Time' value={dateAndTime(e.at)} />
               </dl>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <div>
-                <CardTitle className='flex items-center gap-2'>
-                  <ShieldCheck className='text-primary size-4' />
-                  Second opinion
-                </CardTitle>
-                <CardDescription>Muse Spark Open sees the zone at setup and the alert’s picture, never the first verdict.</CardDescription>
-              </div>
-            </CardHeader>
-            <CardContent className='space-y-3'>
-              <SecondOpinionBadge opinion={e.secondOpinion} />
-              <p className='text-sm leading-relaxed'>{e.secondOpinion?.reason || 'The check has not returned yet.'}</p>
             </CardContent>
           </Card>
         </aside>

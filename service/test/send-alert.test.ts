@@ -23,10 +23,10 @@ function fakeSender() {
 async function doorAlert(): Promise<ZoneAlert> {
   return {
     rule: 'Alert me if the front door opens after 9 pm.',
-    zone: 'front door',
+    zones: ['front door'],
     at: at2124,
     picture: await frame(at2124),
-    outline: { word: 'door', objectId: '0', box: { left: 10, top: 10, right: 40, bottom: 50 }, path: 'M10 10L40 10L40 50L10 50Z' },
+    outlines: [{ word: 'door', objectId: '0', box: { left: 10, top: 10, right: 40, bottom: 50 }, path: 'M10 10L40 10L40 50L10 50Z' }],
     clip: [],
     judged: [],
   };
@@ -41,10 +41,10 @@ describe('sendZoneAlert', () => {
     const picture = await frame(at2124);
     const alert: ZoneAlert = {
       rule: 'Alert me if the front door opens after 9 pm.',
-      zone: 'front door',
+      zones: ['front door'],
       at: at2124,
       picture,
-      outline: { word: 'door', objectId: '0', box: { left: 10, top: 10, right: 40, bottom: 50 }, path: 'M10 10L40 10L40 50L10 50Z' },
+      outlines: [{ word: 'door', objectId: '0', box: { left: 10, top: 10, right: 40, bottom: 50 }, path: 'M10 10L40 10L40 50L10 50Z' }],
       clip: [],
       judged: [],
     };
@@ -84,7 +84,7 @@ describe('sendZoneAlert', () => {
 
   it('sends the moment as a clip when the alert has no single picture', async () => {
     const clip = [await frame(at2124), await frame(at2124 + 1000)];
-    const alert: ZoneAlert = { rule: 'Alert me if anyone is behind the counter.', zone: 'counter', at: at2124, picture: null, outline: null, clip, judged: [] };
+    const alert: ZoneAlert = { rule: 'Alert me if anyone is behind the counter.', zones: ['counter'], at: at2124, picture: null, outlines: [], clip, judged: [] };
     const sender = fakeSender();
     let clipped = 0;
 

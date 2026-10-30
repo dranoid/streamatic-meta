@@ -4,16 +4,14 @@ import { RuleStore, type NewRule } from '../src/rules/rule-store.js';
 const door: NewRule = {
   camera: 'table-parlour',
   sentence: 'Alert me if the front door opens after 9 pm.',
-  zone: { name: 'front door', kind: 'outline', word: 'door', reference: { left: 869, top: 317, right: 1053, bottom: 592 }, path: 'M869 317Z' },
-  question: null,
+  zones: [{ name: 'front door', kind: 'outline', word: 'door', reference: { left: 869, top: 317, right: 1053, bottom: 592 }, path: 'M869 317Z' }],
   activeHours: { from: 21, to: 6 },
 };
 
 const gate: NewRule = {
   camera: 'amosu',
   sentence: 'Tell me when a car is parked across the gate.',
-  zone: { name: 'gate', kind: 'box', box: { left: 10, top: 20, right: 30, bottom: 40 } },
-  question: 'Is a car parked across the gate?',
+  zones: [{ name: 'gate', kind: 'box', box: { left: 10, top: 20, right: 30, bottom: 40 }, question: 'Is a car parked across the gate?' }],
   activeHours: null,
 };
 

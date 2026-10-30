@@ -4,8 +4,7 @@ import type { Zone } from './zone-rule.js';
 export interface NewRule {
   camera: string;
   sentence: string;
-  zone: Zone;
-  question: string | null;
+  zones: Zone[];
   activeHours: { from: number; to: number } | null;
 }
 
@@ -17,8 +16,7 @@ interface Row {
   id: number;
   camera: string;
   sentence: string;
-  zone: string;
-  question: string | null;
+  zones: string;
   active_from: number | null;
   active_to: number | null;
 }
@@ -32,8 +30,7 @@ export class RuleStore {
       id INTEGER PRIMARY KEY,
       camera TEXT NOT NULL,
       sentence TEXT NOT NULL,
-      zone TEXT NOT NULL,
-      question TEXT,
+      zones TEXT NOT NULL,
       active_from INTEGER,
       active_to INTEGER
     )`);
@@ -41,8 +38,8 @@ export class RuleStore {
 
   add(rule: NewRule): number {
     const result = this.#db
-      .prepare('INSERT INTO rules (camera, sentence, zone, question, active_from, active_to) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(rule.camera, rule.sentence, JSON.stringify(rule.zone), rule.question, rule.activeHours?.from ?? null, rule.activeHours?.to ?? null);
+      .prepare('INSERT INTO rules (camera, sentence, zones, active_from, active_to) VALUES (?, ?, ?, ?, ?)')
+      .run(rule.camera, rule.sentence, JSON.stringify(rule.zones), rule.activeHours?.from ?? null, rule.activeHours?.to ?? null);
     return Number(result.lastInsertRowid);
   }
 
@@ -60,6 +57,10 @@ export class RuleStore {
     return rows.map(toRule);
   }
 
+  setZones(id: number, zones: Zone[]): void {
+    this.#db.prepare('UPDATE rules SET zones = ? WHERE id = ?').run(JSON.stringify(zones), id);
+  }
+
   remove(id: number): boolean {
     return Number(this.#db.prepare('DELETE FROM rules WHERE id = ?').run(id).changes) > 0;
   }
@@ -70,8 +71,7 @@ function toRule(row: Row): SavedRule {
     id: row.id,
     camera: row.camera,
     sentence: row.sentence,
-    zone: JSON.parse(row.zone) as Zone,
-    question: row.question,
+    zones: JSON.parse(row.zones) as Zone[],
     activeHours: row.active_from === null || row.active_to === null ? null : { from: row.active_from, to: row.active_to },
   };
 }

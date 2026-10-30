@@ -3,7 +3,6 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { ArrowRight, BellRing, Loader2, MessageSquareText, Sparkles } from 'lucide-react';
 import { PageHeader } from '@/components/layout/page-header';
 import { PictureFrame } from '@/components/picture-frame';
-import { SecondOpinionBadge } from '@/components/second-opinion';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -20,7 +19,7 @@ export function EventsPage() {
 
   return (
     <>
-      <PageHeader icon={<BellRing />} title='Events' description='Every alert a rule raised, with the picture that shows it and a second opinion from Muse Spark Open.' />
+      <PageHeader icon={<BellRing />} title='Events' description='Every alert a rule raised, with the picture that shows it and the pictures around it.' />
       <div className='space-y-6'>
         <AskCard events={events.data ?? []} />
         {events.isError && <Notice tone='error'>The events could not be loaded. Please reload the page.</Notice>}
@@ -138,9 +137,6 @@ function EventCard({ event }: { event: StoredEvent }) {
           <ArrowRight className='text-muted-foreground group-hover:text-foreground mt-0.5 size-4 shrink-0 transition-colors' />
         </div>
         <p className='text-muted-foreground line-clamp-2 text-sm'>{event.rule}</p>
-        <div className='mt-auto'>
-          <SecondOpinionBadge opinion={event.secondOpinion} />
-        </div>
       </div>
     </Link>
   );

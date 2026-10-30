@@ -48,7 +48,7 @@ export function AppShell({ route, children }: { route: Route; children: ReactNod
       </nav>
       <div className='text-muted-foreground mt-auto rounded-lg border bg-background/60 p-3 text-xs leading-relaxed dark:bg-muted/40'>
         <p className='text-foreground font-medium'>Meta hackathon build</p>
-        <p className='mt-1'>SAM 3.1 outlines what each camera sees. Muse Spark Open lists it, checks each alert and answers questions.</p>
+        <p className='mt-1'>SAM 3.1 outlines what each camera sees. Muse Spark Open lists it, judges drawn zones and answers questions.</p>
       </div>
     </div>
   );

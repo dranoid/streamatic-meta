@@ -18,12 +18,12 @@ export interface Frame {
 
 export type Zone =
   | { name: string; kind: 'outline'; word: string; reference: Box; path: string }
-  | { name: string; kind: 'box'; box: Box };
+  | { name: string; kind: 'box'; box: Box; question: string };
 
 export interface ZoneRule {
   sentence: string;
-  zone: Zone;
-  question?: string;
+  // Every zone must show its change in the same check: "the light is off while the door is open" is two zones.
+  zones: Zone[];
   activeHours?: { from: number; to: number };
   samples: number;
   sampleGapMs: number;
@@ -43,14 +43,14 @@ export interface ZoneCheck {
 
 export interface ZoneAlert {
   rule: string;
-  zone: string;
+  zones: string[];
   at: number;
   picture: Frame | null;
-  // On a SAM zone, the outline SAM drew on the alert's picture nearest the zone; null if it found none there.
-  outline: Outline | null;
+  // On the alert's picture, the outline SAM drew at each outline zone, where it found one there.
+  outlines: Outline[];
   clip: Frame[];
-  // Each picture the deciding check looked at, with the outline SAM drew nearest the zone (none on a box zone).
-  judged: Array<{ at: number; outline: Outline | null }>;
+  // Each picture the deciding check looked at, with the outlines SAM drew at the rule's outline zones.
+  judged: Array<{ at: number; outlines: Outline[] }>;
 }
 
 // A pixel counts as changed past this grey-level difference; the zone changes when this share of its pixels does.
@@ -58,6 +58,13 @@ const PIXEL_DIFFERENCE = 25;
 const CHANGED_SHARE = 0.02;
 // Below this overlap with the reference outline, the thing is no longer as it was at setup.
 const SAME_OUTLINE_OVERLAP = 0.7;
+
+interface ZoneVerdict {
+  verdict: boolean;
+  shownIn: number | null;
+  // Per picture of the window, SAM's outline at this zone; always null on a box zone.
+  outlines: Array<Outline | null>;
+}
 
 export async function runZoneRule({
   rule,
@@ -74,7 +81,8 @@ export async function runZoneRule({
   crop: (picture: Picture, box: Box) => Promise<Picture>;
   timeZone: string;
 }): Promise<{ checks: ZoneCheck[]; alerts: ZoneAlert[] }> {
-  const box = rule.zone.kind === 'outline' ? rule.zone.reference : rule.zone.box;
+  const boxes = rule.zones.map(zoneBox);
+  const words = [...new Set(rule.zones.flatMap((z) => (z.kind === 'outline' ? [z.word] : [])))];
   const checks: ZoneCheck[] = [];
   const alerts: ZoneAlert[] = [];
   let quietUntil = -Infinity;
@@ -82,30 +90,36 @@ export async function runZoneRule({
   for (let i = 1; i < frames.length; i++) {
     const current = frames[i]!;
     if (current.at < quietUntil || !isActive(rule, current.at, timeZone)) continue;
-    if (!zoneChanged(frames[i - 1]!, current, box)) continue;
+    if (!boxes.some((box) => zoneChanged(frames[i - 1]!, current, box))) continue;
 
     const window = pickWindow(frames, i, rule);
-    const { verdict, shownIn, outline, judged } =
-      rule.zone.kind === 'outline'
-        ? await judgeOutline(sam, rule.zone.word, rule.zone.reference, window)
-        : {
-            ...(await judgeBox(judge, rule.question ?? rule.sentence, box, window, crop)),
-            outline: null,
-            judged: window.map((f) => ({ at: f.at, outline: null })),
-          };
+    // One SAM call a picture covers every outline zone, however many the rule has.
+    const outlined = words.length ? await Promise.all(window.map((f) => sam.outlineAll(f.picture, words))) : [];
+    const verdicts: ZoneVerdict[] = [];
+    for (const zone of rule.zones) {
+      verdicts.push(
+        zone.kind === 'outline'
+          ? judgeOutline(outlined.map((o) => o[zone.word] ?? []), zone.reference)
+          : { ...(await judgeBox(judge, zone.question, zone.box, window, crop)), outlines: window.map(() => null) },
+      );
+    }
+    const verdict = verdicts.every((v) => v.verdict);
+    // The picture where the last of the changes shows; a zone seen only as a change between pictures makes it a clip.
+    const shownIn = verdict && verdicts.every((v) => v.shownIn !== null) ? Math.max(...verdicts.map((v) => v.shownIn!)) : null;
     checks.push({ at: current.at, pictures: window.map((f) => f.at), verdict, shownIn });
 
     if (verdict) {
       const picture = shownIn === null ? null : window[shownIn - 1]!;
       const last = window[window.length - 1]!;
+      const outlinesAt = (k: number) => verdicts.flatMap((v) => (v.outlines[k] ? [v.outlines[k]!] : []));
       alerts.push({
         rule: rule.sentence,
-        zone: rule.zone.name,
+        zones: rule.zones.map((z) => z.name),
         at: picture?.at ?? current.at,
         picture,
-        outline,
+        outlines: shownIn === null ? [] : outlinesAt(shownIn - 1),
         clip: picture ? [] : frames.filter((f) => f.at >= current.at && f.at <= last.at),
-        judged,
+        judged: window.map((f, k) => ({ at: f.at, outlines: outlinesAt(k) })),
       });
       quietUntil = current.at + rule.cooldownMs;
     }
@@ -125,26 +139,24 @@ function pickWindow(frames: Frame[], start: number, rule: ZoneRule): Frame[] {
   return window;
 }
 
-async function judgeOutline(sam: Outliner, word: string, reference: Box, window: Frame[]) {
+// SAM's outline nearest the zone on each picture; the zone changed where that overlaps the reference least, below the bar.
+function judgeOutline(perPicture: Outline[][], reference: Box): ZoneVerdict {
   let shownIn: number | null = null;
-  let outline: Outline | null = null;
   let leastLike = 1;
-  const judged: ZoneAlert['judged'] = [];
-  for (const [k, frame] of window.entries()) {
-    const outlines = (await sam.outlineAll(frame.picture, [word]))[word] ?? [];
-    const nearest = outlines.reduce<Outline | null>(
+  const outlines = perPicture.map((found, k) => {
+    const nearest = found.reduce<Outline | null>(
       (best, o) => (best === null || boxOverlap(o.box, reference) > boxOverlap(best.box, reference) ? o : best),
       null,
     );
-    judged.push({ at: frame.at, outline: nearest });
     const overlap = nearest ? boxOverlap(nearest.box, reference) : 0;
     if (overlap < SAME_OUTLINE_OVERLAP && overlap < leastLike) {
       leastLike = overlap;
       shownIn = k + 1;
-      outline = overlap > 0 ? nearest : null;
     }
-  }
-  return { verdict: shownIn !== null, shownIn, outline, judged };
+    // An outline that does not touch the zone is another thing of the same kind, not this zone.
+    return overlap > 0 ? nearest : null;
+  });
+  return { verdict: shownIn !== null, shownIn, outlines };
 }
 
 async function judgeBox(
@@ -194,7 +206,11 @@ function isActive(rule: ZoneRule, at: number, timeZone: string): boolean {
   return from <= to ? hour >= from && hour < to : hour >= from || hour < to;
 }
 
-// The zone as an SVG path in picture pixels, for drawing it on an alert or marking it for the second opinion.
+function zoneBox(zone: Zone): Box {
+  return zone.kind === 'outline' ? zone.reference : zone.box;
+}
+
+// The zone as an SVG path in picture pixels, for drawing it on an alert.
 export function zoneOutline(zone: Zone): string {
   if (zone.kind === 'outline') return zone.path;
   const { left, top, right, bottom } = zone.box;

@@ -40,7 +40,7 @@ export async function sendZoneAlert({
   if (view === 'plain') return sender.sendPicture(plain, caption);
   const outlines: DrawnOutline[] = [
     ...(reference ? [{ path: reference, colour: REFERENCE_COLOUR, dashed: true }] : []),
-    ...(alert.outline ? [{ path: alert.outline.path, colour: OUTLINE_COLOUR }] : []),
+    ...alert.outlines.map((o) => ({ path: o.path, colour: OUTLINE_COLOUR })),
   ];
   const outlined = await drawOutlines(plain, outlines);
   return view === 'both' ? sender.sendPictures([outlined, plain], caption) : sender.sendPicture(outlined, caption);
@@ -48,7 +48,7 @@ export async function sendZoneAlert({
 
 export function alertCaption(alert: ZoneAlert, camera: string, timeZone: string): string {
   return [
-    `Streamatic alert: ${alert.zone}`,
+    `Streamatic alert: ${alert.zones.join(' and ')}`,
     `Camera: ${camera}`,
     `Time: ${formatTime(alert.at, timeZone)}`,
     `Rule: ${alert.rule}`,

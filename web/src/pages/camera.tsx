@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Cctv, Clock, Eye, EyeOff, Loader2, MousePointerClick, Plus, ScanSearch, Sparkles, SquareDashed, Trash2, Wand2 } from 'lucide-react';
+import { Cctv, Clock, Eye, EyeOff, Loader2, MousePointerClick, Pencil, Plus, ScanSearch, Sparkles, SquareDashed, Trash2, Wand2, X } from 'lucide-react';
 import { PageHeader } from '@/components/layout/page-header';
 import { OverlayChip, PictureFrame, ZONE_COLOURS, type DrawnPath } from '@/components/picture-frame';
 import { Badge } from '@/components/ui/badge';
@@ -10,28 +10,32 @@ import { Input, Label, Select, Textarea } from '@/components/ui/input';
 import { Notice } from '@/components/ui/notice';
 import { Segmented } from '@/components/ui/segmented';
 import { Skeleton } from '@/components/ui/skeleton';
-import { api, pictureUrl, type Box, type Camera, type NewZone, type SavedRule } from '@/lib/api';
+import { api, pictureUrl, type Box, type Camera, type CameraZone, type NewZone, type SavedRule } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { sentence } from '@/lib/time';
 
-type Choice = { kind: 'outline'; word: string; label: string; objectId: string } | { kind: 'box'; label: string; box: Box };
+// One SAM outline the person selected, as setup knows it: the zone is the one that holds this piece.
+type Pick = { word: string; label: string; objectId: string };
 
 interface Draft {
   sentence: string;
-  zoneKind: 'outline' | 'box';
-  choice: Choice | null;
-  name: string;
+  picks: Pick[];
+  box: { label: string; box: Box } | null;
+  boxName: string;
   question: string;
   limitHours: boolean;
   from: number;
   to: number;
 }
 
-const EMPTY_DRAFT: Draft = { sentence: '', zoneKind: 'outline', choice: null, name: '', question: '', limitHours: false, from: 21, to: 6 };
+const EMPTY_DRAFT: Draft = { sentence: '', picks: [], box: null, boxName: '', question: '', limitHours: false, from: 21, to: 6 };
 const MIN_BOX = 12;
+const MAX_ZONES_PER_RULE = 4;
 
 const title = (label: string) => label[0]!.toUpperCase() + label.slice(1);
 const pad = (h: number) => `${String(h).padStart(2, '0')}:00`;
+const colourAt = (i: number) => ZONE_COLOURS[i % ZONE_COLOURS.length]!;
+const holds = (zone: CameraZone, pick: Pick) => zone.word === pick.word && !!zone.outlines[pick.label]?.some((o) => o.objectId === pick.objectId);
 
 export function CameraPage({ id }: { id: string }) {
   const cameras = useQuery({ queryKey: ['cameras'], queryFn: api.cameras });
@@ -46,9 +50,14 @@ export function CameraPage({ id }: { id: string }) {
 function CameraView({ camera }: { camera: Camera }) {
   const queryClient = useQueryClient();
   const labels = Object.keys(camera.pictures);
+  const zones = camera.zones;
   const [label, setLabel] = useState(labels[0]!);
-  const [hidden, setHidden] = useState<Set<string>>(new Set());
+  // Zones no rule watches start hidden once any zone is active, so the picture shows what is being watched.
+  const [hidden, setHidden] = useState<Set<number>>(() =>
+    zones.some((z) => z.rules.length > 0) ? new Set(zones.flatMap((z, i) => (z.rules.length ? [] : [i]))) : new Set(),
+  );
   const [composing, setComposing] = useState(false);
+  const [drawing, setDrawing] = useState(false);
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
   const [drawingFrom, setDrawingFrom] = useState<{ x: number; y: number } | null>(null);
   const [liveBox, setLiveBox] = useState<Box | null>(null);
@@ -62,36 +71,37 @@ function CameraView({ camera }: { camera: Camera }) {
       return queryClient.invalidateQueries({ queryKey: ['cameras'] });
     },
   });
-  const zones = camera.setup?.zones ?? [];
-  const colourOf = (word: string) => ZONE_COLOURS[Math.max(0, zones.findIndex((z) => z.name === word)) % ZONE_COLOURS.length]!;
-  const picking = composing && draft.zoneKind === 'outline';
-  const drawing = composing && draft.zoneKind === 'box';
+  const ticked = new Set(draft.picks.map((p) => zones.findIndex((z) => holds(z, p))));
 
-  const choose = (choice: Choice, name?: string) =>
-    setDraft((d) => ({ ...d, choice, name: name !== undefined && (d.name === '' || d.choice?.kind === 'outline') ? name : d.name }));
+  const startRule = (next: Draft) => {
+    setComposing(true);
+    setDrawing(false);
+    setDraft(next);
+  };
+  const toggle = (i: number, pick: Pick) =>
+    setDraft((d) => {
+      if (d.picks.some((p) => holds(zones[i]!, p))) return { ...d, picks: d.picks.filter((p) => !holds(zones[i]!, p)) };
+      if (d.picks.length + (d.box ? 1 : 0) >= MAX_ZONES_PER_RULE) return d;
+      return { ...d, picks: [...d.picks, pick] };
+    });
 
-  const paths: DrawnPath[] = zones
-    .filter((z) => !hidden.has(z.name))
-    .flatMap((z) =>
-      (z.outlines[label] ?? []).map((o) => {
-        const chosen = draft.choice?.kind === 'outline' && draft.choice.word === z.name && draft.choice.label === label && draft.choice.objectId === o.objectId;
-        return {
-          key: `${z.name}-${o.objectId}`,
+  const paths: DrawnPath[] = zones.flatMap((z, i) =>
+    composing || !hidden.has(i)
+      ? (z.outlines[label] ?? []).map((o) => ({
+          key: `${i}-${o.objectId}`,
           d: o.path,
-          colour: colourOf(z.name),
-          style: chosen ? ('selected' as const) : ('fill' as const),
+          colour: colourAt(i),
+          style: ticked.has(i) ? ('selected' as const) : ('fill' as const),
           title: z.name,
           onSelect: () => {
-            if (!composing) {
-              setComposing(true);
-              setDraft({ ...EMPTY_DRAFT, sentence: '' });
-            }
-            choose({ kind: 'outline', word: z.name, label, objectId: o.objectId }, z.name);
+            const pick = { word: z.word, label, objectId: o.objectId };
+            if (!composing) startRule({ ...EMPTY_DRAFT, picks: [pick] });
+            else toggle(i, pick);
           },
-        };
-      }),
-    );
-  const drawnBox = liveBox ?? (draft.choice?.kind === 'box' && draft.choice.label === label ? draft.choice.box : null);
+        }))
+      : [],
+  );
+  const drawnBox = liveBox ?? (draft.box?.label === label ? draft.box.box : null);
 
   const toPicture = (event: ReactPointerEvent) => {
     const el = svg.current;
@@ -108,17 +118,13 @@ function CameraView({ camera }: { camera: Camera }) {
     bottom: Math.round(Math.max(a.y, b.y)),
   });
 
-  const applySuggestion = (sentence: string, names: string[]) => {
-    const zone = zones.find((z) => names.map((n) => n.toLowerCase()).includes(z.name));
-    const where = zone ? (zone.outlines[label]?.length ? label : zone.seenAt[0]) : undefined;
-    const outline = zone && where ? zone.outlines[where]?.[0] : undefined;
-    setComposing(true);
-    setDraft({
-      ...EMPTY_DRAFT,
-      sentence,
-      choice: zone && where && outline ? { kind: 'outline', word: zone.name, label: where, objectId: outline.objectId } : null,
-      name: zone?.name ?? '',
-    });
+  // A suggestion names SAM's word; when the word outlines two things, such as two doors, the person selects which one.
+  const applySuggestion = (text: string, words: string[]) => {
+    const wanted = words.map((w) => w.toLowerCase());
+    const matching = zones.filter((z) => wanted.includes(z.word));
+    const only = matching.length === 1 ? matching[0]! : null;
+    const where = only ? (only.outlines[label] ? label : Object.keys(only.outlines)[0]!) : undefined;
+    startRule({ ...EMPTY_DRAFT, sentence: text, picks: only && where ? [{ word: only.word, label: where, objectId: only.outlines[where]![0]!.objectId }] : [] });
     if (where) setLabel(where);
   };
 
@@ -128,7 +134,16 @@ function CameraView({ camera }: { camera: Camera }) {
         trail={[{ href: '/cameras', label: 'Cameras' }]}
         icon={<Cctv />}
         title={camera.name}
-        badges={camera.setup ? <Badge variant='success'>{zones.length} zones outlined</Badge> : <Badge variant='muted'>Not set up</Badge>}
+        badges={
+          camera.setup ? (
+            <>
+              <Badge variant='success'>{zones.length} zones found</Badge>
+              <Badge variant='outline'>{zones.filter((z) => z.rules.length > 0).length} active</Badge>
+            </>
+          ) : (
+            <Badge variant='muted'>Not set up</Badge>
+          )
+        }
         description={sentence(camera.site)}
         actions={
           <>
@@ -139,13 +154,7 @@ function CameraView({ camera }: { camera: Camera }) {
               </Button>
             )}
             {camera.setup && !composing && (
-              <Button
-                size='sm'
-                onClick={() => {
-                  setComposing(true);
-                  setDraft(EMPTY_DRAFT);
-                }}
-              >
+              <Button size='sm' onClick={() => startRule(EMPTY_DRAFT)}>
                 <Plus />
                 New rule
               </Button>
@@ -162,13 +171,13 @@ function CameraView({ camera }: { camera: Camera }) {
                 <CardTitle>What the camera sees</CardTitle>
                 <CardDescription>
                   {zones.length
-                    ? 'Every outline is SAM 3.1’s, under the word shown. Select one to build a rule on it.'
+                    ? 'SAM 3.1 outlined each zone under the word it answers to. Select an outline to build a rule on it.'
                     : 'The three pictures setup works from: by day, at dusk and at night.'}
                 </CardDescription>
               </div>
               <Segmented label='Picture' value={label} onChange={setLabel} options={labels.map((l) => ({ value: l, label: title(l) }))} />
             </CardHeader>
-            <CardContent className='space-y-4'>
+            <CardContent className='space-y-5'>
               <div
                 onPointerDown={(e) => {
                   if (!drawing) return;
@@ -189,7 +198,10 @@ function CameraView({ camera }: { camera: Camera }) {
                   const b = p ? boxFrom(drawingFrom, p) : null;
                   setDrawingFrom(null);
                   setLiveBox(null);
-                  if (b && b.right - b.left >= MIN_BOX && b.bottom - b.top >= MIN_BOX) choose({ kind: 'box', label, box: b });
+                  if (b && b.right - b.left >= MIN_BOX && b.bottom - b.top >= MIN_BOX) {
+                    setDraft((d) => ({ ...d, box: { label, box: b } }));
+                    setDrawing(false);
+                  }
                 }}
               >
                 <PictureFrame
@@ -199,12 +211,12 @@ function CameraView({ camera }: { camera: Camera }) {
                   box={drawnBox}
                   drawing={drawing}
                   onPicture={(el) => (svg.current = el)}
-                  className={cn((picking || drawing) && 'ring-primary/60 ring-2')}
+                  className={cn(composing && 'ring-primary/60 ring-2')}
                 >
-                  {(picking || drawing) && (
+                  {composing && (
                     <OverlayChip className='bottom-2 left-2 flex items-center gap-1.5'>
-                      {picking ? <MousePointerClick className='size-3.5' /> : <SquareDashed className='size-3.5' />}
-                      {picking ? 'Select an outline for the rule' : 'Drag across the picture to draw the zone'}
+                      {drawing ? <SquareDashed className='size-3.5' /> : <MousePointerClick className='size-3.5' />}
+                      {drawing ? 'Drag across the picture to draw the box' : 'Select the outlines this rule watches'}
                     </OverlayChip>
                   )}
                   {setup.isPending && <SetupRunning />}
@@ -212,37 +224,18 @@ function CameraView({ camera }: { camera: Camera }) {
               </div>
 
               {zones.length > 0 && (
-                <div className='flex flex-wrap gap-1.5' role='group' aria-label='Zones'>
-                  {zones.map((z) => {
-                    const here = z.outlines[label]?.length ?? 0;
-                    const off = hidden.has(z.name);
-                    return (
-                      <button
-                        key={z.name}
-                        type='button'
-                        aria-pressed={!off}
-                        title={off ? `Show ${z.name}` : `Hide ${z.name}`}
-                        onClick={() =>
-                          setHidden((h) => {
-                            const next = new Set(h);
-                            if (off) next.delete(z.name);
-                            else next.add(z.name);
-                            return next;
-                          })
-                        }
-                        className={cn(
-                          'bg-background hover:bg-accent inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-colors dark:bg-input/30',
-                          (off || here === 0) && 'opacity-50',
-                        )}
-                      >
-                        <span className='size-2.5 rounded-[3px]' style={{ background: colourOf(z.name) }} />
-                        {z.name}
-                        <span className='text-muted-foreground tabular-nums'>{here}</span>
-                        {off ? <EyeOff className='text-muted-foreground size-3' /> : <Eye className='text-muted-foreground size-3' />}
-                      </button>
-                    );
-                  })}
-                </div>
+                <ZoneList
+                  camera={camera}
+                  hidden={hidden}
+                  onToggle={(i) =>
+                    setHidden((h) => {
+                      const next = new Set(h);
+                      if (next.has(i)) next.delete(i);
+                      else next.add(i);
+                      return next;
+                    })
+                  }
+                />
               )}
             </CardContent>
           </Card>
@@ -278,9 +271,11 @@ function CameraView({ camera }: { camera: Camera }) {
               camera={camera}
               draft={draft}
               setDraft={setDraft}
-              colourOf={colourOf}
+              drawing={drawing}
+              setDrawing={setDrawing}
               onDone={() => {
                 setComposing(false);
+                setDrawing(false);
                 setDraft(EMPTY_DRAFT);
               }}
             />
@@ -319,6 +314,206 @@ function CameraView({ camera }: { camera: Camera }) {
   );
 }
 
+function ZoneList({ camera, hidden, onToggle }: { camera: Camera; hidden: Set<number>; onToggle: (i: number) => void }) {
+  const queryClient = useQueryClient();
+  const [editing, setEditing] = useState<number | null>(null);
+  const [name, setName] = useState('');
+  const [checking, setChecking] = useState<{ index: number; name: string } | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+  const rename = useMutation({
+    mutationFn: ({ zone, name }: { zone: CameraZone; name: string }) => {
+      const [where, pieces] = Object.entries(zone.outlines)[0]!;
+      return api.renameZone(camera.id, { word: zone.word, label: where, objectId: pieces[0]!.objectId, name });
+    },
+    onSuccess: async (result, { name }) => {
+      setChecking(null);
+      setEditing(null);
+      setDone(renamedNote(name, result.rules, result.events));
+      await Promise.all(['cameras', 'rules', 'events'].map((key) => queryClient.invalidateQueries({ queryKey: [key] })));
+    },
+  });
+  const zones = camera.zones.map((zone, index) => ({ zone, index }));
+  const active = zones.filter(({ zone }) => zone.rules.length > 0);
+  const other = zones.filter(({ zone }) => zone.rules.length === 0);
+
+  const row = ({ zone, index }: { zone: CameraZone; index: number }) => {
+    const off = hidden.has(index);
+    return (
+      <li key={index} className='flex min-h-9 min-w-0 items-center gap-2'>
+        {editing === index ? (
+          <form
+            className='flex min-w-0 flex-1 items-center gap-1.5'
+            onSubmit={(e) => {
+              e.preventDefault();
+              const trimmed = name.trim();
+              if (!trimmed) return;
+              rename.reset();
+              setChecking({ index, name: trimmed });
+            }}
+          >
+            <Input autoFocus aria-label={`New name for ${zone.name}`} maxLength={60} value={name} onChange={(e) => setName(e.target.value)} className='h-8 min-w-0' />
+            <Button type='submit' size='sm' disabled={!name.trim()}>
+              Next
+            </Button>
+            <Button
+              type='button'
+              size='sm'
+              variant='ghost'
+              onClick={() => {
+                setEditing(null);
+                setChecking(null);
+              }}
+            >
+              Cancel
+            </Button>
+          </form>
+        ) : (
+          <>
+            <span className='size-2.5 shrink-0 rounded-[3px]' style={{ background: colourAt(index) }} />
+            <span className='min-w-0 flex-1 truncate text-sm'>
+              <span className='font-medium'>{zone.name}</span>
+              {zone.name !== zone.word && <span className='text-muted-foreground'> · SAM 3.1: {zone.word}</span>}
+              {zone.rules.length > 0 && (
+                <span className='text-muted-foreground'>
+                  {' '}
+                  · {zone.rules.length} {zone.rules.length === 1 ? 'rule' : 'rules'}
+                </span>
+              )}
+            </span>
+            <Button
+              variant='ghost'
+              size='icon'
+              className='text-muted-foreground size-7'
+              aria-label={`Rename ${zone.name}`}
+              title='Rename'
+              onClick={() => {
+                setEditing(index);
+                setName(zone.name);
+                setChecking(null);
+                setDone(null);
+              }}
+            >
+              <Pencil />
+            </Button>
+            <Button
+              variant='ghost'
+              size='icon'
+              className='text-muted-foreground size-7'
+              aria-pressed={!off}
+              aria-label={off ? `Show ${zone.name}` : `Hide ${zone.name}`}
+              title={off ? 'Show' : 'Hide'}
+              onClick={() => onToggle(index)}
+            >
+              {off ? <EyeOff /> : <Eye />}
+            </Button>
+          </>
+        )}
+      </li>
+    );
+  };
+
+  return (
+    <div className='space-y-5'>
+      <ZoneGroup title='Active zones' note={active.length ? 'Watched by a rule.' : 'None yet. A zone becomes active when a rule watches it.'}>
+        {active.map(row)}
+      </ZoneGroup>
+      {checking && (
+        <RenameCheck
+          camera={camera}
+          zone={camera.zones[checking.index]!}
+          index={checking.index}
+          name={checking.name}
+          saving={rename.isPending}
+          onConfirm={() => rename.mutate({ zone: camera.zones[checking.index]!, name: checking.name })}
+          onBack={() => setChecking(null)}
+        />
+      )}
+      {rename.isError && <Notice tone='error'>{rename.error.message}</Notice>}
+      {done && <Notice>{done}</Notice>}
+      {other.length > 0 && (
+        <ZoneGroup title='Other zones' note='Found by setup. Nothing watches them until a rule does.' columns={2}>
+          {other.map(row)}
+        </ZoneGroup>
+      )}
+    </div>
+  );
+}
+
+function ZoneGroup({ title, note, columns = 1, children }: { title: string; note: string; columns?: 1 | 2; children: ReactNode }) {
+  return (
+    <section className='space-y-1.5'>
+      <div className='flex flex-wrap items-baseline gap-x-2'>
+        <h3 className='text-sm font-semibold'>{title}</h3>
+        <p className='text-muted-foreground text-xs'>{note}</p>
+      </div>
+      <ul className={cn('grid gap-x-4 gap-y-0.5', columns === 2 && 'sm:grid-cols-2')}>{children}</ul>
+    </section>
+  );
+}
+
+// Before a name is saved, the person sees the zone on every picture and confirms it is the same thing at every time of day.
+function RenameCheck({
+  camera,
+  zone,
+  index,
+  name,
+  saving,
+  onConfirm,
+  onBack,
+}: {
+  camera: Camera;
+  zone: CameraZone;
+  index: number;
+  name: string;
+  saving: boolean;
+  onConfirm: () => void;
+  onBack: () => void;
+}) {
+  return (
+    <div className='border-primary/40 space-y-3 rounded-lg border p-4' role='region' aria-label={`Check “${name}” on every picture`}>
+      <div>
+        <p className='font-medium'>
+          Is this “{name}” on every picture?
+        </p>
+        <p className='text-muted-foreground mt-0.5 text-xs'>The outlined area in each picture is what will be called “{name}”.</p>
+      </div>
+      <div className='grid gap-3 sm:grid-cols-3'>
+        {Object.entries(camera.pictures).map(([label, file]) => {
+          const pieces = zone.outlines[label] ?? [];
+          return (
+            <figure key={label} className='space-y-1.5'>
+              <PictureFrame
+                src={pictureUrl(camera.id, file)}
+                alt={`${camera.name}, ${label} picture, with ${zone.name} outlined`}
+                paths={pieces.map((o) => ({ key: o.objectId, d: o.path, colour: colourAt(index), style: 'selected' as const }))}
+              />
+              <figcaption className='text-muted-foreground text-xs'>
+                {title(label)}
+                {pieces.length === 0 && ': not outlined on this picture'}
+              </figcaption>
+            </figure>
+          );
+        })}
+      </div>
+      <div className='flex gap-2'>
+        <Button size='sm' onClick={onConfirm} disabled={saving}>
+          {saving && <Loader2 className='animate-spin' />}
+          Confirm
+        </Button>
+        <Button size='sm' variant='outline' onClick={onBack} disabled={saving}>
+          Back
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function renamedNote(name: string, rules: number, events: number): string {
+  const count = (n: number, one: string) => `${n} ${n === 1 ? one : `${one}s`}`;
+  if (rules === 0 && events === 0) return `Renamed to “${name}”.`;
+  return `Renamed to “${name}”. ${count(rules, 'rule')} and ${count(events, 'event')} now use the new name.`;
+}
+
 function SetupRunning() {
   const [seconds, setSeconds] = useState(0);
   useEffect(() => {
@@ -351,7 +546,7 @@ function SetupReport({ camera }: { camera: Camera }) {
         </div>
       </CardHeader>
       <CardContent className='grid gap-4 sm:grid-cols-3'>
-        <Stat label='Outlined' value={setup.zones.length} note='zones a rule can use' />
+        <Stat label='Outlined' value={camera.zones.length} note='zones a rule can use' />
         <Stat label='Found under another word' value={renamed.length} note={renamed.map((z) => `${z.item} → ${z.name}`).join(', ') || 'none'} />
         <Stat
           label='Seen but not outlined'
@@ -377,39 +572,44 @@ function RuleBuilder({
   camera,
   draft,
   setDraft,
-  colourOf,
+  drawing,
+  setDrawing,
   onDone,
 }: {
   camera: Camera;
   draft: Draft;
   setDraft: (update: (d: Draft) => Draft) => void;
-  colourOf: (word: string) => string;
+  drawing: boolean;
+  setDrawing: (drawing: boolean) => void;
   onDone: () => void;
 }) {
   const queryClient = useQueryClient();
   const [problem, setProblem] = useState<string | null>(null);
   const save = useMutation({
-    mutationFn: (zone: NewZone) =>
-      api.addRule({ camera: camera.id, sentence: draft.sentence.trim(), zone, activeHours: draft.limitHours ? { from: draft.from, to: draft.to } : null }),
+    mutationFn: (zones: NewZone[]) =>
+      api.addRule({ camera: camera.id, sentence: draft.sentence.trim(), zones, activeHours: draft.limitHours ? { from: draft.from, to: draft.to } : null }),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['rules'] });
+      await Promise.all(['rules', 'cameras'].map((key) => queryClient.invalidateQueries({ queryKey: [key] })));
       onDone();
     },
   });
   const set = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
+  const picked = draft.picks.flatMap((pick) => {
+    const index = camera.zones.findIndex((z) => holds(z, pick));
+    return index < 0 ? [] : [{ pick, zone: camera.zones[index]!, index }];
+  });
+  const count = picked.length + (draft.box ? 1 : 0);
 
   const submit = () => {
-    const c = draft.choice;
     if (!draft.sentence.trim()) return setProblem('Write the rule.');
-    if (!c) return setProblem(draft.zoneKind === 'outline' ? 'Select an outline on the picture.' : 'Draw the zone on the picture.');
-    if (!draft.name.trim()) return setProblem('Name the zone.');
-    if (c.kind === 'box' && !draft.question.trim()) return setProblem('Write the question Muse Spark Open answers about the box.');
+    if (count === 0) return setProblem('Select an outline on the picture, or draw a box.');
+    if (draft.box && !draft.boxName.trim()) return setProblem('Name the box.');
+    if (draft.box && !draft.question.trim()) return setProblem('Write the question Muse Spark Open answers about the box.');
     setProblem(null);
-    save.mutate(
-      c.kind === 'outline'
-        ? { kind: 'outline', name: draft.name.trim(), word: c.word, label: c.label, objectId: c.objectId }
-        : { kind: 'box', name: draft.name.trim(), box: c.box, question: draft.question.trim() },
-    );
+    save.mutate([
+      ...picked.map(({ pick }) => ({ kind: 'outline' as const, ...pick })),
+      ...(draft.box ? [{ kind: 'box' as const, name: draft.boxName.trim(), box: draft.box.box, question: draft.question.trim() }] : []),
+    ]);
   };
 
   return (
@@ -417,7 +617,7 @@ function RuleBuilder({
       <CardHeader>
         <div>
           <CardTitle>New rule</CardTitle>
-          <CardDescription>Plain English, on a zone of this camera.</CardDescription>
+          <CardDescription>Plain English, on one or more zones of this camera.</CardDescription>
         </div>
       </CardHeader>
       <CardContent>
@@ -442,57 +642,63 @@ function RuleBuilder({
           </div>
 
           <div className='space-y-2'>
-            <span className='text-sm font-medium'>Zone</span>
-            <Segmented
-              label='Kind of zone'
-              className='w-full [&>button]:flex-1'
-              value={draft.zoneKind}
-              onChange={(zoneKind) => set({ zoneKind, choice: null })}
-              options={[
-                { value: 'outline', label: 'SAM outline' },
-                { value: 'box', label: 'Drawn box' },
-              ]}
-            />
-            <div className='bg-muted/40 rounded-md border border-dashed px-3 py-2.5 text-sm'>
-              {draft.choice?.kind === 'outline' ? (
-                <span className='flex items-center gap-2'>
-                  <span className='size-2.5 rounded-[3px]' style={{ background: colourOf(draft.choice.word) }} />
-                  <span>
-                    <span className='font-medium'>{draft.choice.word}</span>
-                    <span className='text-muted-foreground'>, on the {draft.choice.label} picture</span>
-                  </span>
-                </span>
-              ) : draft.choice?.kind === 'box' ? (
-                <span>
-                  Box on the {draft.choice.label} picture{' '}
-                  <span className='text-muted-foreground tabular-nums'>
-                    ({draft.choice.box.right - draft.choice.box.left} × {draft.choice.box.bottom - draft.choice.box.top} px)
-                  </span>
-                </span>
-              ) : (
-                <span className='text-muted-foreground'>
-                  {draft.zoneKind === 'outline' ? 'Select an outline on the picture.' : 'Drag across the picture to draw the zone.'}
-                </span>
-              )}
-            </div>
+            <span className='text-sm font-medium'>Zones</span>
+            {count === 0 ? (
+              <p className='bg-muted/40 text-muted-foreground rounded-md border border-dashed px-3 py-2.5 text-sm'>Select an outline on the picture, or draw a box.</p>
+            ) : (
+              <ul className='divide-y rounded-md border'>
+                {picked.map(({ pick, zone, index }) => (
+                  <li key={`${pick.word}-${pick.label}-${pick.objectId}`} className='flex items-center gap-2 px-3 py-2 text-sm'>
+                    <span className='size-2.5 shrink-0 rounded-[3px]' style={{ background: colourAt(index) }} />
+                    <span className='min-w-0 flex-1 truncate font-medium'>{zone.name}</span>
+                    <Button
+                      variant='ghost'
+                      size='icon'
+                      className='text-muted-foreground size-7'
+                      aria-label={`Remove ${zone.name} from the rule`}
+                      onClick={() => set({ picks: draft.picks.filter((p) => p !== pick) })}
+                    >
+                      <X />
+                    </Button>
+                  </li>
+                ))}
+                {draft.box && (
+                  <li className='space-y-2 px-3 py-2.5 text-sm'>
+                    <div className='flex items-center gap-2'>
+                      <SquareDashed className='text-muted-foreground size-3.5 shrink-0' />
+                      <span className='flex-1'>
+                        Box on the {draft.box.label} picture{' '}
+                        <span className='text-muted-foreground tabular-nums'>
+                          ({draft.box.box.right - draft.box.box.left} × {draft.box.box.bottom - draft.box.box.top} px)
+                        </span>
+                      </span>
+                      <Button variant='ghost' size='icon' className='text-muted-foreground size-7' aria-label='Remove the box from the rule' onClick={() => set({ box: null })}>
+                        <X />
+                      </Button>
+                    </div>
+                    <div className='space-y-1.5'>
+                      <Label htmlFor='box-name'>Box name</Label>
+                      <Input id='box-name' maxLength={60} value={draft.boxName} onChange={(e) => set({ boxName: e.target.value })} placeholder='Doorway' />
+                    </div>
+                    <div className='space-y-1.5'>
+                      <Label htmlFor='question'>Question about the box</Label>
+                      <Input id='question' maxLength={300} value={draft.question} onChange={(e) => set({ question: e.target.value })} placeholder='Is the gate open?' />
+                    </div>
+                  </li>
+                )}
+              </ul>
+            )}
+            {!draft.box && (
+              <Button type='button' size='sm' variant={drawing ? 'default' : 'outline'} onClick={() => setDrawing(!drawing)}>
+                <SquareDashed />
+                {drawing ? 'Stop drawing' : 'Draw a box'}
+              </Button>
+            )}
             <p className='text-muted-foreground text-xs leading-relaxed'>
-              {draft.zoneKind === 'outline'
-                ? 'SAM 3.1 looks again only when something changes inside the outline, and compares its new outline with this one.'
-                : 'Muse Spark Open answers the question about the box whenever something changes inside it.'}
+              SAM 3.1 looks again only when something changes inside a zone. With several zones, the rule alerts only when all of them change in the same
+              check; select an outline again to remove it. A drawn box is answered by Muse Spark Open.
             </p>
           </div>
-
-          <div className='space-y-2'>
-            <Label htmlFor='zone-name'>Zone name</Label>
-            <Input id='zone-name' maxLength={60} value={draft.name} onChange={(e) => set({ name: e.target.value })} placeholder='Front door' />
-          </div>
-
-          {draft.zoneKind === 'box' && (
-            <div className='space-y-2'>
-              <Label htmlFor='question'>Question about the box</Label>
-              <Input id='question' maxLength={300} value={draft.question} onChange={(e) => set({ question: e.target.value })} placeholder='Is the gate open?' />
-            </div>
-          )}
 
           <div className='space-y-3'>
             <Label>
@@ -542,7 +748,7 @@ function SavedRules({ camera, rules, loading }: { camera: Camera; rules: SavedRu
   const queryClient = useQueryClient();
   const remove = useMutation({
     mutationFn: (id: number) => api.removeRule(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['rules'] }),
+    onSuccess: () => Promise.all(['rules', 'cameras'].map((key) => queryClient.invalidateQueries({ queryKey: [key] }))),
   });
 
   return (
@@ -550,7 +756,7 @@ function SavedRules({ camera, rules, loading }: { camera: Camera; rules: SavedRu
       <CardHeader>
         <div>
           <CardTitle>Rules on this camera</CardTitle>
-          <CardDescription>Each one watches its zone and alerts on Telegram.</CardDescription>
+          <CardDescription>Each one watches its zones and alerts on Telegram.</CardDescription>
         </div>
         {rules && <Badge variant='muted'>{rules.length}</Badge>}
       </CardHeader>
@@ -558,34 +764,42 @@ function SavedRules({ camera, rules, loading }: { camera: Camera; rules: SavedRu
         {loading && <Skeleton className='h-16' />}
         {rules?.length === 0 && <p className='text-muted-foreground text-sm'>No rules yet. Use a suggestion, or select an outline on the picture.</p>}
         <ul className='divide-y'>
-          {rules?.map((r) => (
-            <li key={r.id} className='flex items-start justify-between gap-3 py-3 first:pt-0 last:pb-0'>
-              <div className='min-w-0 space-y-1.5'>
-                <p className='text-sm'>{r.sentence}</p>
-                <div className='flex flex-wrap gap-1.5'>
-                  <Badge variant='outline'>{r.zone.name}</Badge>
-                  <Badge variant='muted'>{r.zone.kind === 'outline' ? 'SAM outline' : 'Drawn box'}</Badge>
-                  {r.activeHours && (
-                    <Badge variant='muted'>
-                      {pad(r.activeHours.from)} to {pad(r.activeHours.to)}
-                    </Badge>
-                  )}
+          {rules?.map((r) => {
+            const names = r.zones.map((z) => z.name);
+            return (
+              <li key={r.id} className='flex items-start justify-between gap-3 py-3 first:pt-0 last:pb-0'>
+                <div className='min-w-0 space-y-1.5'>
+                  <p className='text-sm'>{r.sentence}</p>
+                  <div className='flex flex-wrap gap-1.5'>
+                    {r.zones.map((z) => (
+                      <Badge key={z.name} variant='outline'>
+                        {z.kind === 'box' && <SquareDashed />}
+                        {z.name}
+                      </Badge>
+                    ))}
+                    {r.zones.length > 1 && <Badge variant='muted'>All must change</Badge>}
+                    {r.activeHours && (
+                      <Badge variant='muted'>
+                        {pad(r.activeHours.from)} to {pad(r.activeHours.to)}
+                      </Badge>
+                    )}
+                  </div>
                 </div>
-              </div>
-              <Button
-                variant='ghost'
-                size='icon'
-                className='text-muted-foreground hover:text-destructive size-8'
-                aria-label={`Remove the rule: ${r.sentence}`}
-                disabled={remove.isPending}
-                onClick={() => {
-                  if (confirm(`Remove the rule “${r.sentence}”? ${camera.name} stops watching ${r.zone.name}.`)) remove.mutate(r.id);
-                }}
-              >
-                <Trash2 />
-              </Button>
-            </li>
-          ))}
+                <Button
+                  variant='ghost'
+                  size='icon'
+                  className='text-muted-foreground hover:text-destructive size-8'
+                  aria-label={`Remove the rule: ${r.sentence}`}
+                  disabled={remove.isPending}
+                  onClick={() => {
+                    if (confirm(`Remove the rule “${r.sentence}”? ${camera.name} stops watching ${names.join(' and ')} for it.`)) remove.mutate(r.id);
+                  }}
+                >
+                  <Trash2 />
+                </Button>
+              </li>
+            );
+          })}
         </ul>
         {remove.isError && <Notice tone='error' className='mt-3'>{remove.error.message}</Notice>}
       </CardContent>

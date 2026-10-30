@@ -33,14 +33,6 @@ export class TelegramSender {
     return sent[0]!.message_id;
   }
 
-  async editCaption(messageId: number, caption: string): Promise<void> {
-    const form = new FormData();
-    form.set('chat_id', this.#chatId);
-    form.set('message_id', String(messageId));
-    form.set('caption', caption);
-    await this.#post('editMessageCaption', form);
-  }
-
   sendClip(mp4: Uint8Array, caption: string): Promise<number> {
     return this.#send('sendVideo', 'video', new Blob([new Uint8Array(mp4)], { type: 'video/mp4' }), 'alert.mp4', caption);
   }

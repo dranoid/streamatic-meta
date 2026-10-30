@@ -34,9 +34,17 @@ export function CamerasPage() {
 
 function CameraCard({ camera, ruleCount }: { camera: Camera; ruleCount: number }) {
   const label = Object.keys(camera.pictures)[0]!;
-  const zones = camera.setup?.zones ?? [];
-  const paths = zones.flatMap((z, i) =>
-    (z.outlines[label] ?? []).map((o) => ({ key: `${z.name}-${o.objectId}`, d: o.path, colour: ZONE_COLOURS[i % ZONE_COLOURS.length]!, style: 'fill' as const })),
+  const zones = camera.zones;
+  const active = zones.filter((z) => z.rules.length > 0);
+  // The card shows the zones rules watch; before any rule, everything setup found.
+  const shown = active.length > 0 ? active : zones;
+  const paths = shown.flatMap((z) =>
+    (z.outlines[label] ?? []).map((o) => ({
+      key: `${z.word}-${o.objectId}`,
+      d: o.path,
+      colour: ZONE_COLOURS[zones.indexOf(z) % ZONE_COLOURS.length]!,
+      style: 'fill' as const,
+    })),
   );
 
   return (
@@ -54,7 +62,8 @@ function CameraCard({ camera, ruleCount }: { camera: Camera; ruleCount: number }
           <ArrowRight className='text-muted-foreground group-hover:text-foreground mt-0.5 size-4 shrink-0 transition-colors' />
         </div>
         <div className='mt-auto flex flex-wrap gap-1.5'>
-          {camera.setup ? <Badge variant='success'>{zones.length} zones outlined</Badge> : <Badge variant='muted'>Not set up</Badge>}
+          {camera.setup ? <Badge variant='success'>{zones.length} zones found</Badge> : <Badge variant='muted'>Not set up</Badge>}
+          {camera.setup && <Badge variant='outline'>{active.length} active</Badge>}
           <Badge variant='outline'>
             {ruleCount} {ruleCount === 1 ? 'rule' : 'rules'}
           </Badge>

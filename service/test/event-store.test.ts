@@ -23,19 +23,10 @@ function event(at: number, overrides: Partial<NewEvent> = {}): NewEvent {
 const store = () => new EventStore(':memory:', 'Africa/Lagos');
 
 describe('EventStore', () => {
-  it('returns an added event by its id, with no second opinion yet', () => {
+  it('returns an added event by its id', () => {
     const events = store();
     const id = events.add(event(EVENING));
-    expect(events.get(id)).toEqual({ id, ...event(EVENING), secondOpinion: null });
-  });
-
-  it('records the second opinion on the event it judged', () => {
-    const events = store();
-    const id = events.add(event(EVENING));
-    const other = events.add(event(LATE));
-    events.setSecondOpinion(id, { confirmed: true, reason: 'The door is open.' });
-    expect(events.get(id)?.secondOpinion).toEqual({ confirmed: true, reason: 'The door is open.' });
-    expect(events.get(other)?.secondOpinion).toBeNull();
+    expect(events.get(id)).toEqual({ id, ...event(EVENING) });
   });
 
   it('counts and lists only the events inside the local hours asked, across midnight', () => {
