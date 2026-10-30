@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import type { Zone } from './zone-rule.js';
+import type { Zone, ZoneRule } from './zone-rule.js';
 
 export interface NewRule {
   camera: string;
@@ -74,4 +74,11 @@ function toRule(row: Row): SavedRule {
     zones: JSON.parse(row.zones) as Zone[],
     activeHours: row.active_from === null || row.active_to === null ? null : { from: row.active_from, to: row.active_to },
   };
+}
+
+// Three pictures 3 s apart decide a check; after an alert, a rule stays quiet for 5 minutes.
+export const RULE_TIMING = { samples: 3, sampleGapMs: 3_000, cooldownMs: 5 * 60_000 };
+
+export function zoneRule(saved: SavedRule, timing: Pick<ZoneRule, 'samples' | 'sampleGapMs' | 'cooldownMs'>): ZoneRule {
+  return { sentence: saved.sentence, zones: saved.zones, ...(saved.activeHours === null ? {} : { activeHours: saved.activeHours }), ...timing };
 }

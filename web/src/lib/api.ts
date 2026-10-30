@@ -43,6 +43,8 @@ export interface Camera {
   pictures: Record<string, string>;
   setup: CameraSetup | null;
   zones: CameraZone[];
+  // Set when the camera plays a recording on a loop as its pictures; at is the recorded time of the picture playing.
+  playing: { at: number | null } | null;
 }
 
 export type Zone =
@@ -118,4 +120,5 @@ export const api = {
 
 export const pictureUrl = (camera: string, file: string) =>
   `/camera-pictures/${encodeURIComponent(camera)}/${encodeURIComponent(file)}`;
+export const nowUrl = (camera: string, at: number) => `/api/cameras/${encodeURIComponent(camera)}/now?at=${at}`;
 export const mediaUrl = (file: string) => `/media/${encodeURIComponent(file)}`;

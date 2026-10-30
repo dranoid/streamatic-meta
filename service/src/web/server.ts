@@ -62,6 +62,7 @@ export function appHandler({
   planner,
   timeZone,
   now = Date.now,
+  playing = () => null,
 }: {
   events: EventStore;
   rules: RuleStore;
@@ -72,6 +73,8 @@ export function appHandler({
   planner: QuestionPlanner;
   timeZone: string;
   now?: () => number;
+  // For a camera playing its recording on a loop, the picture playing and its recorded time (null before the first).
+  playing?: (camera: string) => { at: number | null; picture: Uint8Array | null } | null;
 }): (request: IncomingMessage, response: ServerResponse) => void {
   const settingUp = new Set<string>();
 
@@ -124,6 +127,13 @@ export function appHandler({
       const file = decodeURIComponent(match[2]!);
       return sendFile(response, file, await cameras.picture(decodeURIComponent(match[1]!), file));
     }
+    if (method === 'GET' && (match = /^\/api\/cameras\/([^/]+)\/now$/.exec(path))) {
+      const picture = playing(decodeURIComponent(match[1]!))?.picture;
+      if (!picture) return send(response, 404, { error: 'This camera is not playing a recording.' });
+      response.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-store' });
+      response.end(picture);
+      return;
+    }
     if (method === 'POST' && (match = /^\/api\/cameras\/([^/]+)\/setup$/.exec(path))) {
       return send(response, 200, await runSetup(decodeURIComponent(match[1]!)));
     }
@@ -154,10 +164,11 @@ export function appHandler({
   }
 
   // Each zone with the rules that watch it, found by place, so the camera page can tell active zones from the rest.
-  function withRules(camera: Camera) {
+  function withRules({ episode, ...camera }: Camera) {
     const onCamera = rules.list(camera.id);
     return {
       ...camera,
+      playing: episode ? { at: playing(camera.id)?.at ?? null } : null,
       zones: camera.zones.map((zone) => ({
         ...zone,
         rules: onCamera.filter((r) => r.zones.some((z) => z.kind === 'outline' && zoneAt(camera.zones, z.word, z.reference) === zone)).map((r) => r.id),

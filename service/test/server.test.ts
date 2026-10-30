@@ -35,12 +35,13 @@ const setupResult: CameraSetup = {
 let server: Server | undefined;
 afterEach(() => new Promise<void>((done) => (server ? server.close(() => done()) : done())));
 
-async function start({ plan, setUp }: { plan?: Plan; setUp?: () => Promise<CameraSetup> } = {}) {
+async function start({ plan, setUp, playing }: { plan?: Plan; setUp?: () => Promise<CameraSetup>; playing?: { at: number | null; picture: Uint8Array | null } } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'app-'));
   const web = join(root, 'web');
   const media = join(root, 'media');
   const camera = join(root, 'cameras', 'table-parlour');
   await Promise.all([mkdir(web), mkdir(media), mkdir(camera, { recursive: true })]);
+  if (playing) await mkdir(join(camera, 'episode'));
   await Promise.all([
     writeFile(join(web, 'index.html'), '<title>Streamatic</title>'),
     mkdir(join(web, 'assets')).then(() => writeFile(join(web, 'assets', 'app.js'), 'console.log(1)')),
@@ -49,7 +50,12 @@ async function start({ plan, setUp }: { plan?: Plan; setUp?: () => Promise<Camer
     writeFile(join(camera, 'night.jpg'), 'night bytes'),
     writeFile(
       join(camera, 'camera.json'),
-      JSON.stringify({ name: 'Table parlour', site: 'a family home', baseWords: ['door'], pictures: { day: 'day.jpg', night: 'night.jpg' } }),
+      JSON.stringify({
+        name: 'Table parlour',
+        site: 'a family home',
+        baseWords: ['door'],
+        pictures: { day: 'day.jpg', night: 'night.jpg' },
+      }),
     ),
   ]);
   const events = new EventStore(':memory:', 'Africa/Lagos');
@@ -83,6 +89,7 @@ async function start({ plan, setUp }: { plan?: Plan; setUp?: () => Promise<Camer
       },
       timeZone: 'Africa/Lagos',
       now: () => AT + 60_000,
+      playing: (id) => (playing && id === 'table-parlour' ? playing : null),
     }),
   );
   await new Promise<void>((done) => server!.listen(0, '127.0.0.1', done));
@@ -155,10 +162,19 @@ describe('cameras', () => {
   it('lists each camera with its pictures, before setup has run', async () => {
     const { json, base } = await start();
     expect((await json('/api/cameras')).body).toEqual([
-      { id: 'table-parlour', name: 'Table parlour', site: 'a family home', baseWords: ['door'], pictures: { day: 'day.jpg', night: 'night.jpg' }, setup: null, zones: [] },
+      { id: 'table-parlour', name: 'Table parlour', site: 'a family home', baseWords: ['door'], pictures: { day: 'day.jpg', night: 'night.jpg' }, setup: null, zones: [], playing: null },
     ]);
     expect(await (await fetch(`${base}/camera-pictures/table-parlour/day.jpg`)).text()).toBe('day bytes');
     expect((await fetch(`${base}/camera-pictures/table-parlour/..%2Fcamera.json`)).status).toBe(404);
+  });
+
+  it('says when a camera is playing its recording on a loop, with the time and picture playing', async () => {
+    const { json, base } = await start({ playing: { at: AT, picture: new TextEncoder().encode('now bytes') } });
+    expect((await json('/api/cameras')).body[0].playing).toEqual({ at: AT });
+    const now = await fetch(`${base}/api/cameras/table-parlour/now`);
+    expect(now.headers.get('content-type')).toBe('image/jpeg');
+    expect(await now.text()).toBe('now bytes');
+    expect((await fetch(`${base}/api/cameras/amosu/now`)).status).toBe(404);
   });
 
   it("runs setup on the camera's labelled pictures and keeps the result", async () => {

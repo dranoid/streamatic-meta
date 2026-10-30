@@ -10,9 +10,9 @@ import { Input, Label, Select, Textarea } from '@/components/ui/input';
 import { Notice } from '@/components/ui/notice';
 import { Segmented } from '@/components/ui/segmented';
 import { Skeleton } from '@/components/ui/skeleton';
-import { api, pictureUrl, type Box, type Camera, type CameraZone, type NewZone, type SavedRule } from '@/lib/api';
+import { api, nowUrl, pictureUrl, type Box, type Camera, type CameraZone, type NewZone, type SavedRule } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { sentence } from '@/lib/time';
+import { dateAndTime, sentence } from '@/lib/time';
 
 // One SAM outline the person selected, as setup knows it: the zone is the one that holds this piece.
 type Pick = { word: string; label: string; objectId: string };
@@ -31,6 +31,7 @@ interface Draft {
 const EMPTY_DRAFT: Draft = { sentence: '', picks: [], box: null, boxName: '', question: '', limitHours: false, from: 21, to: 6 };
 const MIN_BOX = 12;
 const MAX_ZONES_PER_RULE = 4;
+const NOW = 'now';
 
 const title = (label: string) => label[0]!.toUpperCase() + label.slice(1);
 const pad = (h: number) => `${String(h).padStart(2, '0')}:00`;
@@ -38,7 +39,8 @@ const colourAt = (i: number) => ZONE_COLOURS[i % ZONE_COLOURS.length]!;
 const holds = (zone: CameraZone, pick: Pick) => zone.word === pick.word && !!zone.outlines[pick.label]?.some((o) => o.objectId === pick.objectId);
 
 export function CameraPage({ id }: { id: string }) {
-  const cameras = useQuery({ queryKey: ['cameras'], queryFn: api.cameras });
+  // A camera playing its recording moves on every second or two, so its page follows while it is open.
+  const cameras = useQuery({ queryKey: ['cameras'], queryFn: api.cameras, refetchInterval: (q) => (q.state.data?.some((c) => c.playing) ? 2_000 : false) });
   const camera = cameras.data?.find((c) => c.id === id);
 
   if (cameras.isPending) return <Skeleton className='h-[32rem] rounded-xl' />;
@@ -51,6 +53,7 @@ function CameraView({ camera }: { camera: Camera }) {
   const queryClient = useQueryClient();
   const labels = Object.keys(camera.pictures);
   const zones = camera.zones;
+  const playingAt = camera.playing?.at ?? null;
   const [label, setLabel] = useState(labels[0]!);
   // Zones no rule watches start hidden once any zone is active, so the picture shows what is being watched.
   const [hidden, setHidden] = useState<Set<number>>(() =>
@@ -85,7 +88,9 @@ function CameraView({ camera }: { camera: Camera }) {
       return { ...d, picks: [...d.picks, pick] };
     });
 
-  const paths: DrawnPath[] = zones.flatMap((z, i) =>
+  // "Now" is the picture the recording is playing; zones are selected on setup's pictures, so none are drawn on it.
+  const now = label === NOW;
+  const paths: DrawnPath[] = now ? [] : zones.flatMap((z, i) =>
     composing || !hidden.has(i)
       ? (z.outlines[label] ?? []).map((o) => ({
           key: `${i}-${o.objectId}`,
@@ -139,6 +144,7 @@ function CameraView({ camera }: { camera: Camera }) {
             <>
               <Badge variant='success'>{zones.length} zones found</Badge>
               <Badge variant='outline'>{zones.filter((z) => z.rules.length > 0).length} active</Badge>
+              {camera.playing && <PlayingBadge />}
             </>
           ) : (
             <Badge variant='muted'>Not set up</Badge>
@@ -175,12 +181,17 @@ function CameraView({ camera }: { camera: Camera }) {
                     : 'The three pictures setup works from: by day, at dusk and at night.'}
                 </CardDescription>
               </div>
-              <Segmented label='Picture' value={label} onChange={setLabel} options={labels.map((l) => ({ value: l, label: title(l) }))} />
+              <Segmented
+                label='Picture'
+                value={label}
+                onChange={setLabel}
+                options={[...(camera.playing ? [{ value: NOW, label: 'Now' }] : []), ...labels.map((l) => ({ value: l, label: title(l) }))]}
+              />
             </CardHeader>
             <CardContent className='space-y-5'>
               <div
                 onPointerDown={(e) => {
-                  if (!drawing) return;
+                  if (!drawing || now) return;
                   const p = toPicture(e);
                   if (!p) return;
                   e.currentTarget.setPointerCapture(e.pointerId);
@@ -205,15 +216,16 @@ function CameraView({ camera }: { camera: Camera }) {
                 }}
               >
                 <PictureFrame
-                  src={pictureUrl(camera.id, camera.pictures[label]!)}
-                  alt={`${camera.name}, ${label} picture`}
+                  src={now ? (playingAt === null ? null : nowUrl(camera.id, playingAt)) : pictureUrl(camera.id, camera.pictures[label]!)}
+                  alt={now ? `${camera.name}, the recording playing now` : `${camera.name}, ${label} picture`}
                   paths={drawing ? [] : paths}
-                  box={drawnBox}
-                  drawing={drawing}
+                  box={now ? null : drawnBox}
+                  drawing={drawing && !now}
                   onPicture={(el) => (svg.current = el)}
                   className={cn(composing && 'ring-primary/60 ring-2')}
                 >
-                  {composing && (
+                  {now && playingAt !== null && <OverlayChip className='bottom-2 left-2'>Recorded {dateAndTime(playingAt)}</OverlayChip>}
+                  {composing && !now && (
                     <OverlayChip className='bottom-2 left-2 flex items-center gap-1.5'>
                       {drawing ? <SquareDashed className='size-3.5' /> : <MousePointerClick className='size-3.5' />}
                       {drawing ? 'Drag across the picture to draw the box' : 'Select the outlines this rule watches'}
@@ -311,6 +323,15 @@ function CameraView({ camera }: { camera: Camera }) {
         </div>
       </div>
     </>
+  );
+}
+
+function PlayingBadge() {
+  return (
+    <Badge variant='gold' title='This camera plays a recording on a loop, and its rules run on it as they would on the camera.'>
+      <span className='bg-gold size-1.5 animate-pulse rounded-full' />
+      Recording on a loop
+    </Badge>
   );
 }
 

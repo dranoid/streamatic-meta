@@ -15,7 +15,8 @@ import { clockTime, dateAndTime, sentence, shortDate } from '@/lib/time';
 const EXAMPLES = ['How many times was the front door opened after 9 pm yesterday?', 'List the events in the last 7 days.'];
 
 export function EventsPage() {
-  const events = useQuery({ queryKey: ['events'], queryFn: api.events });
+  // Live rules add events while the page is open.
+  const events = useQuery({ queryKey: ['events'], queryFn: api.events, refetchInterval: 15_000 });
 
   return (
     <>

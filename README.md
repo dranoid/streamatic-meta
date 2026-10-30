@@ -46,7 +46,9 @@ cd ../service && npm run serve -- <app folder>
 ```
 
 The app folder holds `cameras/<id>/` (a `camera.json` naming the camera, its site and its day, dusk and night
-pictures), and the app keeps its rules and events there. `web/` is the app (React and Tailwind); `service/` is
+pictures), and the app keeps its rules and events there. A camera with a recording in `cameras/<id>/episode/`
+(a video with `episode.json` giving when it started, or gateway batch folders) plays it on a loop as its
+pictures, at the speed it was recorded, and its saved rules run on it as they would on the camera. `web/` is the app (React and Tailwind); `service/` is
 the API, the camera setup, the rules and the alerts.
 
 ## Licence

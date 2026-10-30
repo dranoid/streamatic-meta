@@ -175,6 +175,32 @@ describe('runZoneRule on a box zone', () => {
   });
 });
 
+describe('runZoneRule on pictures arriving in parts', () => {
+  it('waits for the pictures a check needs, then alerts as it would on the whole run', async () => {
+    const frames = doorFrames();
+    const opened = frames[6]!.at;
+    const sam = fakeSam((tag) => (tag === opened ? doorLeaf : doorClosed));
+
+    const early = await runZoneRule({ rule: doorRule, frames: frames.slice(0, 5), sam, crop: async (p) => p, timeZone: 'Africa/Lagos', live: true });
+    expect(sam.asked).toEqual([]);
+    expect(early.alerts).toEqual([]);
+
+    const later = await runZoneRule({ rule: doorRule, frames, sam, crop: async (p) => p, timeZone: 'Africa/Lagos', live: true, progress: early.progress });
+    expect(later.alerts.map((a) => a.picture?.at)).toEqual([opened]);
+  });
+
+  it('never checks the same change twice when the same pictures come round again', async () => {
+    const frames = doorFrames();
+    const sam = fakeSam((tag) => (tag === frames[6]!.at ? doorLeaf : doorClosed));
+    const first = await runZoneRule({ rule: doorRule, frames, sam, crop: async (p) => p, timeZone: 'Africa/Lagos', live: true });
+
+    const again = await runZoneRule({ rule: doorRule, frames, sam, crop: async (p) => p, timeZone: 'Africa/Lagos', live: true, progress: first.progress });
+
+    expect(again.checks).toEqual([]);
+    expect(sam.asked).toHaveLength(3);
+  });
+});
+
 describe('runZoneRule on two zones', () => {
   // The light sits top left, in picture pixels 10–30 by 10–30; its change-check pixel is (2, 2).
   const lightOn = { left: 10, top: 10, right: 30, bottom: 30 };

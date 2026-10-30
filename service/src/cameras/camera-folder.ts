@@ -1,4 +1,4 @@
-import { readdir, readFile, writeFile } from 'node:fs/promises';
+import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import type { LabelledPicture, CameraSetup } from '../setup/camera-setup.js';
 import { cameraZones, type CameraZone, type ZoneName } from './camera-zones.js';
@@ -14,9 +14,12 @@ export interface Camera {
   setup: CameraSetup | null;
   // Setup's outlines as the things they are, each under the name people use for it; empty before setup.
   zones: CameraZone[];
+  // The folder of a recording the app plays on a loop as this camera's pictures; null for a camera with only its setup pictures.
+  episode: string | null;
 }
 
-// One folder per camera under <root>/cameras: camera.json, its pictures, setup.json once setup has run, and zone-names.json.
+// One folder per camera under <root>/cameras: camera.json, its pictures, setup.json once setup has run, zone-names.json,
+// and episode/ when it has a recording to play.
 export class CameraFolder {
   constructor(private readonly root: string) {}
 
@@ -33,8 +36,9 @@ export class CameraFolder {
     if (config === null) return null;
     const saved = await readFile(join(dir, 'setup.json'), 'utf8').catch(() => null);
     const { name, site, baseWords, pictures } = JSON.parse(config) as Pick<Camera, 'name' | 'site' | 'baseWords' | 'pictures'>;
+    const episode = (await stat(join(dir, 'episode')).catch(() => null))?.isDirectory() ? join(dir, 'episode') : null;
     const setup = saved === null ? null : (JSON.parse(saved) as CameraSetup);
-    return { id, name, site, baseWords, pictures, setup, zones: setup ? cameraZones(setup, await this.zoneNames(id)) : [] };
+    return { id, name, site, baseWords, pictures, setup, zones: setup ? cameraZones(setup, await this.zoneNames(id)) : [], episode };
   }
 
   async zoneNames(id: string): Promise<ZoneName[]> {

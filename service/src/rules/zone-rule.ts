@@ -59,6 +59,12 @@ const CHANGED_SHARE = 0.02;
 // Below this overlap with the reference outline, the thing is no longer as it was at setup.
 const SAME_OUTLINE_OVERLAP = 0.7;
 
+// Where a rule got to on pictures that keep arriving: the last picture it looked at, and when its cooldown ends.
+export interface RuleProgress {
+  scannedTo: number;
+  quietUntil: number;
+}
+
 interface ZoneVerdict {
   verdict: boolean;
   shownIn: number | null;
@@ -73,6 +79,8 @@ export async function runZoneRule({
   judge,
   crop,
   timeZone,
+  live = false,
+  progress = { scannedTo: -Infinity, quietUntil: -Infinity },
 }: {
   rule: ZoneRule;
   frames: Frame[];
@@ -80,17 +88,25 @@ export async function runZoneRule({
   judge?: BoxJudge;
   crop: (picture: Picture, box: Box) => Promise<Picture>;
   timeZone: string;
-}): Promise<{ checks: ZoneCheck[]; alerts: ZoneAlert[] }> {
+  // Live, more pictures are on their way, so a check waits until the pictures it samples have arrived.
+  live?: boolean;
+  progress?: RuleProgress;
+}): Promise<{ checks: ZoneCheck[]; alerts: ZoneAlert[]; progress: RuleProgress }> {
   const boxes = rule.zones.map(zoneBox);
   const words = [...new Set(rule.zones.flatMap((z) => (z.kind === 'outline' ? [z.word] : [])))];
   const checks: ZoneCheck[] = [];
   const alerts: ZoneAlert[] = [];
-  let quietUntil = -Infinity;
+  let { scannedTo, quietUntil } = progress;
+  const latest = frames[frames.length - 1]?.at ?? -Infinity;
 
   for (let i = 1; i < frames.length; i++) {
     const current = frames[i]!;
-    if (current.at < quietUntil || !isActive(rule, current.at, timeZone)) continue;
-    if (!boxes.some((box) => zoneChanged(frames[i - 1]!, current, box))) continue;
+    if (current.at <= scannedTo) continue;
+    if (current.at < quietUntil || !isActive(rule, current.at, timeZone) || !boxes.some((box) => zoneChanged(frames[i - 1]!, current, box))) {
+      scannedTo = current.at;
+      continue;
+    }
+    if (live && latest < current.at + (rule.samples - 1) * rule.sampleGapMs) break;
 
     const window = pickWindow(frames, i, rule);
     // One SAM call a picture covers every outline zone, however many the rule has.
@@ -125,8 +141,9 @@ export async function runZoneRule({
     }
     // The pictures the check looked at are spent; scanning resumes after the last of them.
     i = frames.indexOf(window[window.length - 1]!);
+    scannedTo = frames[i]!.at;
   }
-  return { checks, alerts };
+  return { checks, alerts, progress: { scannedTo, quietUntil } };
 }
 
 function pickWindow(frames: Frame[], start: number, rule: ZoneRule): Frame[] {
