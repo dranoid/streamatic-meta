@@ -5,6 +5,7 @@ import { z } from 'zod';
 import type { Camera, CameraFolder } from '../cameras/camera-folder.js';
 import { zoneAt, type CameraZone } from '../cameras/camera-zones.js';
 import type { EventStore } from '../events/store.js';
+import { planRule, type GuidePlanner } from '../guide/plan.js';
 import { answerQuestion, type QuestionPlanner } from '../questions/answer.js';
 import type { BacktestRunner } from '../rules/backtests.js';
 import { SETTLED_BY, type NewRule, type RuleStore } from '../rules/rule-store.js';
@@ -44,6 +45,7 @@ const ruleInput = z.object({
   activeHours: z.object({ from: hour, to: hour }).nullable(),
   settledBy: z.enum(SETTLED_BY).optional(),
 });
+const guideInput = z.object({ camera: text(80), sentence: text(300) });
 const zoneNameInput = z.object({ word: text(60), label: text(30), objectId: text(10), name: text(60) });
 
 class RequestError extends Error {
@@ -64,6 +66,7 @@ export function appHandler({
   webDir,
   planner,
   ruleReader,
+  guidePlanner,
   backtests,
   timeZone,
   now = Date.now,
@@ -77,6 +80,7 @@ export function appHandler({
   webDir: string;
   planner: QuestionPlanner;
   ruleReader: RuleReader;
+  guidePlanner: GuidePlanner;
   backtests: BacktestRunner;
   timeZone: string;
   now?: () => number;
@@ -164,6 +168,13 @@ export function appHandler({
       if (!parsed.success) throw new RequestError(400, `The rule needs a sentence and 1 to ${MAX_ZONES_PER_RULE} zones; a drawn box needs a name and a question.`);
       const rule = await resolveRule(parsed.data);
       return send(response, 201, rules.get(rules.add(rule)));
+    }
+    if (method === 'POST' && path === '/api/guide/plans') {
+      const parsed = guideInput.safeParse(await readJson(request));
+      if (!parsed.success) throw new RequestError(400, 'Tell the guide what to watch.');
+      const camera = await cameras.get(parsed.data.camera);
+      if (!camera) throw new RequestError(404, 'No such camera.');
+      return send(response, 200, await planRule({ sentence: parsed.data.sentence, site: camera.site, zones: camera.zones, planner: guidePlanner }));
     }
     if (method === 'POST' && path === '/api/backtests') {
       const parsed = ruleInput.safeParse(await readJson(request));

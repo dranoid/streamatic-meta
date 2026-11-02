@@ -48,7 +48,7 @@ describe('backtest', () => {
     const frames = pictures(moved);
     const whole = await runZoneRule({ ...common, rule: gateRule(0), frames, sam: fakeSam(frames, moved) });
 
-    const result = await backtest({ ...common, rule: gateRule(0), frames, sam: fakeSam(frames, moved), parts: 3 });
+    const result = await backtest({ ...common, rule: gateRule(0), frames, sam: fakeSam(frames, moved), parts: 3, atOnce: 2 });
 
     expect(result.alerts.map((a) => a.at)).toEqual(whole.alerts.map((a) => a.at));
     expect(result.alerts.map((a) => a.at)).toEqual(moved.map((i) => frames[i]!.at));
@@ -59,7 +59,7 @@ describe('backtest', () => {
     const frames = pictures(moved);
     const whole = await runZoneRule({ ...common, rule: gateRule(5 * SECOND), frames, sam: fakeSam(frames, moved) });
 
-    const result = await backtest({ ...common, rule: gateRule(5 * SECOND), frames, sam: fakeSam(frames, moved), parts: 3 });
+    const result = await backtest({ ...common, rule: gateRule(5 * SECOND), frames, sam: fakeSam(frames, moved), parts: 3, atOnce: 2 });
 
     expect(whole.alerts.map((a) => a.at)).toEqual([frames[9]!.at]);
     expect(result.alerts.map((a) => a.at)).toEqual([frames[9]!.at]);
@@ -76,7 +76,7 @@ describe('backtest', () => {
     };
     const whole = await runZoneRule({ ...common, rule: gateRule(0), frames, sam });
 
-    const result = await backtest({ ...common, rule: gateRule(0), frames, sam, parts: 3 });
+    const result = await backtest({ ...common, rule: gateRule(0), frames, sam, parts: 3, atOnce: 2 });
 
     expect(whole.alerts.map((a) => a.at)).toEqual([frames[8]!.at]);
     expect(result.alerts.map((a) => a.at)).toEqual([frames[8]!.at]);
@@ -86,7 +86,7 @@ describe('backtest', () => {
     const frames = pictures([5]);
     const reached: number[] = [];
 
-    await backtest({ ...common, rule: gateRule(0), frames, sam: fakeSam(frames, [5]), parts: 2, onProgress: (checked) => reached.push(checked) });
+    await backtest({ ...common, rule: gateRule(0), frames, sam: fakeSam(frames, [5]), parts: 2, atOnce: 2, onProgress: (checked) => reached.push(checked) });
 
     expect(reached[reached.length - 1]).toBe(frames.length);
   });

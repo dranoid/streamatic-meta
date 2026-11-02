@@ -85,6 +85,23 @@ export interface Trial {
   alerts: Array<{ at: number; pictureAt: number | null; zones: string[]; outlines: string[] }>;
 }
 
+export interface GuidePlan {
+  sentence: string;
+  zones: string[];
+  // Placed over the named zone when over is set; otherwise the person draws it.
+  box: { name: string; question: string; over: string | null } | null;
+  hours: { from: number; to: number } | null;
+}
+
+export interface PlanAttempt {
+  plan: GuidePlan;
+  problems: string[];
+}
+
+export type PlanResult =
+  | { status: 'ready'; plan: GuidePlan; attempts: PlanAttempt[] }
+  | { status: 'needs-person'; problems: string[]; attempts: PlanAttempt[] };
+
 export interface StoredEvent {
   id: number;
   camera: string;
@@ -130,6 +147,7 @@ export const api = {
   startTrial: (rule: NewRule) =>
     request<{ id: number; rule: Omit<SavedRule, 'id'> }>('/api/backtests', { method: 'POST', body: JSON.stringify(rule) }),
   trial: (id: number) => request<Trial>(`/api/backtests/${id}`),
+  planRule: (camera: string, sentence: string) => request<PlanResult>('/api/guide/plans', { method: 'POST', body: JSON.stringify({ camera, sentence }) }),
   renameZone: (camera: string, zone: { word: string; label: string; objectId: string; name: string }) =>
     request<{ zones: CameraZone[]; rules: number; events: number }>(`/api/cameras/${encodeURIComponent(camera)}/zones`, {
       method: 'PATCH',

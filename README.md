@@ -33,6 +33,9 @@ open), from a change between pictures 10 s apart (a belt running), or from a bri
   it once and confirm it on every picture; SAM keeps searching by its own word.
 - **A guide that does the setup with you.** Type one sentence. The guide shows its plan as a checklist,
   then works the app in front of you. A step is ticked only when the app shows it done and you confirm it.
+  Muse Spark Open drafts the plan, and code checks it against the camera's zones and hours before anything
+  is done. A refused plan goes back to Muse Spark Open with what was wrong, up to three times, and then to
+  you. The model never marks a step done.
 - **Questions about the week.** "How many times was the gate open after 10 pm?" Muse Spark picks the query,
   the events table does the counting, and every answer opens the moment it refers to.
 

@@ -9,6 +9,7 @@ export async function backtest({
   rule,
   frames,
   parts,
+  atOnce,
   onProgress,
   ...models
 }: {
@@ -18,26 +19,36 @@ export async function backtest({
   judge?: BoxJudge;
   crop: (picture: Picture, box: Box) => Promise<Picture>;
   timeZone: string;
+  // The pictures are cut into this many parts, of which atOnce run at a time; small parts let progress move often.
   parts: number;
+  atOnce: number;
   // Called as each part finishes, with how many of the pictures have been checked.
   onProgress?: (checked: number) => void;
 }): Promise<{ checks: number; alerts: ZoneAlert[] }> {
   const size = Math.ceil(frames.length / parts);
   const reach = (rule.samples - 1) * rule.sampleGapMs;
   let checked = 0;
-  const results = await Promise.all(
-    Array.from({ length: parts }, async (_, k) => {
-      const start = k * size;
-      const end = Math.min(frames.length, start + size);
-      if (start >= end) return { checks: [], alerts: [] };
-      const lastAt = frames[end - 1]!.at;
-      // A part starts one picture early, to compare its first picture with the one before, and runs on only as far as a check's later pictures reach.
-      const part = [...frames.slice(Math.max(0, start - 1), end), ...frames.slice(end).filter((f) => f.at <= lastAt + reach)];
-      const result = await runZoneRule({ ...models, rule, frames: part });
-      checked += end - start;
-      onProgress?.(checked);
-      const own = (at: number) => at <= lastAt;
-      return { checks: result.checks.filter((c) => own(c.at)), alerts: result.alerts.filter((a) => own(checkStart(a))) };
+  const runPart = async (k: number) => {
+    const start = k * size;
+    const end = Math.min(frames.length, start + size);
+    if (start >= end) return { checks: [], alerts: [] };
+    const lastAt = frames[end - 1]!.at;
+    // A part starts one picture early, to compare its first picture with the one before, and runs on only as far as a check's later pictures reach.
+    const part = [...frames.slice(Math.max(0, start - 1), end), ...frames.slice(end).filter((f) => f.at <= lastAt + reach)];
+    const result = await runZoneRule({ ...models, rule, frames: part });
+    checked += end - start;
+    onProgress?.(checked);
+    const own = (at: number) => at <= lastAt;
+    return { checks: result.checks.filter((c) => own(c.at)), alerts: result.alerts.filter((a) => own(checkStart(a))) };
+  };
+  const results: Array<Awaited<ReturnType<typeof runPart>>> = new Array(parts);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(atOnce, parts) }, async () => {
+      while (next < parts) {
+        const k = next++;
+        results[k] = await runPart(k);
+      }
     }),
   );
 

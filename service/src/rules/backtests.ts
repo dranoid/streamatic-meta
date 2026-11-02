@@ -54,6 +54,7 @@ export class Backtests implements BacktestRunner {
       crop: (picture: Picture, box: Box) => Promise<Picture>;
       timeZone: string;
       parts: number;
+      atOnce: number;
     },
   ) {}
 
@@ -67,8 +68,8 @@ export class Backtests implements BacktestRunner {
     const job: BacktestJob = { id: this.#nextId++, state: 'running', pictures: frames.length, checked: 0, checks: 0, alerts: [] };
     this.#jobs.set(job.id, job);
     for (const id of this.#jobs.keys()) if (this.#jobs.size > KEPT_JOBS) this.#jobs.delete(id);
-    const { sam, judge, crop, timeZone, parts } = this.options;
-    backtest({ rule: zoneRule({ id: 0, ...rule }), frames, sam, judge, crop, timeZone, parts, onProgress: (checked) => (job.checked = checked) }).then(
+    const { sam, judge, crop, timeZone, parts, atOnce } = this.options;
+    backtest({ rule: zoneRule({ id: 0, ...rule }), frames, sam, judge, crop, timeZone, parts, atOnce, onProgress: (checked) => (job.checked = checked) }).then(
       (result) => {
         job.checks = result.checks;
         job.alerts = result.alerts.map((a) => ({ at: a.at, pictureAt: a.picture?.at ?? null, zones: a.zones, outlines: a.outlines.map((o) => o.path) }));

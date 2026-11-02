@@ -21,6 +21,7 @@ import { SamClient } from '../sam/client.js';
 import { setUpCamera } from '../setup/camera-setup.js';
 import { SparkBoxJudge } from '../spark/box-judge.js';
 import { SparkClient } from '../spark/client.js';
+import { SparkGuidePlanner } from '../spark/guide-planner.js';
 import { SparkQuestionPlanner } from '../spark/question-planner.js';
 import { SparkRuleReader } from '../spark/rule-reader.js';
 import { SparkSetupPlanner } from '../spark/setup-planner.js';
@@ -38,8 +39,10 @@ const timeZone = 'Africa/Lagos';
 const POLL_MS = 2_000;
 // The clip player shows this much either side of the pictures a check judged.
 const AROUND_MS = 10_000;
-// A rule tried on stored pictures runs in this many parts side by side; SAM itself takes two calls at a time.
-const BACKTEST_PARTS = 8;
+// A rule tried on stored pictures runs in this many small parts, so its progress moves often, 8 at a time;
+// SAM itself takes two calls at a time.
+const BACKTEST_PARTS = 48;
+const BACKTEST_AT_ONCE = 8;
 const sam = new SamClient({ apiKey: metaKey });
 const spark = new SparkClient({ apiKey: basetenKey });
 const database = join(folder, 'events.db');
@@ -99,7 +102,8 @@ const handler = appHandler({
   webDir: fileURLToPath(new URL('../../../web/dist/', import.meta.url)),
   planner: new SparkQuestionPlanner(spark),
   ruleReader: new SparkRuleReader(spark),
-  backtests: new Backtests({ ...keepAnswers({ sam, judge: new SparkBoxJudge(spark), crop: cropPicture }), timeZone, parts: BACKTEST_PARTS }),
+  guidePlanner: new SparkGuidePlanner(spark),
+  backtests: new Backtests({ ...keepAnswers({ sam, judge: new SparkBoxJudge(spark), crop: cropPicture }), timeZone, parts: BACKTEST_PARTS, atOnce: BACKTEST_AT_ONCE }),
   timeZone,
   playing: (id) => {
     const now = playing.get(id)?.playing;

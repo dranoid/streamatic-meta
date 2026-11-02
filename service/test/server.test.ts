@@ -102,6 +102,9 @@ async function start({
       ruleReader: {
         read: async (sentence, asked) => (ruleReads.push({ sentence, questions: asked }), reading ?? { settledBy: 'one-picture', questions: asked }),
       },
+      guidePlanner: {
+        draft: async ({ sentence, zones }) => ({ sentence, zones: zones.length ? [zones[zones.length - 1]!.name] : ['door'], box: null, hours: { from: 21, to: 6 } }),
+      },
       backtests: {
         start: async (camera, rule) => (tried.push({ camera: camera.id, rule }), 7),
         get: (id) => (id === 7 ? { id: 7, state: 'done', checked: 3, pictures: 3, checks: 0, alerts: [] } : null),
@@ -290,6 +293,38 @@ describe('rules', () => {
 
     expect(ruleReads).toEqual([]);
     expect(saved.body).toMatchObject({ settledBy: 'brief-change', zones: [{ question: 'Is someone coming through the doorway?' }] });
+  });
+});
+
+describe('the guide', () => {
+  it("plans a rule on the camera's zones and returns the plan with its checked attempts", async () => {
+    const { post } = await start();
+    await post('/api/cameras/table-parlour/setup', {});
+
+    const planned = await post('/api/guide/plans', { camera: 'table-parlour', sentence: 'Tell me if the front door opens at night.' });
+
+    expect(planned.status).toBe(200);
+    expect(planned.body).toEqual({
+      status: 'ready',
+      plan: { sentence: 'Tell me if the front door opens at night.', zones: ['door 2'], box: null, hours: { from: 21, to: 6 } },
+      attempts: [expect.objectContaining({ problems: [] })],
+    });
+  });
+
+  it('asks a person when no plan passes, saying what was wrong', async () => {
+    const { post } = await start();
+
+    const planned = await post('/api/guide/plans', { camera: 'table-parlour', sentence: 'Tell me if the front door opens at night.' });
+
+    expect(planned.body.status).toBe('needs-person');
+    expect(planned.body.attempts).toHaveLength(3);
+    expect(planned.body.problems[0]).toMatch(/"door" is not a zone on this camera/);
+  });
+
+  it('refuses an empty request and a camera that does not exist', async () => {
+    const { post } = await start();
+    expect((await post('/api/guide/plans', { camera: 'table-parlour', sentence: ' ' })).status).toBe(400);
+    expect((await post('/api/guide/plans', { camera: 'nowhere', sentence: 'Tell me if the door opens.' })).status).toBe(404);
   });
 });
 

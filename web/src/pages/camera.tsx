@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Cctv, Clock, Eye, EyeOff, History, Loader2, MousePointerClick, Pencil, Plus, ScanSearch, Sparkles, SquareDashed, Trash2, Wand2, X } from 'lucide-react';
+import { Cctv, Check, Clock, Compass, Eye, EyeOff, History, Loader2, MousePointerClick, Pencil, Plus, ScanSearch, Sparkles, SquareDashed, Trash2, Wand2, X } from 'lucide-react';
 import { PageHeader } from '@/components/layout/page-header';
 import { OverlayChip, PictureFrame, ZONE_COLOURS, type DrawnPath } from '@/components/picture-frame';
 import { Badge } from '@/components/ui/badge';
@@ -10,7 +10,7 @@ import { Input, Label, Select, Textarea } from '@/components/ui/input';
 import { Notice } from '@/components/ui/notice';
 import { Segmented } from '@/components/ui/segmented';
 import { Skeleton } from '@/components/ui/skeleton';
-import { api, nowUrl, pictureUrl, storedUrl, type Box, type Camera, type CameraZone, type NewRule, type NewZone, type SavedRule, type Trial } from '@/lib/api';
+import { api, nowUrl, pictureUrl, storedUrl, type Box, type Camera, type CameraZone, type GuidePlan, type NewRule, type NewZone, type PlanAttempt, type SavedRule, type Trial } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { dateAndTime, sentence, shortDate } from '@/lib/time';
 
@@ -27,6 +27,8 @@ interface Draft {
   from: number;
   to: number;
 }
+
+type GuideRun = { plan: GuidePlan; attempts: PlanAttempt[] };
 
 const EMPTY_DRAFT: Draft = { sentence: '', picks: [], box: null, boxName: '', question: '', limitHours: false, from: 21, to: 6 };
 const MIN_BOX = 12;
@@ -76,10 +78,19 @@ function CameraView({ camera }: { camera: Camera }) {
   });
   const ticked = new Set(draft.picks.map((p) => zones.findIndex((z) => holds(z, p))));
 
+  const [guide, setGuide] = useState<GuideRun | null>(null);
+  const [guideNote, setGuideNote] = useState<string | null>(null);
+
   const startRule = (next: Draft) => {
     setComposing(true);
     setDrawing(false);
     setDraft(next);
+  };
+  // The guide opens the rule builder with only the sentence; each step then fills in its part where it can be seen.
+  const startGuide = (run: GuideRun) => {
+    setGuide(run);
+    setGuideNote(null);
+    startRule({ ...EMPTY_DRAFT, sentence: run.plan.sentence });
   };
   const toggle = (i: number, pick: Pick) =>
     setDraft((d) => {
@@ -285,13 +296,26 @@ function CameraView({ camera }: { camera: Camera }) {
               setDraft={setDraft}
               drawing={drawing}
               setDrawing={setDrawing}
-              onDone={() => {
+              label={label}
+              guide={guide}
+              onDone={(saved) => {
+                if (guide && saved) {
+                  setGuideNote(
+                    saved.checked
+                      ? `Saved and checked: “${saved.rule.sentence}” is on this camera with the zones and hours you confirmed.`
+                      : `“${saved.rule.sentence}” was saved, but it does not match what you confirmed. Check it in the rules below.`,
+                  );
+                }
+                setGuide(null);
                 setComposing(false);
                 setDrawing(false);
                 setDraft(EMPTY_DRAFT);
               }}
             />
           ) : (
+            camera.setup && <GuideCard camera={camera} note={guideNote} onPlanned={startGuide} onBuildYourself={(text) => startRule({ ...EMPTY_DRAFT, sentence: text })} />
+          )}
+          {!composing &&
             camera.setup &&
             camera.setup.rules.length > 0 && (
               <Card>
@@ -317,8 +341,7 @@ function CameraView({ camera }: { camera: Camera }) {
                   </ul>
                 </CardContent>
               </Card>
-            )
-          )}
+            )}
           <SavedRules camera={camera} rules={rules.data} loading={rules.isPending} />
         </div>
       </div>
@@ -595,6 +618,8 @@ function RuleBuilder({
   setDraft,
   drawing,
   setDrawing,
+  label,
+  guide,
   onDone,
 }: {
   camera: Camera;
@@ -602,7 +627,10 @@ function RuleBuilder({
   setDraft: (update: (d: Draft) => Draft) => void;
   drawing: boolean;
   setDrawing: (drawing: boolean) => void;
-  onDone: () => void;
+  // The picture showing, so the guide selects zones where they can be seen.
+  label: string;
+  guide: GuideRun | null;
+  onDone: (saved?: { rule: SavedRule; checked: boolean }) => void;
 }) {
   const queryClient = useQueryClient();
   const [problem, setProblem] = useState<string | null>(null);
@@ -610,9 +638,16 @@ function RuleBuilder({
   const [trial, setTrial] = useState<{ id: number; rule: Omit<SavedRule, 'id'>; input: string } | null>(null);
   const save = useMutation({
     mutationFn: (rule: NewRule) => api.addRule(rule),
-    onSuccess: async () => {
+    onSuccess: async (saved, input) => {
       await Promise.all(['rules', 'cameras'].map((key) => queryClient.invalidateQueries({ queryKey: [key] })));
-      onDone();
+      // The rule is read back from the server and compared with what was sent, so saving is never ticked on trust.
+      const back = (await api.rules(camera.id)).find((r) => r.id === saved.id);
+      const checked =
+        !!back &&
+        back.sentence === input.sentence &&
+        JSON.stringify(back.activeHours) === JSON.stringify(input.activeHours) &&
+        back.zones.length === input.zones.length;
+      onDone({ rule: saved, checked });
     },
   });
   const startTrial = useMutation({
@@ -641,6 +676,8 @@ function RuleBuilder({
     activeHours: draft.limitHours ? { from: draft.from, to: draft.to } : null,
   };
   const tried = trial !== null && trial.input === JSON.stringify(rule) && trialRun.data?.state === 'done' ? trial.rule : null;
+  const trialBusy =
+    startTrial.isPending || (trial !== null && trial.input === JSON.stringify(rule) && trialRun.data?.state !== 'done' && trialRun.data?.state !== 'failed');
 
   const ready = () => {
     if (!draft.sentence.trim()) return setProblem('Write the rule.'), false;
@@ -660,15 +697,187 @@ function RuleBuilder({
     save.mutate({ ...rule, ...asTried });
   };
 
+  // The guide's steps. A step is ticked only while the page still shows what the person confirmed, so changing
+  // a zone or the hours later takes the tick off that step and every step after it.
+  const [confirmed, setConfirmed] = useState<Record<string, string>>({});
+  const [acted, setActed] = useState<Record<string, string>>({});
+  const plan = guide?.plan ?? null;
+  const named = (name: string) => camera.zones.find((z) => z.name.toLowerCase() === name.trim().toLowerCase());
+  const shownOn = (zone: CameraZone) => (zone.outlines[label] ? label : Object.keys(zone.outlines)[0]!);
+  const pickedNames = new Set(picked.map(({ zone }) => zone.name.toLowerCase()));
+  const zonesPlaced =
+    plan !== null &&
+    pickedNames.size === plan.zones.length &&
+    plan.zones.every((n) => pickedNames.has(n.trim().toLowerCase())) &&
+    (plan.box ? !!draft.box && !!draft.boxName.trim() && !!draft.question.trim() : !draft.box);
+  const steps: GuideStep[] = !plan
+    ? []
+    : [
+        {
+          key: 'plan',
+          title: 'Check the plan',
+          detail: <PlanSummary plan={plan} attempts={guide!.attempts} />,
+          ready: true,
+          snapshot: JSON.stringify(plan),
+          confirm: 'The plan is right',
+        },
+        {
+          key: 'zones',
+          title: plan.box && plan.box.over === null ? 'Place the zones and draw the box' : 'Place the zones',
+          detail:
+            plan.box && plan.box.over === null
+              ? `Draw the box over the ${plan.box.name} on the picture.`
+              : 'Selected on the picture. Select an outline to add or remove it.',
+          ready: zonesPlaced,
+          waiting: plan.box && plan.box.over === null ? 'Waiting for the box' : 'Waiting for the zones',
+          snapshot: JSON.stringify([draft.picks, draft.box, draft.boxName, draft.question]),
+          actKey: 'once',
+          act: () => {
+            const over = plan.box?.over ? named(plan.box.over) : undefined;
+            const pieces = over ? over.outlines[shownOn(over)]! : [];
+            setDraft((d) => ({
+              ...d,
+              picks: plan.zones.flatMap((n) => {
+                const z = named(n);
+                return z ? [{ word: z.word, label: shownOn(z), objectId: z.outlines[shownOn(z)]![0]!.objectId }] : [];
+              }),
+              box: over
+                ? {
+                    label: shownOn(over),
+                    box: {
+                      left: Math.min(...pieces.map((o) => o.box.left)),
+                      top: Math.min(...pieces.map((o) => o.box.top)),
+                      right: Math.max(...pieces.map((o) => o.box.right)),
+                      bottom: Math.max(...pieces.map((o) => o.box.bottom)),
+                    },
+                  }
+                : null,
+              boxName: plan.box?.name ?? '',
+              question: plan.box?.question ?? '',
+            }));
+            if (plan.box && plan.box.over === null) setDrawing(true);
+          },
+          confirm: 'These are the right places',
+        },
+        {
+          key: 'hours',
+          title: 'Set the hours',
+          detail: draft.limitHours ? `${pad(draft.from)} to ${pad(draft.to)}.` : 'All day.',
+          ready: true,
+          snapshot: JSON.stringify([draft.limitHours, draft.from, draft.to]),
+          actKey: 'once',
+          act: () => set(plan.hours ? { limitHours: true, from: plan.hours.from, to: plan.hours.to } : { limitHours: false }),
+          confirm: 'These hours are right',
+        },
+        ...(camera.stored
+          ? [
+              {
+                key: 'trial',
+                title: 'Try it on stored pictures (optional)',
+                detail:
+                  confirmed.trial === SKIPPED
+                    ? 'Skipped.'
+                    : tried
+                      ? 'The result is below. To change the rule, change the zones or the hours, then try it again.'
+                      : 'Shows when the rule would have alerted on the pictures this camera took in the past days. Nothing is saved or sent.',
+                ready: tried !== null,
+                waiting: trialBusy ? 'Waiting for the trial' : undefined,
+                snapshot: JSON.stringify(rule),
+                confirm: 'Keep this rule',
+                // A trial spends model calls, so it runs only when the person asks for it.
+                optional: { start: 'Try it on stored pictures', onStart: () => startTrial.mutate(rule), busy: trialBusy, skip: 'Skip this step' },
+              },
+            ]
+          : []),
+        {
+          key: 'save',
+          title: 'Save the rule',
+          detail: 'The saved rule is read back and compared with what you confirmed.',
+          ready: true,
+          snapshot: JSON.stringify(rule),
+          confirm: 'Save the rule',
+          onConfirm: submit,
+        },
+      ];
+  // A step can be confirmed only once the guide has done it on the page, so a quick confirmation never skips it.
+  const shown = (s: GuideStep) => s.ready && (!s.act || acted[s.key] === s.actKey);
+  const ticked = (s: GuideStep) => (s.optional && confirmed[s.key] === SKIPPED) || (shown(s) && confirmed[s.key] === s.snapshot);
+  const current = steps.findIndex((s) => !ticked(s));
+  const step = steps[current];
+  const due = step?.act && acted[step.key] !== step.actKey ? `${step.key}:${step.actKey}` : null;
+  // The guide does each step a moment after it comes up, so the person sees it happen on the page.
+  useEffect(() => {
+    if (!due || !step?.act) return;
+    const timer = setTimeout(() => {
+      setActed((a) => ({ ...a, [step.key]: step.actKey! }));
+      step.act!();
+    }, GUIDE_PAUSE_MS);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [due]);
+
   return (
     <Card className='border-primary/40'>
       <CardHeader>
         <div>
-          <CardTitle>New rule</CardTitle>
-          <CardDescription>Plain English, on one or more zones of this camera.</CardDescription>
+          <CardTitle>{guide ? 'New rule, with the guide' : 'New rule'}</CardTitle>
+          <CardDescription>
+            {guide ? 'Each step is ticked only when the page shows it done and you confirm it.' : 'Plain English, on one or more zones of this camera.'}
+          </CardDescription>
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className='space-y-5'>
+        {guide && (
+          <ol className='space-y-2' aria-label='Guide steps'>
+            {steps.map((s, i) => {
+              const done = ticked(s);
+              const now = i === current;
+              return (
+                <li key={s.key} className={cn('rounded-lg border p-3', now && 'border-primary/50 bg-primary/5', i > current && 'opacity-50')}>
+                  <div className='flex items-center gap-2'>
+                    {done ? (
+                      <span className='bg-primary text-primary-foreground flex size-5 items-center justify-center rounded-full'>
+                        <Check className='size-3.5' />
+                      </span>
+                    ) : (
+                      <span className='flex size-5 items-center justify-center rounded-full border text-xs tabular-nums'>{i + 1}</span>
+                    )}
+                    <span className='text-sm font-medium'>{s.title}</span>
+                  </div>
+                  {(now || done) && <div className='text-muted-foreground mt-1.5 pl-7 text-xs leading-relaxed'>{s.detail}</div>}
+                  {now && (
+                    <div className='mt-2 flex flex-wrap items-center gap-2 pl-7'>
+                      {s.optional && !shown(s) ? (
+                        <Button type='button' size='sm' disabled={s.optional.busy} onClick={s.optional.onStart}>
+                          {s.optional.busy && <Loader2 className='animate-spin' />}
+                          {s.optional.start}
+                        </Button>
+                      ) : (
+                        <Button
+                          type='button'
+                          size='sm'
+                          disabled={!shown(s) || save.isPending}
+                          onClick={() => (s.onConfirm ? s.onConfirm() : setConfirmed((c) => ({ ...c, [s.key]: s.snapshot })))}
+                        >
+                          {s.key === 'save' && save.isPending && <Loader2 className='animate-spin' />}
+                          {s.confirm}
+                        </Button>
+                      )}
+                      {s.optional && (
+                        <Button type='button' size='sm' variant='outline' onClick={() => setConfirmed((c) => ({ ...c, [s.key]: SKIPPED }))}>
+                          {s.optional.skip}
+                        </Button>
+                      )}
+                      {!shown(s) && (!s.optional || s.optional.busy) && (
+                        <span className='text-muted-foreground text-xs'>{s.ready || !s.waiting ? 'The guide is doing this step' : s.waiting}</span>
+                      )}
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ol>
+        )}
         <form
           className='space-y-5'
           noValidate
@@ -788,10 +997,12 @@ function RuleBuilder({
           {(problem || save.isError || startTrial.isError) && <Notice tone='error'>{problem ?? save.error?.message ?? startTrial.error?.message}</Notice>}
 
           <div className='flex flex-wrap gap-2'>
-            <Button type='submit' disabled={save.isPending}>
-              {save.isPending && <Loader2 className='animate-spin' />}
-              Save rule
-            </Button>
+            {!guide && (
+              <Button type='submit' disabled={save.isPending}>
+                {save.isPending && <Loader2 className='animate-spin' />}
+                Save rule
+              </Button>
+            )}
             {camera.stored && (
               <Button
                 type='button'
@@ -803,11 +1014,130 @@ function RuleBuilder({
                 Try on stored pictures
               </Button>
             )}
-            <Button variant='outline' onClick={onDone}>
+            <Button variant='outline' onClick={() => onDone()}>
               Cancel
             </Button>
           </div>
         </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+interface GuideStep {
+  key: string;
+  title: string;
+  detail: ReactNode;
+  // Whether the page shows the step done; the person's confirmation is asked for only then.
+  ready: boolean;
+  waiting?: string;
+  // What the page shows for this step; a confirmation holds only while this stays the same.
+  snapshot: string;
+  // What the guide does on the page when the step comes up, again whenever actKey changes.
+  act?: () => void;
+  actKey?: string;
+  confirm: string;
+  onConfirm?: () => void;
+  // A step the person may run or skip; the guide never runs it on its own.
+  optional?: { start: string; onStart: () => void; busy: boolean; skip: string };
+}
+
+// How long the guide waits before doing a step, so it can be seen happening.
+const GUIDE_PAUSE_MS = 700;
+// What an optional step's confirmation holds once the person skips it.
+const SKIPPED = 'skipped';
+
+function PlanSummary({ plan, attempts }: { plan: GuidePlan; attempts: PlanAttempt[] }) {
+  const refused = attempts.filter((a) => a.problems.length > 0);
+  return (
+    <div className='space-y-1'>
+      <p>Zones: {plan.zones.length ? plan.zones.join(', ') : 'none'}</p>
+      {plan.box && (
+        <p>
+          Box “{plan.box.name}”{plan.box.over ? ` over ${plan.box.over}` : ', for you to draw'}: {plan.box.question}
+        </p>
+      )}
+      <p>Hours: {plan.hours ? `${pad(plan.hours.from)} to ${pad(plan.hours.to)}` : 'all day'}</p>
+      <p>
+        {refused.length === 0
+          ? 'Checked against this camera’s zones: passed.'
+          : `Checked against this camera’s zones: refused ${refused.length === 1 ? 'once' : `${refused.length} times`}, corrected, then passed.`}
+      </p>
+      {refused.length > 0 && (
+        <ul className='list-disc space-y-0.5 pl-4'>
+          {refused.map((a, i) => (
+            <li key={i}>{a.problems.join(' ')}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function GuideCard({
+  camera,
+  note,
+  onPlanned,
+  onBuildYourself,
+}: {
+  camera: Camera;
+  note: string | null;
+  onPlanned: (run: GuideRun) => void;
+  onBuildYourself: (sentence: string) => void;
+}) {
+  const [text, setText] = useState('');
+  const planning = useMutation({
+    mutationFn: (sentence: string) => api.planRule(camera.id, sentence),
+    onSuccess: (result) => result.status === 'ready' && onPlanned({ plan: result.plan, attempts: result.attempts }),
+  });
+  const refused = planning.data?.status === 'needs-person' ? planning.data : null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div>
+          <CardTitle className='flex items-center gap-2'>
+            <Compass className='text-primary size-4' />
+            Guide
+          </CardTitle>
+          <CardDescription>Say what to watch. The guide plans the rule, does each step on this page, and waits for you to confirm it.</CardDescription>
+        </div>
+      </CardHeader>
+      <CardContent className='space-y-3'>
+        <form
+          className='space-y-3'
+          noValidate
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (text.trim()) planning.mutate(text.trim());
+          }}
+        >
+          <Label htmlFor='guide-request'>What should this camera watch?</Label>
+          <Textarea
+            id='guide-request'
+            rows={2}
+            maxLength={300}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder='Tell me if anyone is in the yard after 11 pm.'
+          />
+          <Button type='submit' disabled={planning.isPending || !text.trim()}>
+            {planning.isPending ? <Loader2 className='animate-spin' /> : <Compass />}
+            {planning.isPending ? 'Planning' : 'Plan the rule'}
+          </Button>
+        </form>
+        {note && <Notice>{note}</Notice>}
+        {planning.isError && <Notice tone='error'>{planning.error.message}</Notice>}
+        {refused && (
+          <div className='space-y-2'>
+            <Notice tone='error'>
+              The guide could not plan this rule on this camera after {refused.attempts.length} tries. {refused.problems.join(' ')}
+            </Notice>
+            <Button variant='outline' size='sm' onClick={() => onBuildYourself(text.trim())}>
+              Build it yourself
+            </Button>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
