@@ -24,6 +24,7 @@ const doorRule: SavedRule = {
   sentence: 'Alert me if the front door opens after 9 pm.',
   zones: [{ name: 'front door', kind: 'outline', word: 'door', reference: doorClosed, path: '' }],
   activeHours: { from: 21, to: 6 },
+  settledBy: 'brief-change',
 };
 
 function fakeSam() {
@@ -48,7 +49,6 @@ function live(parts: Frame[][], rules: () => SavedRule[], sam = fakeSam()) {
     sam,
     crop: async (p) => p,
     timeZone: 'Africa/Lagos',
-    timing: { samples: 3, sampleGapMs: 3 * SECOND, cooldownMs: 5 * 60 * SECOND },
     aroundMs: 2 * SECOND,
   });
 }

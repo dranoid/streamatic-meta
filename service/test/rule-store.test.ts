@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { RuleStore, type NewRule } from '../src/rules/rule-store.js';
+import { RuleStore, zoneRule, type NewRule } from '../src/rules/rule-store.js';
 
 const door: NewRule = {
   camera: 'table-parlour',
   sentence: 'Alert me if the front door opens after 9 pm.',
   zones: [{ name: 'front door', kind: 'outline', word: 'door', reference: { left: 869, top: 317, right: 1053, bottom: 592 }, path: 'M869 317Z' }],
   activeHours: { from: 21, to: 6 },
+  settledBy: 'one-picture',
 };
 
 const gate: NewRule = {
@@ -13,6 +14,7 @@ const gate: NewRule = {
   sentence: 'Tell me when a car is parked across the gate.',
   zones: [{ name: 'gate', kind: 'box', box: { left: 10, top: 20, right: 30, bottom: 40 }, question: 'Is a car parked across the gate?' }],
   activeHours: null,
+  settledBy: 'one-picture',
 };
 
 describe('RuleStore', () => {
@@ -38,5 +40,19 @@ describe('RuleStore', () => {
     expect(rules.remove(removed)).toBe(true);
     expect(rules.remove(removed)).toBe(false);
     expect(rules.list().map((r) => r.id)).toEqual([kept]);
+  });
+});
+
+describe('zoneRule', () => {
+  it('judges one picture when one picture settles the rule, and three pictures 3 s or 10 s apart for a brief change or a change', () => {
+    const timing = (settledBy: NewRule['settledBy']) => {
+      const { samples, sampleGapMs } = zoneRule({ id: 1, ...door, settledBy });
+      return [samples, sampleGapMs];
+    };
+    expect([timing('one-picture'), timing('brief-change'), timing('change')]).toEqual([
+      [1, 0],
+      [3, 3_000],
+      [3, 10_000],
+    ]);
   });
 });

@@ -15,11 +15,12 @@ describe('keepAnswers', () => {
 
     for (let pass = 0; pass < 2; pass++) {
       await kept.sam.outlineAll(door, ['door']);
-      await kept.judge.judge('Is the door open?', [{ label: 'picture 1', picture: await kept.crop(door, box) }]);
+      await kept.judge.judge('Is the door open?', [{ label: 'picture 1', picture: await kept.crop(door, box) }], 3);
     }
     await kept.sam.outlineAll(door, ['door', 'ceiling light']);
+    await kept.judge.judge('Is the door open?', [{ label: 'picture 1', picture: await kept.crop(door, box) }], 10);
 
-    expect(asked).toEqual(['sam door', 'spark Is the door open?', 'sam door,ceiling light']);
+    expect(asked).toEqual(['sam door', 'spark Is the door open?', 'sam door,ceiling light', 'spark Is the door open?']);
   });
 
   it('asks again on the next pass when a call failed', async () => {

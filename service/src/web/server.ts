@@ -6,9 +6,11 @@ import type { Camera, CameraFolder } from '../cameras/camera-folder.js';
 import { zoneAt, type CameraZone } from '../cameras/camera-zones.js';
 import type { EventStore } from '../events/store.js';
 import { answerQuestion, type QuestionPlanner } from '../questions/answer.js';
-import type { NewRule, RuleStore } from '../rules/rule-store.js';
+import type { BacktestRunner } from '../rules/backtests.js';
+import { SETTLED_BY, type NewRule, type RuleStore } from '../rules/rule-store.js';
 import type { Zone } from '../rules/zone-rule.js';
 import type { CameraSetup, LabelledPicture } from '../setup/camera-setup.js';
+import type { RuleReader } from '../spark/rule-reader.js';
 
 const MEDIA_TYPES: Record<string, string> = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.mp4': 'video/mp4' };
 const ASSET_TYPES: Record<string, string> = {
@@ -40,6 +42,7 @@ const ruleInput = z.object({
     .min(1)
     .max(MAX_ZONES_PER_RULE),
   activeHours: z.object({ from: hour, to: hour }).nullable(),
+  settledBy: z.enum(SETTLED_BY).optional(),
 });
 const zoneNameInput = z.object({ word: text(60), label: text(30), objectId: text(10), name: text(60) });
 
@@ -60,6 +63,8 @@ export function appHandler({
   mediaDir,
   webDir,
   planner,
+  ruleReader,
+  backtests,
   timeZone,
   now = Date.now,
   playing = () => null,
@@ -71,6 +76,8 @@ export function appHandler({
   mediaDir: string;
   webDir: string;
   planner: QuestionPlanner;
+  ruleReader: RuleReader;
+  backtests: BacktestRunner;
   timeZone: string;
   now?: () => number;
   // For a camera playing its recording on a loop, the picture playing and its recorded time (null before the first).
@@ -122,7 +129,15 @@ export function appHandler({
       return send(response, 200, { text: answer.text, count: answer.count, eventIds: answer.events.map((e) => e.id), plan: answer.plan });
     }
 
-    if (method === 'GET' && path === '/api/cameras') return send(response, 200, (await cameras.list()).map(withRules));
+    if (method === 'GET' && path === '/api/cameras') return send(response, 200, await Promise.all((await cameras.list()).map(withRules)));
+    if (method === 'GET' && (match = /^\/api\/cameras\/([^/]+)\/stored\/(\d+)$/.exec(path))) {
+      const camera = await cameras.get(decodeURIComponent(match[1]!));
+      const picture = camera ? await backtests.picture(camera, Number(match[2])) : null;
+      if (!picture) return send(response, 404, { error: 'No such picture.' });
+      response.writeHead(200, { 'Content-Type': 'image/jpeg' });
+      response.end(picture);
+      return;
+    }
     if (method === 'GET' && (match = /^\/camera-pictures\/([^/]+)\/([^/]+)$/.exec(path))) {
       const file = decodeURIComponent(match[2]!);
       return sendFile(response, file, await cameras.picture(decodeURIComponent(match[1]!), file));
@@ -150,6 +165,18 @@ export function appHandler({
       const rule = await resolveRule(parsed.data);
       return send(response, 201, rules.get(rules.add(rule)));
     }
+    if (method === 'POST' && path === '/api/backtests') {
+      const parsed = ruleInput.safeParse(await readJson(request));
+      if (!parsed.success) throw new RequestError(400, `The rule needs a sentence and 1 to ${MAX_ZONES_PER_RULE} zones; a drawn box needs a name and a question.`);
+      const camera = await cameras.get(parsed.data.camera);
+      if (camera && !camera.stored) throw new RequestError(409, 'This camera has no stored pictures to try the rule on.');
+      const rule = await resolveRule(parsed.data);
+      return send(response, 202, { id: await backtests.start(camera!, rule), rule });
+    }
+    if (method === 'GET' && (match = /^\/api\/backtests\/(\d+)$/.exec(path))) {
+      const job = backtests.get(Number(match[1]));
+      return job ? send(response, 200, job) : send(response, 404, { error: 'No such trial.' });
+    }
     if (method === 'DELETE' && (match = /^\/api\/rules\/(\d+)$/.exec(path))) {
       return rules.remove(Number(match[1])) ? send(response, 200, { removed: true }) : send(response, 404, { error: 'No such rule.' });
     }
@@ -164,11 +191,13 @@ export function appHandler({
   }
 
   // Each zone with the rules that watch it, found by place, so the camera page can tell active zones from the rest.
-  function withRules({ episode, ...camera }: Camera) {
+  async function withRules(full: Camera) {
+    const { episode, stored: _folder, ...camera } = full;
     const onCamera = rules.list(camera.id);
     return {
       ...camera,
       playing: episode ? { at: playing(camera.id)?.at ?? null } : null,
+      stored: await backtests.summary(full),
       zones: camera.zones.map((zone) => ({
         ...zone,
         rules: onCamera.filter((r) => r.zones.some((z) => z.kind === 'outline' && zoneAt(camera.zones, z.word, z.reference) === zone)).map((r) => r.id),
@@ -205,7 +234,13 @@ export function appHandler({
       const outline = zone.outlines[label]!.find((o) => o.objectId === objectId)!;
       return { name: zone.name, kind: 'outline', word, reference: outline.box, path: outline.path };
     });
-    return { camera: camera.id, sentence: input.sentence, zones, activeHours: input.activeHours };
+    // A rule already read, when it was tried on stored pictures, is saved as it was tried.
+    if (input.settledBy) return { camera: camera.id, sentence: input.sentence, zones, activeHours: input.activeHours, settledBy: input.settledBy };
+    // Asked only once the zones are valid, so a refused rule costs no call.
+    const reading = await ruleReader.read(input.sentence, zones.flatMap((z) => (z.kind === 'box' ? [z.question] : [])));
+    let next = 0;
+    const read = zones.map((z): Zone => (z.kind === 'box' ? { ...z, question: reading.questions[next++]! } : z));
+    return { camera: camera.id, sentence: input.sentence, zones: read, activeHours: input.activeHours, settledBy: reading.settledBy };
   }
 
   // A rule keeps its zone's box, so it finds its zone again by place; the name travels to its rules and their events.
@@ -232,7 +267,7 @@ export function appHandler({
     for (const old of oldNames) {
       if (old !== input.name) renamedEvents += events.renameZone(camera.name, old, input.name);
     }
-    return { zones: withRules((await cameras.get(camera.id))!).zones, rules: onZone.length, events: renamedEvents };
+    return { zones: (await withRules((await cameras.get(camera.id))!)).zones, rules: onZone.length, events: renamedEvents };
   }
 }
 

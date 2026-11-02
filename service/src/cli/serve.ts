@@ -14,13 +14,15 @@ import { keepAnswers } from '../live/answers-kept.js';
 import { EpisodeLoop, readEpisode } from '../live/episode.js';
 import { LiveCamera } from '../live/live-camera.js';
 import { cropPicture } from '../rules/frame.js';
-import { RULE_TIMING, RuleStore } from '../rules/rule-store.js';
+import { Backtests } from '../rules/backtests.js';
+import { RuleStore } from '../rules/rule-store.js';
 import { zoneOutline } from '../rules/zone-rule.js';
 import { SamClient } from '../sam/client.js';
 import { setUpCamera } from '../setup/camera-setup.js';
 import { SparkBoxJudge } from '../spark/box-judge.js';
 import { SparkClient } from '../spark/client.js';
 import { SparkQuestionPlanner } from '../spark/question-planner.js';
+import { SparkRuleReader } from '../spark/rule-reader.js';
 import { SparkSetupPlanner } from '../spark/setup-planner.js';
 import { appHandler } from '../web/server.js';
 
@@ -36,6 +38,8 @@ const timeZone = 'Africa/Lagos';
 const POLL_MS = 2_000;
 // The clip player shows this much either side of the pictures a check judged.
 const AROUND_MS = 10_000;
+// A rule tried on stored pictures runs in this many parts side by side; SAM itself takes two calls at a time.
+const BACKTEST_PARTS = 8;
 const sam = new SamClient({ apiKey: metaKey });
 const spark = new SparkClient({ apiKey: basetenKey });
 const database = join(folder, 'events.db');
@@ -49,13 +53,12 @@ const playing = new Map<string, EpisodeLoop>();
 for (const camera of await cameras.list()) {
   if (!camera.episode) continue;
   const loop = new EpisodeLoop({ frames: await readEpisode(camera.episode) });
-  const models = keepAnswers({ sam, judge: new SparkBoxJudge(spark, RULE_TIMING.sampleGapMs / 1000), crop: cropPicture });
+  const models = keepAnswers({ sam, judge: new SparkBoxJudge(spark), crop: cropPicture });
   const live = new LiveCamera({
     source: loop,
     rules: () => rules.list(camera.id),
     ...models,
     timeZone,
-    timing: RULE_TIMING,
     aroundMs: AROUND_MS,
   });
   playing.set(camera.id, loop);
@@ -95,6 +98,8 @@ const handler = appHandler({
   mediaDir,
   webDir: fileURLToPath(new URL('../../../web/dist/', import.meta.url)),
   planner: new SparkQuestionPlanner(spark),
+  ruleReader: new SparkRuleReader(spark),
+  backtests: new Backtests({ ...keepAnswers({ sam, judge: new SparkBoxJudge(spark), crop: cropPicture }), timeZone, parts: BACKTEST_PARTS }),
   timeZone,
   playing: (id) => {
     const now = playing.get(id)?.playing;

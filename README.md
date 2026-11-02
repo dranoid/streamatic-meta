@@ -12,6 +12,10 @@ Streamatic's cameras, video storage, alerts on Telegram and WhatsApp, and search
 None of that code is in this repository. The new work here calls the existing product's API like any other
 client.
 
+The way a rule's answer is settled also comes from the existing product: from one picture (a door standing
+open), from a change between pictures 10 s apart (a belt running), or from a brief change between pictures
+3 s apart (someone coming through a door). It is written afresh here for Muse Spark Open.
+
 ## What is built during the event
 
 - **A camera that sets itself up.** SAM 3.1 outlines what the camera sees under a list of everyday words
@@ -19,7 +23,12 @@ client.
   suggests the rules worth having, keeping SAM's own names so every rule is written in words SAM answers to.
 - **Rules on outlines.** A rule watches the outline SAM drew, not a box someone dragged by hand. SAM 3.1
   looks again only when something changes there. A rule can watch several zones at once ("the light is off
-  while the door is open") and alerts only when all of them change together.
+  while the door is open") and alerts only when all of them change together. Muse Spark Open reads from the
+  sentence whether one picture settles the rule or a change between pictures does. A box you draw yourself
+  carries a question that Muse Spark Open answers about that box.
+- **Try a rule before saving it.** A rule can be run over the pictures the camera took in the past days. It shows
+  every time the rule would have alerted, with the picture, so you can tighten the hours or change the zone
+  before anything is sent. An alert marks the answer becoming true; while it stays true, nothing more is sent.
 - **Zones named once.** Each zone is matched across the day, dusk and night pictures by its place. You name
   it once and confirm it on every picture; SAM keeps searching by its own word.
 - **A guide that does the setup with you.** Type one sentence. The guide shows its plan as a checklist,

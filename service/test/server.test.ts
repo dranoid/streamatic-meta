@@ -7,8 +7,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { CameraFolder } from '../src/cameras/camera-folder.js';
 import { EventStore } from '../src/events/store.js';
 import type { Plan } from '../src/questions/answer.js';
-import { RuleStore } from '../src/rules/rule-store.js';
+import { RuleStore, type NewRule } from '../src/rules/rule-store.js';
 import type { CameraSetup } from '../src/setup/camera-setup.js';
+import type { RuleReading } from '../src/spark/rule-reader.js';
 import { appHandler } from '../src/web/server.js';
 
 const AT = Date.UTC(2026, 9, 28, 20, 24, 15);
@@ -35,13 +36,26 @@ const setupResult: CameraSetup = {
 let server: Server | undefined;
 afterEach(() => new Promise<void>((done) => (server ? server.close(() => done()) : done())));
 
-async function start({ plan, setUp, playing }: { plan?: Plan; setUp?: () => Promise<CameraSetup>; playing?: { at: number | null; picture: Uint8Array | null } } = {}) {
+async function start({
+  plan,
+  setUp,
+  playing,
+  reading,
+  stored,
+}: {
+  plan?: Plan;
+  setUp?: () => Promise<CameraSetup>;
+  playing?: { at: number | null; picture: Uint8Array | null };
+  reading?: RuleReading;
+  stored?: boolean;
+} = {}) {
   const root = await mkdtemp(join(tmpdir(), 'app-'));
   const web = join(root, 'web');
   const media = join(root, 'media');
   const camera = join(root, 'cameras', 'table-parlour');
   await Promise.all([mkdir(web), mkdir(media), mkdir(camera, { recursive: true })]);
   if (playing) await mkdir(join(camera, 'episode'));
+  if (stored) await mkdir(join(camera, 'stored'));
   await Promise.all([
     writeFile(join(web, 'index.html'), '<title>Streamatic</title>'),
     mkdir(join(web, 'assets')).then(() => writeFile(join(web, 'assets', 'app.js'), 'console.log(1)')),
@@ -75,6 +89,8 @@ async function start({ plan, setUp, playing }: { plan?: Plan; setUp?: () => Prom
   ]);
   const questions: string[] = [];
   const setUpCalls: string[][] = [];
+  const ruleReads: Array<{ sentence: string; questions: string[] }> = [];
+  const tried: Array<{ camera: string; rule: NewRule }> = [];
   server = createServer(
     appHandler({
       events,
@@ -83,6 +99,15 @@ async function start({ plan, setUp, playing }: { plan?: Plan; setUp?: () => Prom
       mediaDir: media,
       webDir: web,
       planner: { plan: async (q) => (questions.push(q), plan ?? { tool: 'count', camera: null, zone: 'front door', period: 'all', hours: null }) },
+      ruleReader: {
+        read: async (sentence, asked) => (ruleReads.push({ sentence, questions: asked }), reading ?? { settledBy: 'one-picture', questions: asked }),
+      },
+      backtests: {
+        start: async (camera, rule) => (tried.push({ camera: camera.id, rule }), 7),
+        get: (id) => (id === 7 ? { id: 7, state: 'done', checked: 3, pictures: 3, checks: 0, alerts: [] } : null),
+        summary: async (camera) => (camera.stored ? { pictures: 3, from: AT - 2000, to: AT } : null),
+        picture: async () => null,
+      },
       setUp: async (_camera, pictures) => {
         setUpCalls.push(pictures.map((p) => `${p.label}:${new TextDecoder().decode(p.picture.bytes)}`));
         return setUp ? setUp() : setupResult;
@@ -102,7 +127,7 @@ async function start({ plan, setUp, playing }: { plan?: Plan; setUp?: () => Prom
     json(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const patch = (path: string, body: unknown) =>
     json(path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  return { base, eventId, questions, setUpCalls, json, post, patch };
+  return { base, eventId, questions, setUpCalls, ruleReads, tried, json, post, patch };
 }
 
 describe('pages', () => {
@@ -162,7 +187,7 @@ describe('cameras', () => {
   it('lists each camera with its pictures, before setup has run', async () => {
     const { json, base } = await start();
     expect((await json('/api/cameras')).body).toEqual([
-      { id: 'table-parlour', name: 'Table parlour', site: 'a family home', baseWords: ['door'], pictures: { day: 'day.jpg', night: 'night.jpg' }, setup: null, zones: [], playing: null },
+      { id: 'table-parlour', name: 'Table parlour', site: 'a family home', baseWords: ['door'], pictures: { day: 'day.jpg', night: 'night.jpg' }, setup: null, zones: [], playing: null, stored: null },
     ]);
     expect(await (await fetch(`${base}/camera-pictures/table-parlour/day.jpg`)).text()).toBe('day bytes');
     expect((await fetch(`${base}/camera-pictures/table-parlour/..%2Fcamera.json`)).status).toBe(404);
@@ -243,6 +268,55 @@ describe('rules', () => {
     const saved = await post('/api/rules', { ...outlineRule, zones: [{ ...box, question: 'Is the door open?' }] });
     expect(saved.status).toBe(201);
     expect(saved.body).toMatchObject({ zones: [{ kind: 'box', name: 'doorway', box: box.box, question: 'Is the door open?' }] });
+  });
+
+  it('saves what settles the rule and each box question as Spark Open read them from the sentence', async () => {
+    const reading: RuleReading = { settledBy: 'brief-change', questions: ['Is someone coming in through the door?'] };
+    const { post, ruleReads } = await start({ reading });
+    const box = { kind: 'box', name: 'doorway', box: { left: 10, top: 20, right: 30, bottom: 40 }, question: 'Is someone in the doorway?' };
+    const sentence = 'Alert me when someone comes through the front door.';
+
+    const saved = await post('/api/rules', { ...outlineRule, sentence, zones: [box] });
+
+    expect(ruleReads).toEqual([{ sentence, questions: ['Is someone in the doorway?'] }]);
+    expect(saved.body).toMatchObject({ settledBy: 'brief-change', zones: [{ name: 'doorway', question: 'Is someone coming in through the door?' }] });
+  });
+
+  it('saves a rule already read, as it was read, without asking Spark Open again', async () => {
+    const { post, ruleReads } = await start();
+    const box = { kind: 'box', name: 'doorway', box: { left: 10, top: 20, right: 30, bottom: 40 }, question: 'Is someone coming through the doorway?' };
+
+    const saved = await post('/api/rules', { ...outlineRule, zones: [box], settledBy: 'brief-change' });
+
+    expect(ruleReads).toEqual([]);
+    expect(saved.body).toMatchObject({ settledBy: 'brief-change', zones: [{ question: 'Is someone coming through the doorway?' }] });
+  });
+});
+
+describe('trying a rule on stored pictures', () => {
+  it('runs the rule as it would be saved on the camera’s stored pictures, returns how it went, and saves nothing', async () => {
+    const { json, post, tried } = await start({ stored: true });
+    await post('/api/cameras/table-parlour/setup', {});
+
+    const started = await post('/api/backtests', outlineRule);
+
+    expect(started.status).toBe(202);
+    expect(tried).toEqual([
+      { camera: 'table-parlour', rule: expect.objectContaining({ settledBy: 'one-picture', zones: [expect.objectContaining({ name: 'door 2', reference: doorBox })] }) },
+    ]);
+    expect((await json(`/api/backtests/${started.body.id}`)).body).toMatchObject({ state: 'done', pictures: 3 });
+    expect((await json('/api/rules')).body).toEqual([]);
+    expect((await json('/api/cameras')).body[0].stored).toEqual({ pictures: 3, from: AT - 2000, to: AT });
+  });
+
+  it('refuses a camera with no stored pictures, and runs nothing', async () => {
+    const { post, tried } = await start();
+    await post('/api/cameras/table-parlour/setup', {});
+
+    const refused = await post('/api/backtests', outlineRule);
+
+    expect(refused.status).toBe(409);
+    expect(tried).toEqual([]);
   });
 
   it('saves a rule on two zones of the same picture, each under its own name', async () => {

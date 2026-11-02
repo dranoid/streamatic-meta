@@ -1,6 +1,6 @@
 // Replays stored camera batches through one rule and prints the checks and alerts.
 // A saved rule (--app and --rule) brings its zone from setup; otherwise SAM outlines <word> at <x,y> in the first picture.
-// SAM is called only on a change inside the zone, three pictures each time; a drawn box asks Spark Open instead.
+// SAM is called only on a change inside the zone, on one picture or three as the rule is settled; a drawn box asks Spark Open instead.
 // --send sends each alert to the Telegram chat in ../.env. With --app, alerts are kept as the app's events; --store keeps them elsewhere.
 // npm run replay -- <batches dir> <out.json> --app=<app folder> --rule=<id> [--send] [--view=outlined|plain|both]
 // npm run replay -- <batches dir> <out.json> "<rule sentence>" <word> <x,y inside the thing> [from-hour to-hour]
@@ -16,7 +16,7 @@ import { keepAlert } from '../events/keep-alert.js';
 import { EventStore } from '../events/store.js';
 import { readEpisode } from '../live/episode.js';
 import { cropPicture } from '../rules/frame.js';
-import { RULE_TIMING, RuleStore, zoneRule } from '../rules/rule-store.js';
+import { RuleStore, SETTLED_BY, zoneRule } from '../rules/rule-store.js';
 import { runZoneRule, zoneOutline, type ZoneRule } from '../rules/zone-rule.js';
 import { SamClient } from '../sam/client.js';
 import { SparkBoxJudge } from '../spark/box-judge.js';
@@ -37,10 +37,11 @@ const [dir, outPath, sentence, word, point, fromHour, toHour] = args.filter((a) 
 const apiKey = process.env.META_MODEL_API_KEY;
 const basetenKey = process.env.BASETEN_API_KEY;
 const savedRule = flags.app !== undefined && flags.rule !== undefined;
-if (!dir || !outPath || !apiKey || (!savedRule && (!sentence || !word || !point))) {
+const settledBy = SETTLED_BY.find((s) => s === flags['settled-by']);
+if (!dir || !outPath || !apiKey || (!savedRule && (!sentence || !word || !point || !settledBy))) {
   console.error(
     'Usage: npm run replay -- <batches dir> <out.json> --app=<app folder> --rule=<id>\n' +
-      '   or: npm run replay -- <batches dir> <out.json> "<rule>" <word> <x,y> [from-hour to-hour]',
+      `   or: npm run replay -- <batches dir> <out.json> "<rule>" <word> <x,y> [from-hour to-hour] --settled-by=${SETTLED_BY.join('|')}`,
   );
   process.exit(1);
 }
@@ -49,7 +50,6 @@ const frames = await readEpisode(dir);
 
 const sam = new SamClient({ apiKey });
 const spark = basetenKey ? new SparkClient({ apiKey: basetenKey }) : null;
-const timing = RULE_TIMING;
 let rule: ZoneRule;
 let camera = flags.camera ?? 'Camera';
 let eventFolder = flags.store;
@@ -62,7 +62,7 @@ if (savedRule) {
   }
   camera = (await new CameraFolder(flags.app!).get(saved.camera))?.name ?? saved.camera;
   eventFolder = flags.app;
-  rule = zoneRule(saved, timing);
+  rule = zoneRule(saved);
 } else {
   const [px, py] = point!.split(',').map(Number) as [number, number];
   const atSetup = (await sam.outline(frames[0]!.picture, word!)).find(
@@ -72,16 +72,18 @@ if (savedRule) {
     console.error(`SAM found no "${word}" at ${point} in the first picture.`);
     process.exit(1);
   }
-  rule = {
+  rule = zoneRule({
+    id: 0,
+    camera,
     sentence: sentence!,
     zones: [{ name: flags.name ?? word!, kind: 'outline', word: word!, reference: atSetup.box, path: atSetup.path }],
-    ...(fromHour && toHour ? { activeHours: { from: Number(fromHour), to: Number(toHour) } } : {}),
-    ...timing,
-  };
+    activeHours: fromHour && toHour ? { from: Number(fromHour), to: Number(toHour) } : null,
+    settledBy: settledBy!,
+  });
 }
 
 if (rule.zones.some((z) => z.kind === 'box') && !spark) throw new Error('A drawn box needs BASETEN_API_KEY in ../.env, for Spark Open to answer its question.');
-const judge = spark ? new SparkBoxJudge(spark, RULE_TIMING.sampleGapMs / 1000) : undefined;
+const judge = spark ? new SparkBoxJudge(spark) : undefined;
 const result = await runZoneRule({ rule, frames, sam, judge, crop: cropPicture, timeZone: TIME_ZONE });
 // Several zones draw as one SVG path of several shapes.
 const reference = rule.zones.map(zoneOutline).join(' ');

@@ -1,5 +1,5 @@
 import { zoneRule, type SavedRule } from '../rules/rule-store.js';
-import { runZoneRule, type BoxJudge, type Frame, type RuleProgress, type ZoneAlert, type ZoneRule } from '../rules/zone-rule.js';
+import { runZoneRule, type BoxJudge, type Frame, type RuleProgress, type ZoneAlert } from '../rules/zone-rule.js';
 import type { Picture } from '../sam/client.js';
 import type { Box } from '../sam/outlines.js';
 import type { Outliner } from '../setup/camera-setup.js';
@@ -33,7 +33,6 @@ export class LiveCamera {
       judge?: BoxJudge;
       crop: (picture: Picture, box: Box) => Promise<Picture>;
       timeZone: string;
-      timing: Pick<ZoneRule, 'samples' | 'sampleGapMs' | 'cooldownMs'>;
       // The event keeps the pictures this long before the first picture judged and after the last.
       aroundMs: number;
     },
@@ -63,7 +62,7 @@ export class LiveCamera {
     for (const saved of rules) {
       // A rule first seen now watches only the pictures that arrived with it.
       const progress = this.#progress.get(saved.id) ?? { scannedTo: before, quietUntil: -Infinity };
-      const result = await runZoneRule({ ...this.options, rule: zoneRule(saved, this.options.timing), frames: this.#buffer, live: true, progress });
+      const result = await runZoneRule({ ...this.options, rule: zoneRule(saved), frames: this.#buffer, live: true, progress });
       this.#progress.set(saved.id, result.progress);
       alerts.push(...result.alerts.map((alert) => ({ alert, rule: saved })));
     }

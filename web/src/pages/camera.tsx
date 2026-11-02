@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Cctv, Clock, Eye, EyeOff, Loader2, MousePointerClick, Pencil, Plus, ScanSearch, Sparkles, SquareDashed, Trash2, Wand2, X } from 'lucide-react';
+import { Cctv, Clock, Eye, EyeOff, History, Loader2, MousePointerClick, Pencil, Plus, ScanSearch, Sparkles, SquareDashed, Trash2, Wand2, X } from 'lucide-react';
 import { PageHeader } from '@/components/layout/page-header';
 import { OverlayChip, PictureFrame, ZONE_COLOURS, type DrawnPath } from '@/components/picture-frame';
 import { Badge } from '@/components/ui/badge';
@@ -10,9 +10,9 @@ import { Input, Label, Select, Textarea } from '@/components/ui/input';
 import { Notice } from '@/components/ui/notice';
 import { Segmented } from '@/components/ui/segmented';
 import { Skeleton } from '@/components/ui/skeleton';
-import { api, nowUrl, pictureUrl, type Box, type Camera, type CameraZone, type NewZone, type SavedRule } from '@/lib/api';
+import { api, nowUrl, pictureUrl, storedUrl, type Box, type Camera, type CameraZone, type NewRule, type NewZone, type SavedRule, type Trial } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { dateAndTime, sentence } from '@/lib/time';
+import { dateAndTime, sentence, shortDate } from '@/lib/time';
 
 // One SAM outline the person selected, as setup knows it: the zone is the one that holds this piece.
 type Pick = { word: string; label: string; objectId: string };
@@ -606,13 +606,24 @@ function RuleBuilder({
 }) {
   const queryClient = useQueryClient();
   const [problem, setProblem] = useState<string | null>(null);
+  // The last trial on stored pictures, with the rule as Spark Open read it and the draft it was run on.
+  const [trial, setTrial] = useState<{ id: number; rule: Omit<SavedRule, 'id'>; input: string } | null>(null);
   const save = useMutation({
-    mutationFn: (zones: NewZone[]) =>
-      api.addRule({ camera: camera.id, sentence: draft.sentence.trim(), zones, activeHours: draft.limitHours ? { from: draft.from, to: draft.to } : null }),
+    mutationFn: (rule: NewRule) => api.addRule(rule),
     onSuccess: async () => {
       await Promise.all(['rules', 'cameras'].map((key) => queryClient.invalidateQueries({ queryKey: [key] })));
       onDone();
     },
+  });
+  const startTrial = useMutation({
+    mutationFn: (rule: NewRule) => api.startTrial(rule),
+    onSuccess: ({ id, rule }, input) => setTrial({ id, rule, input: JSON.stringify(input) }),
+  });
+  const trialRun = useQuery({
+    queryKey: ['trial', trial?.id],
+    queryFn: () => api.trial(trial!.id),
+    enabled: trial !== null,
+    refetchInterval: (q) => (q.state.data?.state === 'done' || q.state.data?.state === 'failed' ? false : 1_500),
   });
   const set = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
   const picked = draft.picks.flatMap((pick) => {
@@ -620,17 +631,33 @@ function RuleBuilder({
     return index < 0 ? [] : [{ pick, zone: camera.zones[index]!, index }];
   });
   const count = picked.length + (draft.box ? 1 : 0);
-
-  const submit = () => {
-    if (!draft.sentence.trim()) return setProblem('Write the rule.');
-    if (count === 0) return setProblem('Select an outline on the picture, or draw a box.');
-    if (draft.box && !draft.boxName.trim()) return setProblem('Name the box.');
-    if (draft.box && !draft.question.trim()) return setProblem('Write the question Muse Spark Open answers about the box.');
-    setProblem(null);
-    save.mutate([
+  const rule: NewRule = {
+    camera: camera.id,
+    sentence: draft.sentence.trim(),
+    zones: [
       ...picked.map(({ pick }) => ({ kind: 'outline' as const, ...pick })),
       ...(draft.box ? [{ kind: 'box' as const, name: draft.boxName.trim(), box: draft.box.box, question: draft.question.trim() }] : []),
-    ]);
+    ],
+    activeHours: draft.limitHours ? { from: draft.from, to: draft.to } : null,
+  };
+  const tried = trial !== null && trial.input === JSON.stringify(rule) && trialRun.data?.state === 'done' ? trial.rule : null;
+
+  const ready = () => {
+    if (!draft.sentence.trim()) return setProblem('Write the rule.'), false;
+    if (count === 0) return setProblem('Select an outline on the picture, or draw a box.'), false;
+    if (draft.box && !draft.boxName.trim()) return setProblem('Name the box.'), false;
+    if (draft.box && !draft.question.trim()) return setProblem('Write the question Muse Spark Open answers about the box.'), false;
+    setProblem(null);
+    return true;
+  };
+  const submit = () => {
+    if (!ready()) return;
+    // A rule just tried is saved as Spark Open read it for the trial, so what was shown is what runs.
+    const asTried = tried && {
+      settledBy: tried.settledBy,
+      zones: rule.zones.map((z) => (z.kind === 'box' ? { ...z, question: tried.zones.find((t) => t.kind === 'box')?.question ?? z.question } : z)),
+    };
+    save.mutate({ ...rule, ...asTried });
   };
 
   return (
@@ -748,13 +775,34 @@ function RuleBuilder({
             )}
           </div>
 
-          {(problem || save.isError) && <Notice tone='error'>{problem ?? save.error?.message}</Notice>}
+          {camera.stored && trial && (
+            <TrialResult
+              camera={camera}
+              run={trialRun.data}
+              rule={trial.rule}
+              stale={trial.input !== JSON.stringify(rule)}
+              failed={trialRun.isError}
+            />
+          )}
 
-          <div className='flex gap-2'>
+          {(problem || save.isError || startTrial.isError) && <Notice tone='error'>{problem ?? save.error?.message ?? startTrial.error?.message}</Notice>}
+
+          <div className='flex flex-wrap gap-2'>
             <Button type='submit' disabled={save.isPending}>
               {save.isPending && <Loader2 className='animate-spin' />}
               Save rule
             </Button>
+            {camera.stored && (
+              <Button
+                type='button'
+                variant='outline'
+                disabled={startTrial.isPending || trialRun.data?.state === 'running'}
+                onClick={() => ready() && startTrial.mutate(rule)}
+              >
+                {startTrial.isPending || trialRun.data?.state === 'running' ? <Loader2 className='animate-spin' /> : <History />}
+                Try on stored pictures
+              </Button>
+            )}
             <Button variant='outline' onClick={onDone}>
               Cancel
             </Button>
@@ -764,6 +812,79 @@ function RuleBuilder({
     </Card>
   );
 }
+
+// The most alerts a trial shows as pictures; the rest are counted.
+const TRIAL_PICTURES = 9;
+
+function TrialResult({
+  camera,
+  run,
+  rule,
+  stale,
+  failed,
+}: {
+  camera: Camera;
+  run: Trial | undefined;
+  rule: Omit<SavedRule, 'id'>;
+  stale: boolean;
+  failed: boolean;
+}) {
+  const stored = camera.stored!;
+  const span = `${stored.pictures} pictures from ${shortDate(stored.from)} to ${shortDate(stored.to)}`;
+  if (failed || run?.state === 'failed') return <Notice tone='error'>The rule could not be tried on the stored pictures. Please try again.</Notice>;
+  if (!run || run.state === 'running') {
+    const share = run ? run.checked / Math.max(1, run.pictures) : 0;
+    return (
+      <div className='bg-muted/40 space-y-2 rounded-lg border p-3'>
+        <p className='text-sm font-medium'>Trying the rule on {span}</p>
+        <div className='bg-muted h-1.5 overflow-hidden rounded-full'>
+          <div className='bg-primary h-full transition-[width]' style={{ width: `${Math.round(share * 100)}%` }} />
+        </div>
+        <p className='text-muted-foreground text-xs tabular-nums'>
+          {run?.checked ?? 0} of {stored.pictures} checked. Nothing is saved or sent.
+        </p>
+      </div>
+    );
+  }
+  const n = run.alerts.length;
+  const box = rule.zones.find((z) => z.kind === 'box');
+  return (
+    <div className={cn('space-y-3 rounded-lg border p-3', stale && 'opacity-60')}>
+      <div className='space-y-1'>
+        <p className='text-sm font-medium'>{n === 0 ? 'Would not have alerted' : n === 1 ? 'Would have alerted once' : `Would have alerted ${n} times`}</p>
+        <p className='text-muted-foreground text-xs leading-relaxed'>
+          On the {span}; {run.checks} {run.checks === 1 ? 'change was' : 'changes were'} checked by the models.
+        </p>
+        <div className='flex flex-wrap gap-1.5 pt-1'>
+          <Badge variant='muted'>{SETTLED_BY_LABEL[rule.settledBy]}</Badge>
+          {box && <Badge variant='outline'>Asks: {box.question}</Badge>}
+        </div>
+      </div>
+      {stale && <Notice>The rule has changed since it was tried. Try it again to see the new result.</Notice>}
+      {n > 0 && (
+        <ul className='grid grid-cols-2 gap-2 sm:grid-cols-3'>
+          {run.alerts.slice(0, TRIAL_PICTURES).map((a) => (
+            <li key={a.at} className='space-y-1'>
+              <PictureFrame
+                src={a.pictureAt === null ? null : storedUrl(camera.id, a.pictureAt)}
+                alt={`${camera.name} at ${dateAndTime(a.at)}`}
+                paths={a.outlines.map((d, i) => ({ key: `${a.at}-${i}`, d, colour: ZONE_COLOURS[0]!, style: 'fill' as const }))}
+              />
+              <p className='text-muted-foreground text-xs tabular-nums'>{dateAndTime(a.at)}</p>
+            </li>
+          ))}
+        </ul>
+      )}
+      {n > TRIAL_PICTURES && <p className='text-muted-foreground text-xs'>And {n - TRIAL_PICTURES} more.</p>}
+    </div>
+  );
+}
+
+const SETTLED_BY_LABEL: Record<SavedRule['settledBy'], string> = {
+  'one-picture': 'Decided on one picture',
+  change: 'Decided on a change',
+  'brief-change': 'Decided on a brief change',
+};
 
 function SavedRules({ camera, rules, loading }: { camera: Camera; rules: SavedRule[] | undefined; loading: boolean }) {
   const queryClient = useQueryClient();
@@ -791,6 +912,14 @@ function SavedRules({ camera, rules, loading }: { camera: Camera; rules: SavedRu
               <li key={r.id} className='flex items-start justify-between gap-3 py-3 first:pt-0 last:pb-0'>
                 <div className='min-w-0 space-y-1.5'>
                   <p className='text-sm'>{r.sentence}</p>
+                  {r.zones.map(
+                    (z) =>
+                      z.kind === 'box' && (
+                        <p key={z.name} className='text-muted-foreground text-xs'>
+                          Asks about {z.name}: {z.question}
+                        </p>
+                      ),
+                  )}
                   <div className='flex flex-wrap gap-1.5'>
                     {r.zones.map((z) => (
                       <Badge key={z.name} variant='outline'>
@@ -799,6 +928,7 @@ function SavedRules({ camera, rules, loading }: { camera: Camera; rules: SavedRu
                       </Badge>
                     ))}
                     {r.zones.length > 1 && <Badge variant='muted'>All must change</Badge>}
+                    <Badge variant='muted'>{SETTLED_BY_LABEL[r.settledBy]}</Badge>
                     {r.activeHours && (
                       <Badge variant='muted'>
                         {pad(r.activeHours.from)} to {pad(r.activeHours.to)}

@@ -31,7 +31,8 @@ export interface ZoneRule {
 }
 
 export interface BoxJudge {
-  judge(question: string, crops: LabelledPicture[]): Promise<{ answer: boolean | null; shownIn: number | null }>;
+  // With one crop the question is asked of that picture; with several, of the change between them, gapSeconds apart.
+  judge(question: string, crops: LabelledPicture[], gapSeconds: number | null): Promise<{ answer: boolean | null; shownIn: number | null }>;
 }
 
 export interface ZoneCheck {
@@ -59,10 +60,12 @@ const CHANGED_SHARE = 0.02;
 // Below this overlap with the reference outline, the thing is no longer as it was at setup.
 const SAME_OUTLINE_OVERLAP = 0.7;
 
-// Where a rule got to on pictures that keep arriving: the last picture it looked at, and when its cooldown ends.
+// Where a rule got to on pictures that keep arriving: the last picture it looked at, when its cooldown ends, and
+// whether its last check found the rule true.
 export interface RuleProgress {
   scannedTo: number;
   quietUntil: number;
+  holding?: boolean;
 }
 
 interface ZoneVerdict {
@@ -96,7 +99,7 @@ export async function runZoneRule({
   const words = [...new Set(rule.zones.flatMap((z) => (z.kind === 'outline' ? [z.word] : [])))];
   const checks: ZoneCheck[] = [];
   const alerts: ZoneAlert[] = [];
-  let { scannedTo, quietUntil } = progress;
+  let { scannedTo, quietUntil, holding = false } = progress;
   const latest = frames[frames.length - 1]?.at ?? -Infinity;
 
   for (let i = 1; i < frames.length; i++) {
@@ -116,7 +119,7 @@ export async function runZoneRule({
       verdicts.push(
         zone.kind === 'outline'
           ? judgeOutline(outlined.map((o) => o[zone.word] ?? []), zone.reference)
-          : { ...(await judgeBox(judge, zone.question, zone.box, window, crop)), outlines: window.map(() => null) },
+          : { ...(await judgeBox(judge, zone.question, zone.box, window, crop, window.length > 1 ? rule.sampleGapMs / 1000 : null)), outlines: window.map(() => null) },
       );
     }
     const verdict = verdicts.every((v) => v.verdict);
@@ -124,7 +127,10 @@ export async function runZoneRule({
     const shownIn = verdict && verdicts.every((v) => v.shownIn !== null) ? Math.max(...verdicts.map((v) => v.shownIn!)) : null;
     checks.push({ at: current.at, pictures: window.map((f) => f.at), verdict, shownIn });
 
-    if (verdict) {
+    // As in Streamatic's rules, an alert marks the answer becoming true; while it stays true, nothing more is sent.
+    const becameTrue = verdict && !holding;
+    holding = verdict;
+    if (becameTrue) {
       const picture = shownIn === null ? null : window[shownIn - 1]!;
       const last = window[window.length - 1]!;
       const outlinesAt = (k: number) => verdicts.flatMap((v) => (v.outlines[k] ? [v.outlines[k]!] : []));
@@ -143,7 +149,7 @@ export async function runZoneRule({
     i = frames.indexOf(window[window.length - 1]!);
     scannedTo = frames[i]!.at;
   }
-  return { checks, alerts, progress: { scannedTo, quietUntil } };
+  return { checks, alerts, progress: { scannedTo, quietUntil, holding } };
 }
 
 function pickWindow(frames: Frame[], start: number, rule: ZoneRule): Frame[] {
@@ -182,10 +188,11 @@ async function judgeBox(
   box: Box,
   window: Frame[],
   crop: (picture: Picture, box: Box) => Promise<Picture>,
+  gapSeconds: number | null,
 ) {
   if (!judge) throw new Error('A box zone needs a judge to answer its question.');
   const crops = await Promise.all(window.map(async (f, k) => ({ label: `picture ${k + 1}`, picture: await crop(f.picture, box) })));
-  const { answer, shownIn } = await judge.judge(question, crops);
+  const { answer, shownIn } = await judge.judge(question, crops, gapSeconds);
   const valid = shownIn !== null && Number.isInteger(shownIn) && shownIn >= 1 && shownIn <= window.length;
   return { verdict: answer === true, shownIn: valid ? shownIn : null };
 }

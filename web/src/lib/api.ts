@@ -45,6 +45,8 @@ export interface Camera {
   zones: CameraZone[];
   // Set when the camera plays a recording on a loop as its pictures; at is the recorded time of the picture playing.
   playing: { at: number | null } | null;
+  // Pictures the camera took over past days, which a rule can be tried on before it is saved.
+  stored: { pictures: number; from: number; to: number } | null;
 }
 
 export type Zone =
@@ -57,11 +59,31 @@ export interface SavedRule {
   sentence: string;
   zones: Zone[];
   activeHours: { from: number; to: number } | null;
+  // Read from the sentence when the rule is saved: one picture shows it, or a change between pictures does.
+  settledBy: 'one-picture' | 'change' | 'brief-change';
 }
 
 export type NewZone =
   | { kind: 'outline'; word: string; label: string; objectId: string }
   | { kind: 'box'; name: string; box: Box; question: string };
+
+export interface NewRule {
+  camera: string;
+  sentence: string;
+  zones: NewZone[];
+  activeHours: { from: number; to: number } | null;
+  // Given when the rule was already read on a trial, so it is saved as it was tried.
+  settledBy?: SavedRule['settledBy'];
+}
+
+export interface Trial {
+  id: number;
+  state: 'running' | 'done' | 'failed';
+  pictures: number;
+  checked: number;
+  checks: number;
+  alerts: Array<{ at: number; pictureAt: number | null; zones: string[]; outlines: string[] }>;
+}
 
 export interface StoredEvent {
   id: number;
@@ -104,8 +126,10 @@ export const api = {
   cameras: () => request<Camera[]>('/api/cameras'),
   runSetup: (camera: string) => request<CameraSetup>(`/api/cameras/${encodeURIComponent(camera)}/setup`, { method: 'POST' }),
   rules: (camera?: string) => request<SavedRule[]>(`/api/rules${camera ? `?camera=${encodeURIComponent(camera)}` : ''}`),
-  addRule: (rule: { camera: string; sentence: string; zones: NewZone[]; activeHours: { from: number; to: number } | null }) =>
-    request<SavedRule>('/api/rules', { method: 'POST', body: JSON.stringify(rule) }),
+  addRule: (rule: NewRule) => request<SavedRule>('/api/rules', { method: 'POST', body: JSON.stringify(rule) }),
+  startTrial: (rule: NewRule) =>
+    request<{ id: number; rule: Omit<SavedRule, 'id'> }>('/api/backtests', { method: 'POST', body: JSON.stringify(rule) }),
+  trial: (id: number) => request<Trial>(`/api/backtests/${id}`),
   renameZone: (camera: string, zone: { word: string; label: string; objectId: string; name: string }) =>
     request<{ zones: CameraZone[]; rules: number; events: number }>(`/api/cameras/${encodeURIComponent(camera)}/zones`, {
       method: 'PATCH',
@@ -122,3 +146,4 @@ export const pictureUrl = (camera: string, file: string) =>
   `/camera-pictures/${encodeURIComponent(camera)}/${encodeURIComponent(file)}`;
 export const nowUrl = (camera: string, at: number) => `/api/cameras/${encodeURIComponent(camera)}/now?at=${at}`;
 export const mediaUrl = (file: string) => `/media/${encodeURIComponent(file)}`;
+export const storedUrl = (camera: string, at: number) => `/api/cameras/${encodeURIComponent(camera)}/stored/${at}`;

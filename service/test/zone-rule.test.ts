@@ -138,6 +138,17 @@ describe('runZoneRule on a SAM zone', () => {
     expect(result.alerts).toHaveLength(1);
     expect(sam.asked).toHaveLength(3);
   });
+
+  it('alerts when the door opens, not again while it stays open, and again once it has been shut', async () => {
+    // Something moves in the zone at 3, 5 and 7 while the door stands open; it shuts at 9 and opens again at 11.
+    const frames = Array.from({ length: 14 }, (_, i) => frame(LAGOS_2124 + i * SECOND, [3, 5, 7, 9, 11].includes(i) ? [[7, 5 + (i % 3)]] : []));
+    const open = new Set([3, 4, 5, 6, 7, 8, 11, 12, 13].map((i) => frames[i]!.at));
+    const sam = fakeSam((tag) => (open.has(tag) ? doorLeaf : doorClosed));
+
+    const result = await run({ ...doorRule, samples: 1, sampleGapMs: 0, cooldownMs: 0 }, frames, sam);
+
+    expect(result.alerts.map((a) => a.at)).toEqual([frames[3]!.at, frames[11]!.at]);
+  });
 });
 
 describe('runZoneRule on a box zone', () => {
@@ -149,19 +160,35 @@ describe('runZoneRule on a box zone', () => {
 
   it("asks the judge about the zone's crops and sends the picture it names", async () => {
     const frames = doorFrames();
-    let asked: { question: string; crops: number[] } | undefined;
+    let asked: { question: string; crops: number[]; gapSeconds: number | null } | undefined;
     const judge = {
-      async judge(question: string, crops: Array<{ label: string; picture: Picture }>) {
-        asked = { question, crops: crops.map((c) => tagOf(c.picture)) };
+      async judge(question: string, crops: Array<{ label: string; picture: Picture }>, gapSeconds: number | null) {
+        asked = { question, crops: crops.map((c) => tagOf(c.picture)), gapSeconds };
         return { answer: true, shownIn: 2 };
       },
     };
 
     const result = await run(counterRule, frames, fakeSam(() => null), judge);
 
-    expect(asked).toEqual({ question: 'Is anyone behind the counter?', crops: [frames[3]!.at, frames[6]!.at, frames[9]!.at] });
+    expect(asked).toEqual({ question: 'Is anyone behind the counter?', crops: [frames[3]!.at, frames[6]!.at, frames[9]!.at], gapSeconds: 3 });
     expect(result.alerts[0]!.picture?.at).toBe(frames[6]!.at);
     expect(result.alerts[0]!.clip).toEqual([]);
+  });
+
+  it('asks about the changed picture alone, with no gap, when one picture settles the rule', async () => {
+    const frames = doorFrames();
+    const asked: Array<{ crops: number[]; gapSeconds: number | null }> = [];
+    const judge = {
+      async judge(_question: string, crops: Array<{ label: string; picture: Picture }>, gapSeconds: number | null) {
+        asked.push({ crops: crops.map((c) => tagOf(c.picture)), gapSeconds });
+        return { answer: true, shownIn: 1 };
+      },
+    };
+
+    const result = await run({ ...counterRule, samples: 1, sampleGapMs: 0 }, frames, fakeSam(() => null), judge);
+
+    expect(asked).toEqual([{ crops: [frames[3]!.at], gapSeconds: null }]);
+    expect(result.alerts.map((a) => a.picture?.at)).toEqual([frames[3]!.at]);
   });
 
   it('offers the moment as a clip when the judge says yes but no single picture shows it', async () => {

@@ -17,8 +17,10 @@ export function keepAnswers({ sam, judge, crop }: { sam: Outliner; judge: BoxJud
     sam: { outlineAll: (picture: Picture, words: string[]) => remember(outlines, `${idOf(picture.bytes)}\n${words.join('\n')}`, () => sam.outlineAll(picture, words)) },
     crop: (picture: Picture, box: Box) => remember(crops, `${idOf(picture.bytes)}\n${JSON.stringify(box)}`, () => crop(picture, box)),
     judge: {
-      judge: (question: string, pictures: Parameters<BoxJudge['judge']>[1]) =>
-        remember(answers, `${question}\n${pictures.map((p) => idOf(p.picture.bytes)).join(',')}`, () => judge.judge(question, pictures)),
+      judge: (question: string, pictures: Parameters<BoxJudge['judge']>[1], gapSeconds: number | null) =>
+        remember(answers, `${question}\n${gapSeconds}\n${pictures.map((p) => idOf(p.picture.bytes)).join(',')}`, () =>
+          judge.judge(question, pictures, gapSeconds),
+        ),
     },
   };
 }
