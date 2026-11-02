@@ -51,7 +51,7 @@ function AskCard({ events }: { events: StoredEvent[] }) {
             <MessageSquareText className='text-primary size-4' />
             Ask about the events
           </CardTitle>
-          <CardDescription>Muse Spark Open chooses what to look up; the events database does the counting, so every number links to its events.</CardDescription>
+          <CardDescription>Streamatic chooses what to look up; the events database does the counting, so every number links to its events.</CardDescription>
         </div>
       </CardHeader>
       <CardContent className='space-y-4'>
@@ -85,7 +85,7 @@ function AskCard({ events }: { events: StoredEvent[] }) {
             ))}
           </div>
         )}
-        {ask.isPending && <p className='text-muted-foreground text-sm'>Muse Spark Open is choosing what to look up.</p>}
+        {ask.isPending && <p className='text-muted-foreground text-sm'>Choosing what to look up.</p>}
         {ask.isError && <Notice tone='error'>{ask.error.message}</Notice>}
         {ask.data && (
           <div className='bg-muted/40 space-y-3 rounded-lg border p-4' aria-live='polite'>

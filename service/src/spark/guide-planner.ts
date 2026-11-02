@@ -6,6 +6,7 @@ import type { SparkClient } from './client.js';
 const hour = z.number().int();
 const planShape = z.object({
   sentence: z.string(),
+  about: z.string(),
   zones: z.array(z.string()),
   box: z.object({ name: z.string(), question: z.string(), over: z.string().nullable() }).nullable(),
   hours: z.object({ from: hour, to: hour }).nullable(),
@@ -32,11 +33,12 @@ appearing in or near a place (someone on the stairs, a van in the loading bay), 
 
 Plan the rule the app will build:
 - "sentence": the rule in one plain sentence, as the person would say it.
-- "zones": the names of the zones whose own change the rule watches, copied exactly from the list; [] when none.
+- "about": the thing whose presence or change the alert is for, in words copied from the request. For "tell me when a forklift blocks the fire exit" it is "forklift"; for "tell me if the shutter is left up" it is "shutter".
+- "zones": the names of the zones whose own change the rule watches, copied exactly from the list; [] when none. A zone fits only when "about" contains its name or its outlined word; anything else is watched with a box.
 - "box": when the rule watches for something in or near a place, {"name": a short name not in the list, "question": a yes-or-no question answerable from inside the box alone, "over": the name of the zone from the list the box covers, or null for the person to draw it}; otherwise null.
 - "hours": {"from": H, "to": H} in 24-hour local time when the request names a time of day, else null. "After 11 pm" is {"from": 23, "to": 6}; "at night" is {"from": 22, "to": 6}; "during the day" is {"from": 8, "to": 18}.
 ${corrections}
-Reply with JSON only: {"sentence": "", "zones": [], "box": null, "hours": null}`,
+Reply with JSON only: {"sentence": "", "about": "", "zones": [], "box": null, "hours": null}`,
       [],
       planShape,
     );

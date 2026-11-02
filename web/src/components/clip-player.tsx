@@ -70,7 +70,7 @@ export function ClipPlayer({ event, frames: given }: { event: StoredEvent; frame
         {frame?.outline && view === 'outlined' && (
           <OverlayChip className='bottom-2 left-2 flex items-center gap-1.5'>
             <ScanSearch className='size-3.5' />
-            SAM 3.1 checked this picture
+            Streamatic checked this picture
           </OverlayChip>
         )}
       </PictureFrame>
@@ -128,7 +128,7 @@ export function ClipPlayer({ event, frames: given }: { event: StoredEvent; frame
           </span>
           <span className='flex items-center gap-1.5'>
             <span className='bg-alert/40 border-alert inline-block size-3 rounded-[2px] border' />
-            SAM 3.1’s outline on the pictures it judged
+            The outline on the pictures that were judged
           </span>
         </p>
       )}
@@ -174,7 +174,7 @@ function Timeline({
         {judged.map((p) => (
           <span
             key={p}
-            title={`SAM 3.1 judged the picture at ${label(p)}`}
+            title={`Picture judged at ${label(p)}`}
             className='bg-primary absolute top-1.5 h-2.5 w-0.5 -translate-x-1/2 rounded-full'
             style={{ left: `${at(p)}%` }}
           />

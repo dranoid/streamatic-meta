@@ -103,7 +103,7 @@ async function start({
         read: async (sentence, asked) => (ruleReads.push({ sentence, questions: asked }), reading ?? { settledBy: 'one-picture', questions: asked }),
       },
       guidePlanner: {
-        draft: async ({ sentence, zones }) => ({ sentence, zones: zones.length ? [zones[zones.length - 1]!.name] : ['door'], box: null, hours: { from: 21, to: 6 } }),
+        draft: async ({ sentence, zones }) => ({ sentence, about: 'front door', zones: zones.length ? [zones[zones.length - 1]!.name] : ['door'], box: null, hours: { from: 21, to: 6 } }),
       },
       backtests: {
         start: async (camera, rule) => (tried.push({ camera: camera.id, rule }), 7),
@@ -306,7 +306,7 @@ describe('the guide', () => {
     expect(planned.status).toBe(200);
     expect(planned.body).toEqual({
       status: 'ready',
-      plan: { sentence: 'Tell me if the front door opens at night.', zones: ['door 2'], box: null, hours: { from: 21, to: 6 } },
+      plan: { sentence: 'Tell me if the front door opens at night.', about: 'front door', zones: ['door 2'], box: null, hours: { from: 21, to: 6 } },
       attempts: [expect.objectContaining({ problems: [] })],
     });
   });

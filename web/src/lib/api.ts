@@ -87,6 +87,8 @@ export interface Trial {
 
 export interface GuidePlan {
   sentence: string;
+  // What the alert is for, in the person's own words.
+  about: string;
   zones: string[];
   // Placed over the named zone when over is set; otherwise the person draws it.
   box: { name: string; question: string; over: string | null } | null;

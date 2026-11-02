@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { BellRing, Cctv, Menu, Moon, Sun, X } from 'lucide-react';
+import { BellRing, Cctv, Info, Menu, Moon, Sun, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Link } from '@/components/ui/link';
 import { cn } from '@/lib/cn';
@@ -8,6 +8,7 @@ import type { Route } from '@/lib/router';
 const NAV = [
   { href: '/cameras', label: 'Cameras', icon: Cctv, pages: ['cameras', 'camera'] },
   { href: '/events', label: 'Events', icon: BellRing, pages: ['events', 'event'] },
+  { href: '/about', label: 'About', icon: Info, pages: ['about'] },
 ] as const;
 
 export function AppShell({ route, children }: { route: Route; children: ReactNode }) {
@@ -48,7 +49,12 @@ export function AppShell({ route, children }: { route: Route; children: ReactNod
       </nav>
       <div className='text-muted-foreground mt-auto rounded-lg border bg-background/60 p-3 text-xs leading-relaxed dark:bg-muted/40'>
         <p className='text-foreground font-medium'>Meta hackathon build</p>
-        <p className='mt-1'>SAM 3.1 outlines what each camera sees. Muse Spark Open lists it, judges drawn zones and answers questions.</p>
+        <p className='mt-1'>
+          Built on SAM 3.1 and Muse Spark Open.{' '}
+          <Link href='/about' className='text-foreground underline underline-offset-2'>
+            What each one does
+          </Link>
+        </p>
       </div>
     </div>
   );

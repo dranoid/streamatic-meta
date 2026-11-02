@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 
-// Four pages need no router library: the path is the state, and links push to history.
+// Five pages need no router library: the path is the state, and links push to history.
 export type Route =
   | { page: 'cameras' }
   | { page: 'camera'; id: string }
   | { page: 'events' }
-  | { page: 'event'; id: number };
+  | { page: 'event'; id: number }
+  | { page: 'about' };
 
 export function parse(path: string): Route {
   const camera = /^\/cameras\/([^/]+)$/.exec(path);
@@ -13,6 +14,7 @@ export function parse(path: string): Route {
   const event = /^\/events\/(\d+)$/.exec(path);
   if (event) return { page: 'event', id: Number(event[1]) };
   if (path.startsWith('/events')) return { page: 'events' };
+  if (path === '/about') return { page: 'about' };
   return { page: 'cameras' };
 }
 

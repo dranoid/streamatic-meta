@@ -34,8 +34,11 @@ open), from a change between pictures 10 s apart (a belt running), or from a bri
 - **A guide that does the setup with you.** Type one sentence. The guide shows its plan as a checklist,
   then works the app in front of you. A step is ticked only when the app shows it done and you confirm it.
   Muse Spark Open drafts the plan, and code checks it against the camera's zones and hours before anything
-  is done. A refused plan goes back to Muse Spark Open with what was wrong, up to three times, and then to
-  you. The model never marks a step done.
+  is done. The plan also names what the alert is for, in your own words, and code refuses a zone the rule is
+  not about: a zone alerts only when its own thing changes, so "a keke parked by the gate" gets a box over
+  the gate, not the gate's outline. A refused plan goes back to Muse Spark Open with what was wrong, up to
+  three times, and then to you. Before you confirm, the page states in plain words what will set the rule
+  off. The model never marks a step done.
 - **Questions about the week.** "How many times was the gate open after 10 pm?" Muse Spark picks the query,
   the events table does the counting, and every answer opens the moment it refers to.
 

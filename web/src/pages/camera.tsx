@@ -188,7 +188,7 @@ function CameraView({ camera }: { camera: Camera }) {
                 <CardTitle>What the camera sees</CardTitle>
                 <CardDescription>
                   {zones.length
-                    ? 'SAM 3.1 outlined each zone under the word it answers to. Select an outline to build a rule on it.'
+                    ? 'Each zone is outlined under the word it answers to. Select an outline to build a rule on it.'
                     : 'The three pictures setup works from: by day, at dusk and at night.'}
                 </CardDescription>
               </div>
@@ -274,8 +274,8 @@ function CameraView({ camera }: { camera: Camera }) {
                 <div className='flex-1'>
                   <p className='font-semibold'>Set up this camera</p>
                   <p className='text-muted-foreground mt-0.5 text-sm'>
-                    Muse Spark Open lists what it sees in the {labels.length} pictures, SAM 3.1 outlines each thing, and Muse Spark Open suggests rules for
-                    what was outlined. It takes one to two minutes.
+                    Streamatic lists what it sees in the {labels.length} pictures, outlines each thing, and suggests rules for what was outlined. It takes
+                    one to two minutes.
                   </p>
                 </div>
                 <Button onClick={() => setup.mutate()} disabled={setup.isPending}>
@@ -325,7 +325,7 @@ function CameraView({ camera }: { camera: Camera }) {
                       <Sparkles className='text-gold size-4' />
                       Suggested rules
                     </CardTitle>
-                    <CardDescription>From Muse Spark Open, only on zones SAM 3.1 outlined.</CardDescription>
+                    <CardDescription>Suggested only on zones that were outlined.</CardDescription>
                   </div>
                 </CardHeader>
                 <CardContent>
@@ -416,7 +416,7 @@ function ZoneList({ camera, hidden, onToggle }: { camera: Camera; hidden: Set<nu
             <span className='size-2.5 shrink-0 rounded-[3px]' style={{ background: colourAt(index) }} />
             <span className='min-w-0 flex-1 truncate text-sm'>
               <span className='font-medium'>{zone.name}</span>
-              {zone.name !== zone.word && <span className='text-muted-foreground'> · SAM 3.1: {zone.word}</span>}
+              {zone.name !== zone.word && <span className='text-muted-foreground'> · outlined as {zone.word}</span>}
               {zone.rules.length > 0 && (
                 <span className='text-muted-foreground'>
                   {' '}
@@ -569,7 +569,7 @@ function SetupRunning() {
       <Loader2 className='size-6 animate-spin' />
       <p className='font-medium'>Setting up the camera</p>
       <p className='max-w-xs text-xs text-white/70'>
-        {seconds < 15 ? 'Muse Spark Open is listing what it sees.' : 'SAM 3.1 is outlining each thing on every picture.'} {seconds} s
+        {seconds < 15 ? 'Listing what the camera sees.' : 'Outlining each thing on every picture.'} {seconds} s
       </p>
     </div>
   );
@@ -586,7 +586,7 @@ function SetupReport({ camera }: { camera: Camera }) {
             <ScanSearch className='text-primary size-4' />
             Setup
           </CardTitle>
-          <CardDescription>What Muse Spark Open listed, and what SAM 3.1 could outline.</CardDescription>
+          <CardDescription>What Streamatic listed, and what it could outline.</CardDescription>
         </div>
       </CardHeader>
       <CardContent className='grid gap-4 sm:grid-cols-3'>
@@ -683,7 +683,7 @@ function RuleBuilder({
     if (!draft.sentence.trim()) return setProblem('Write the rule.'), false;
     if (count === 0) return setProblem('Select an outline on the picture, or draw a box.'), false;
     if (draft.box && !draft.boxName.trim()) return setProblem('Name the box.'), false;
-    if (draft.box && !draft.question.trim()) return setProblem('Write the question Muse Spark Open answers about the box.'), false;
+    if (draft.box && !draft.question.trim()) return setProblem('Write the question to answer about the box.'), false;
     setProblem(null);
     return true;
   };
@@ -716,7 +716,7 @@ function RuleBuilder({
         {
           key: 'plan',
           title: 'Check the plan',
-          detail: <PlanSummary plan={plan} attempts={guide!.attempts} />,
+          detail: <PlanSummary plan={plan} attempts={guide!.attempts} zones={plan.zones.flatMap((n) => named(n) ?? [])} />,
           ready: true,
           snapshot: JSON.stringify(plan),
           confirm: 'The plan is right',
@@ -724,10 +724,16 @@ function RuleBuilder({
         {
           key: 'zones',
           title: plan.box && plan.box.over === null ? 'Place the zones and draw the box' : 'Place the zones',
-          detail:
-            plan.box && plan.box.over === null
-              ? `Draw the box over the ${plan.box.name} on the picture.`
-              : 'Selected on the picture. Select an outline to add or remove it.',
+          detail: (
+            <div className='space-y-1'>
+              <p>
+                {plan.box && plan.box.over === null
+                  ? `Draw the box over the ${plan.box.name} on the picture.`
+                  : 'Selected on the picture. Select an outline to add or remove it.'}
+              </p>
+              <AlertsOn zones={picked.map(({ zone }) => zone)} question={draft.box ? draft.question : null} />
+            </div>
+          ),
           ready: zonesPlaced,
           waiting: plan.box && plan.box.over === null ? 'Waiting for the box' : 'Waiting for the zones',
           snapshot: JSON.stringify([draft.picks, draft.box, draft.boxName, draft.question]),
@@ -952,8 +958,8 @@ function RuleBuilder({
               </Button>
             )}
             <p className='text-muted-foreground text-xs leading-relaxed'>
-              SAM 3.1 looks again only when something changes inside a zone. With several zones, the rule alerts only when all of them change in the same
-              check; select an outline again to remove it. A drawn box is answered by Muse Spark Open.
+              Streamatic looks again only when something changes inside a zone. With several zones, the rule alerts only when all of them change in the
+              same check; select an outline again to remove it. A drawn box alerts when the answer to its question is yes.
             </p>
           </div>
 
@@ -1047,10 +1053,35 @@ const GUIDE_PAUSE_MS = 700;
 // What an optional step's confirmation holds once the person skips it.
 const SKIPPED = 'skipped';
 
-function PlanSummary({ plan, attempts }: { plan: GuidePlan; attempts: PlanAttempt[] }) {
+const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+const end = (s: string) => (/[.?!”]$/.test(s) ? s : `${s}.`);
+
+// Written from the rule's own parts, so the person reads what will set it off before confirming it.
+function AlertsOn({ zones, question }: { zones: CameraZone[]; question: string | null }) {
+  const asked = question?.trim();
+  const parts = [
+    ...zones.map((z) => `the ${z.name} itself changes: it moves, opens or is no longer there`),
+    ...(question !== null ? [asked ? `Streamatic answers yes to “${capital(asked)}”` : 'Streamatic answers yes to the box’s question'] : []),
+  ];
+  if (parts.length === 0) return null;
+  if (parts.length === 1) return <p className='text-foreground font-medium'>Alerts when {end(parts[0]!)}</p>;
+  return (
+    <div className='text-foreground'>
+      <p className='font-medium'>Alerts only when all of these happen in the same check:</p>
+      <ul className='list-disc space-y-0.5 pl-4'>
+        {parts.map((p) => (
+          <li key={p}>{end(capital(p))}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function PlanSummary({ plan, attempts, zones }: { plan: GuidePlan; attempts: PlanAttempt[]; zones: CameraZone[] }) {
   const refused = attempts.filter((a) => a.problems.length > 0);
   return (
     <div className='space-y-1'>
+      <p>Watches for: {plan.about}</p>
       <p>Zones: {plan.zones.length ? plan.zones.join(', ') : 'none'}</p>
       {plan.box && (
         <p>
@@ -1058,6 +1089,7 @@ function PlanSummary({ plan, attempts }: { plan: GuidePlan; attempts: PlanAttemp
         </p>
       )}
       <p>Hours: {plan.hours ? `${pad(plan.hours.from)} to ${pad(plan.hours.to)}` : 'all day'}</p>
+      <AlertsOn zones={zones} question={plan.box ? plan.box.question : null} />
       <p>
         {refused.length === 0
           ? 'Checked against this camera’s zones: passed.'

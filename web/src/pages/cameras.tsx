@@ -18,7 +18,7 @@ export function CamerasPage() {
       <PageHeader
         icon={<Cctv />}
         title='Cameras'
-        description='Each camera sets itself up: Muse Spark Open lists what it sees, and SAM 3.1 outlines each thing as a zone a rule can watch.'
+        description='Each camera sets itself up: Streamatic lists what it sees and outlines each thing as a zone a rule can watch.'
       />
       {cameras.isError && <Notice tone='error'>The cameras could not be loaded. Please reload the page.</Notice>}
       <div className='grid gap-4 sm:grid-cols-2 xl:grid-cols-3'>
