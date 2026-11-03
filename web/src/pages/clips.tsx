@@ -15,8 +15,8 @@ export function ClipsPage() {
     <>
       <PageHeader
         icon={<Crosshair />}
-        title='Follow'
-        description='Pause a clip, select any person, vehicle or object, and Streamatic follows it through the clip and shows when it was in view.'
+        title='Track'
+        description='Pause a clip, select any person, vehicle or object, and Streamatic tracks it through the clip and shows when it was in view.'
       />
       {clips.isError && <Notice tone='error'>The clips could not be loaded. Please reload the page.</Notice>}
       <div className='grid gap-4 sm:grid-cols-2 xl:grid-cols-3'>

@@ -215,7 +215,7 @@ export function appHandler({
     }
     if (method === 'GET' && (match = /^\/api\/clips\/([^/]+)\/follows\/([^/]+)$/.exec(path))) {
       const job = await following.follows.get(decodeURIComponent(match[1]!), decodeURIComponent(match[2]!));
-      return job ? send(response, 200, job) : send(response, 404, { error: 'Nothing is being followed under that name.' });
+      return job ? send(response, 200, job) : send(response, 404, { error: 'Nothing is being tracked under that name.' });
     }
 
     if (method === 'GET' && path === '/api/rules') return send(response, 200, rules.list(url.searchParams.get('camera') ?? undefined));
@@ -305,7 +305,7 @@ export function appHandler({
   // The box is read from what was outlined on the frame, never taken from the request.
   async function startFollow(id: string, body: Record<string, unknown>): Promise<string> {
     const parsed = followInput.safeParse(body);
-    if (!parsed.success) throw new RequestError(400, 'Select what to follow.');
+    if (!parsed.success) throw new RequestError(400, 'Select what to track.');
     if (!(await following.clips.get(id))) throw new RequestError(404, 'No such clip.');
     const thing = (await following.things.list(id, parsed.data.frame)).find((t) => t.id === parsed.data.thing);
     if (!thing) throw new RequestError(400, 'That outline is not on this frame. Select another.');

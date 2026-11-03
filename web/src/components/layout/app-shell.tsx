@@ -8,7 +8,7 @@ import type { Route } from '@/lib/router';
 const NAV = [
   { href: '/cameras', label: 'Cameras', icon: Cctv, pages: ['cameras', 'camera'] },
   { href: '/events', label: 'Events', icon: BellRing, pages: ['events', 'event'] },
-  { href: '/clips', label: 'Follow', icon: Crosshair, pages: ['clips', 'clip'] },
+  { href: '/clips', label: 'Track', icon: Crosshair, pages: ['clips', 'clip'] },
   { href: '/about', label: 'About', icon: Info, pages: ['about'] },
 ] as const;
 

@@ -30,7 +30,7 @@ export function ClipPage({ id }: { id: string }) {
   if (!clip) return <Notice tone='error'>This clip could not be found.</Notice>;
   return (
     <>
-      <PageHeader trail={[{ href: '/clips', label: 'Follow' }]} icon={<Crosshair />} title={clip.name} description='Pause on the frame you want, then select what to follow.' />
+      <PageHeader trail={[{ href: '/clips', label: 'Track' }]} icon={<Crosshair />} title={clip.name} description='Pause on the frame you want, then select what to track.' />
       <ClipWatch clip={clip} follows={follows.data ?? []} />
     </>
   );
@@ -126,7 +126,7 @@ function ClipWatch({ clip, follows }: { clip: Clip; follows: Follow[] }) {
                 </Button>
                 <Button size='sm' onClick={startChoosing}>
                   <Crosshair />
-                  Follow something
+                  Track something
                 </Button>
               </div>
             </>
@@ -138,13 +138,13 @@ function ClipWatch({ clip, follows }: { clip: Clip; follows: Follow[] }) {
         <Card>
           <CardHeader>
             <div>
-              <CardTitle>Followed in this clip</CardTitle>
+              <CardTitle>Tracked in this clip</CardTitle>
               <CardDescription>Select one to see it in the clip.</CardDescription>
             </div>
           </CardHeader>
           <CardContent>
             {follows.length === 0 ? (
-              <p className='text-muted-foreground text-sm'>Nothing has been followed in this clip yet.</p>
+              <p className='text-muted-foreground text-sm'>Nothing has been tracked in this clip yet.</p>
             ) : (
               <ul className='space-y-2'>
                 {follows.map((f) => (
@@ -280,7 +280,7 @@ function Choosing({ clip, frame, onCancel, onFollowed }: { clip: Clip; frame: nu
         <div role='status' className='space-y-2'>
           <p className='flex items-center gap-2 text-sm font-medium'>
             <LoaderCircle className='size-4 animate-spin' />
-            Following the {selectedThing?.name ?? job?.name} through the clip
+            Tracking the {selectedThing?.name ?? job?.name} through the clip
           </p>
           <div className='bg-muted h-2 overflow-hidden rounded-full'>
             <div className='bg-primary h-full w-1/3 animate-pulse rounded-full' />
@@ -299,7 +299,7 @@ function Choosing({ clip, frame, onCancel, onFollowed }: { clip: Clip; frame: nu
             </p>
           ) : (
             <p className='text-muted-foreground text-sm'>
-              {things.length === 0 ? 'Nothing was outlined on this frame.' : 'Select an outline to follow.'} If what you want is not outlined, search for it or select it on the picture.
+              {things.length === 0 ? 'Nothing was outlined on this frame.' : 'Select an outline to track.'} If what you want is not outlined, search for it or select it on the picture.
             </p>
           )}
           <form onSubmit={onSearch} className='flex flex-wrap items-end gap-2'>
@@ -319,7 +319,7 @@ function Choosing({ clip, frame, onCancel, onFollowed }: { clip: Clip; frame: nu
             </p>
           )}
           {note && <Notice>{note}</Notice>}
-          {job?.state === 'failed' && <Notice tone='error'>This could not be followed. Please try again.</Notice>}
+          {job?.state === 'failed' && <Notice tone='error'>This could not be tracked. Please try again.</Notice>}
           {error && <Notice tone='error'>{error.message}</Notice>}
           <div className='flex flex-wrap items-center gap-2'>
             <Button
@@ -332,7 +332,7 @@ function Choosing({ clip, frame, onCancel, onFollowed }: { clip: Clip; frame: nu
               }}
             >
               <Crosshair />
-              {selectedThing ? `Follow the ${selectedThing.name}` : 'Select something to follow'}
+              {selectedThing ? `Track the ${selectedThing.name}` : 'Select something to track'}
             </Button>
             <Button size='sm' variant='outline' onClick={onCancel}>
               <X />
