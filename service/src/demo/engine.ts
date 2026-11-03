@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { BackendClient, DemoAlert as BackendAlert } from '../backend/client.js';
+import { captionLanguages, type WriteCaption } from '../spark/alert-caption.js';
 import type { DemoAlert, DemoRule, DemoStore, RuleZone } from './store.js';
 
 export type DemoEngineBackend = Pick<BackendClient, 'demoScenario' | 'demoSchedule' | 'typeDemoRule' | 'demoRule'>;
@@ -25,9 +26,12 @@ export class DemoEngine {
   readonly #backend: DemoEngineBackend;
   readonly #folder: string;
   readonly #fetch: typeof fetch;
+  readonly #writeCaption: WriteCaption | null;
   readonly #refreshing = new Map<string, Promise<void>>();
 
-  constructor({ store, backend, folder, fetch: fetchImpl = fetch }: { store: DemoStore; backend: DemoEngineBackend; folder: string; fetch?: typeof fetch }) {
+  // Without writeCaption, as on a copy with no model keys, alerts simply have no other languages.
+  constructor({ store, backend, folder, fetch: fetchImpl = fetch, writeCaption = null }: { store: DemoStore; backend: DemoEngineBackend; folder: string; fetch?: typeof fetch; writeCaption?: WriteCaption | null }) {
+    this.#writeCaption = writeCaption;
     this.#store = store;
     this.#backend = backend;
     this.#folder = folder;
@@ -43,7 +47,10 @@ export class DemoEngine {
     const pieces = Math.ceil(lengthMs / PIECE_MS);
     for (const rule of found.rules) {
       this.#store.addRule({ id: rule.id, clip: id, kind: 'offered', visitor: null, text: rule.name, name: rule.name, readsAs: typeof rule.readsAs === 'string' ? rule.readsAs : null, status: 'ready', zones: [] });
-      if (this.#store.isCopied(rule.id)) continue;
+      if (this.#store.isCopied(rule.id)) {
+        await this.#writeCaptions(rule.id, rule.name);
+        continue;
+      }
       const byPiece = [];
       for (let piece = 0; piece < pieces; piece++) {
         const armedAt = new Date(startsAt + piece * PIECE_MS + TICK_INTO_PIECE_MS).toISOString();
@@ -51,6 +58,18 @@ export class DemoEngine {
         byPiece.push({ piece, alerts: await this.#kept(id, startsAt, alerts) });
       }
       this.#store.saveAlerts(rule.id, byPiece);
+      await this.#writeCaptions(rule.id, rule.name);
+    }
+  }
+
+  // What is not written is written on the next copy; an alert never waits on, or fails with, its caption.
+  async #writeCaptions(rule: string, name: string): Promise<void> {
+    if (!this.#writeCaption) return;
+    const kept = this.#store.captions(rule);
+    for (const language of captionLanguages.filter((l) => !kept[l])) {
+      await this.#writeCaption(name, language)
+        .then((text) => this.#store.saveCaption(rule, language, text))
+        .catch((error: unknown) => console.error(`Writing a caption: ${error instanceof Error ? error.message : String(error)}`));
     }
   }
 
@@ -89,6 +108,7 @@ export class DemoEngine {
     if (latest.status === 'ready' && !this.#store.isCopied(rule.id)) {
       const { alerts } = await this.#backend.demoSchedule(clip.scenario, [{ draftRuleId: rule.id }]);
       this.#store.saveAlerts(rule.id, [{ piece: 0, alerts: await this.#kept(clip.id, clip.startsAt, alerts) }]);
+      await this.#writeCaptions(rule.id, latest.rule?.name ?? rule.name);
     }
     this.#store.updateRule(rule.id, {
       name: latest.rule?.name ?? rule.name,
@@ -102,7 +122,7 @@ export class DemoEngine {
   }
 
   // Each alert on the clip's own clock, with its evidence picture fetched here, since the backend's address lapses within the hour.
-  async #kept(clip: string, startsAt: number, alerts: BackendAlert[]): Promise<Array<Omit<DemoAlert, 'rule'>>> {
+  async #kept(clip: string, startsAt: number, alerts: BackendAlert[]): Promise<Array<Omit<DemoAlert, 'rule' | 'captions'>>> {
     return Promise.all(
       alerts.map(async (a) => ({
         key: a.key,

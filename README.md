@@ -19,6 +19,9 @@ sentence, check the camera can answer it, and ask the vision model on the camera
 - **A camera that sets itself up.** SAM 3.1 outlines what the camera sees under a list of everyday words
   (gate, wall, car, keke, person), by day and at night. Muse Spark picks what matters for that site and
   suggests the rules worth having, keeping SAM's own names so every rule is written in words SAM answers to.
+- **What it found at night.** Setup reports, zone by zone, which of the day, dusk and night pictures found it. A zone the night
+  picture missed is marked uncertain at night, and what was seen but could not be outlined is named. This is code over setup's
+  result, with no model call.
 - **Rules that know their place.** A rule is written against an outline SAM drew, not a box someone dragged by hand. The
   place comes from SAM's box ("the door on the right side of the picture") and goes in the sentence sent to
   Streamatic's rules, and SAM's outline is drawn on each alert's pictures. Muse Spark Open chooses which picture goes on
@@ -34,7 +37,12 @@ sentence, check the camera can answer it, and ask the vision model on the camera
   is done. The plan also names what the alert is for, in your own words, and code refuses a zone the rule is
   not about: "a keke parked by the gate" gets a box over the gate, not the gate's outline. A refused plan goes
   back to Muse Spark Open with what was wrong, up to three times, and then to you. Before you confirm, the page
-  shows how Streamatic read the rule. The model never marks a step done.
+  shows how Streamatic read the rule. The model never marks a step done. The sentence can also be a voice note, recorded on
+  the page or uploaded: Muse Voice Transcribe writes it out, listening for the words setup outlined, and you read it before
+  anything is planned. If this camera's setup did not outline what you asked about and another camera at the same place did,
+  the guide offers that camera, with the thing outlined; code decides this over the zones, not the model.
+- **Alerts in the resident's language.** Muse Spark Open says what a rule's alert means in Nigerian Pidgin and in Yoruba, from
+  the rule alone, with a choice of language on the alert. It is written once per rule and kept, so playing a clip calls no model.
 - **Search that goes past words.** Pause a clip and search for anything: a word, a click on the picture, or one of
   the things already found. Muse Spark Open lists what is on the frame and SAM 3.1 outlines each, down to the
   thing's exact shape, and every result stays on the one frame. SAM 3.1 then tracks the selected outline through the whole
@@ -52,7 +60,8 @@ sentence, check the camera can answer it, and ask the vision model on the camera
 | Model | Where | Used for |
 |---|---|---|
 | SAM 3.1 | Meta Model API | Outlining the scene at setup and on each alert's pictures, tracking a selected object through video |
-| Muse Spark Open | Baseten | Listing what a camera sees, suggesting rules, drafting the guide's plan, choosing the picture an alert carries, naming what can be tracked in a clip, planning answers to questions |
+| Muse Voice Transcribe | Meta Model API | Writing out a voice note as the sentence the guide plans from |
+| Muse Spark Open | Baseten | Listing what a camera sees, suggesting rules, drafting the guide's plan, choosing the picture an alert carries, writing an alert in Pidgin and Yoruba, naming what can be tracked in a clip, planning answers to questions |
 
 ## Running it
 
@@ -69,7 +78,7 @@ and no model is called. What needs more:
 
 | To use | Add |
 |---|---|
-| Searching and tracking anything new, the guide's plan, your own picture | `META_MODEL_API_KEY` (Meta Model API) and `BASETEN_API_KEY` (Baseten) in `.env` at the repository root |
+| Searching and tracking anything new, the guide's plan, a voice note, your own picture | `META_MODEL_API_KEY` (Meta Model API) and `BASETEN_API_KEY` (Baseten) in `.env` at the repository root |
 | Reading a new rule over a clip | Streamatic's backend, which is not public; this works on the hosted page |
 
 `npm test` in `service/` runs the tests, with no keys and no network. `web/` is the app (React and Tailwind); `service/` is
@@ -82,8 +91,12 @@ a `backend` in `camera.json` with its `deviceId`. `npm run demo-prepare -- <fold
 `demo.json` listing clips baked into Streamatic. `DEMO_CEILING_USD` sets the public page's daily ceiling on model spending
 (10 by default).
 
-Uploads on the public page are sent to Meta and to Baseten to be analysed, under the hackathon's credit terms, which allow
-Meta to use them for product improvement; the page keeps no copy.
+Uploads on the public page are sent to Meta and to Baseten to be analysed, and voice notes to Meta to be written out, under the
+hackathon's credit terms, which allow Meta to use them for product improvement; the page keeps no copy.
+
+## Measured results
+
+`eval/` holds what setup measured on three real cameras, and how to build it again.
 
 ## Credits
 

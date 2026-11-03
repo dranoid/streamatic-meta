@@ -49,6 +49,15 @@ export interface Camera {
   connected: boolean;
   // The hours of stored pictures a rule can be tried on before it is saved.
   stored: { from: number; to: number } | null;
+  // Which of the camera's pictures found each zone.
+  coverage: ZoneCoverage[];
+}
+
+export interface ZoneCoverage {
+  name: string;
+  foundOn: string[];
+  missedOn: string[];
+  uncertainAtNight: boolean;
 }
 
 export type Zone =
@@ -114,6 +123,13 @@ export interface PlanAttempt {
 export type PlanResult =
   | { status: 'ready'; plan: GuidePlan; attempts: PlanAttempt[] }
   | { status: 'needs-person'; problems: string[]; attempts: PlanAttempt[] };
+
+// Another camera at the same place whose setup outlined what was asked about, when this one's did not.
+export interface ElsewhereCamera {
+  camera: string;
+  name: string;
+  zones: string[];
+}
 
 export interface StoredEvent {
   id: number;
@@ -245,7 +261,11 @@ export interface DemoAlert {
   severity: string;
   picture: string | null;
   caption: string | null;
+  // What the rule's alerts say in other languages, written once and kept.
+  captions: Partial<Record<CaptionLanguage, string>>;
 }
+
+export type CaptionLanguage = 'pidgin' | 'yoruba';
 
 export interface OwnPictureSetup {
   picture: string;
@@ -267,6 +287,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+async function sendVoiceNote(path: string, audio: Blob): Promise<{ text: string }> {
+  const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': audio.type || 'application/octet-stream' }, body: audio });
+  const body = (await response.json().catch(() => ({}))) as { text?: string; error?: string };
+  if (!response.ok || !body.text) throw new ApiError(body.error ?? 'The voice note could not be read. Please try again.');
+  return { text: body.text };
+}
+
 export const api = {
   cameras: () => request<Camera[]>('/api/cameras'),
   runSetup: (camera: string) => request<CameraSetup>(`/api/cameras/${encodeURIComponent(camera)}/setup`, { method: 'POST' }),
@@ -278,7 +305,7 @@ export const api = {
   startTrial: (draft: string, confirmedCostMicroUsd: number | null) =>
     request<{ id: string }>('/api/trials', { method: 'POST', body: JSON.stringify({ draft, confirmedCostMicroUsd }) }),
   trial: (id: string) => request<Trial>(`/api/trials/${encodeURIComponent(id)}`),
-  planRule: (camera: string, sentence: string) => request<PlanResult>('/api/guide/plans', { method: 'POST', body: JSON.stringify({ camera, sentence }) }),
+  planRule: (camera: string, sentence: string) => request<PlanResult & { elsewhere: ElsewhereCamera[] }>('/api/guide/plans', { method: 'POST', body: JSON.stringify({ camera, sentence }) }),
   renameZone: (camera: string, zone: { word: string; label: string; objectId: string; name: string }) =>
     request<{ zones: CameraZone[]; rules: number; events: number }>(`/api/cameras/${encodeURIComponent(camera)}/zones`, {
       method: 'PATCH',
@@ -288,6 +315,8 @@ export const api = {
   events: () => request<StoredEvent[]>('/api/events'),
   event: (id: number) => request<StoredEvent>(`/api/events/${id}`),
   frames: (id: number) => request<EventFrame[]>(`/api/events/${id}/frames`),
+  eventCaption: (id: number, language: CaptionLanguage) =>
+    request<{ language: CaptionLanguage; text: string }>(`/api/events/${id}/captions`, { method: 'POST', body: JSON.stringify({ language }) }),
   clips: () => request<Clip[]>('/api/clips'),
   things: (clip: string, frame: number) => request<ThingsFound>(`/api/clips/${encodeURIComponent(clip)}/frames/${frame}/things`),
   outline: (clip: string, frame: number, what: { word: string } | { point: { x: number; y: number } } | Record<string, never>) =>
@@ -301,6 +330,8 @@ export const api = {
   demoClip: (clip: string) => request<DemoClip>(`/api/demo/clips/${encodeURIComponent(clip)}`),
   demoAlerts: (clip: string, ticks: DemoTick[]) =>
     request<{ alerts: DemoAlert[] }>(`/api/demo/clips/${encodeURIComponent(clip)}/alerts`, { method: 'POST', body: JSON.stringify({ ticks }) }),
+  voiceNoteOnCamera: (camera: string, audio: Blob) => sendVoiceNote(`/api/cameras/${encodeURIComponent(camera)}/voice-notes`, audio),
+  voiceNoteOnClip: (clip: string, audio: Blob) => sendVoiceNote(`/api/demo/clips/${encodeURIComponent(clip)}/voice-notes`, audio),
   planOnClip: (clip: string, sentence: string) => request<PlanResult>(`/api/demo/clips/${encodeURIComponent(clip)}/plans`, { method: 'POST', body: JSON.stringify({ sentence }) }),
   addToClip: (clip: string, rule: { text: string } | { plan: GuidePlan }) =>
     request<{ id: string }>(`/api/demo/clips/${encodeURIComponent(clip)}/rules`, { method: 'POST', body: JSON.stringify(rule) }),

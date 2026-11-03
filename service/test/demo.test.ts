@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { CameraFolder } from '../src/cameras/camera-folder.js';
 import { DemoEngine, showing, type DemoEngineBackend } from '../src/demo/engine.js';
 import { DemoLimits } from '../src/demo/limits.js';
-import { demoHandler, publicOnly } from '../src/demo/routes.js';
+import { demoHandler, publicOnly, NEEDS_KEYS } from '../src/demo/routes.js';
 import { DemoStore } from '../src/demo/store.js';
 import type { GuidePlan, GuidePlanner } from '../src/guide/plan.js';
 
@@ -76,6 +76,7 @@ function fakeBackend() {
   return { backend, typed, asked, setDraft: (status: string) => (draftStatus = status) };
 }
 
+const voiceKeywordsAsked: string[][] = [];
 let server: Server | undefined;
 afterEach(() => new Promise<void>((done) => (server ? server.close(() => done()) : done())));
 
@@ -83,17 +84,28 @@ const planner = (over: Partial<GuidePlan> = {}): GuidePlanner => ({
   draft: async ({ sentence }) => ({ sentence, about: 'door', zones: ['door'], box: null, hours: null, ...over }),
 });
 
-async function start({ ceilingMicroUsd = 5_000_000, setUp = async () => SETUP, guide = planner(), setup = SETUP, abilities }: { ceilingMicroUsd?: number; setUp?: (bytes: Uint8Array) => Promise<unknown>; guide?: GuidePlanner; setup?: unknown; abilities?: { models: boolean; rules: boolean } } = {}) {
+async function start({ ceilingMicroUsd = 5_000_000, setUp = async () => SETUP, guide = planner(), setup = SETUP, abilities, heard = 'Tell me when someone opens the door.', writesCaptions = true, captionsFail = false }: { writesCaptions?: boolean; captionsFail?: boolean;  ceilingMicroUsd?: number; setUp?: (bytes: Uint8Array) => Promise<unknown>; guide?: GuidePlanner; setup?: unknown; abilities?: { models: boolean; rules: boolean }; heard?: string } = {}) {
   const fake = fakeBackend();
   const root = await mkdtemp(join(tmpdir(), 'demo-'));
   await mkdir(join(root, 'cameras', CLIP), { recursive: true });
   await writeFile(join(root, 'cameras', CLIP, 'camera.json'), JSON.stringify({ name: 'Building entrance', site: 'a building', baseWords: [], pictures: { clip: 'still.jpg' } }));
   await writeFile(join(root, 'cameras', CLIP, 'setup.json'), JSON.stringify(setup));
   const store = new DemoStore(join(root, 'demo.db'));
+  const written: Array<{ rule: string; language: string }> = [];
+  let failing = captionsFail;
   const engine = new DemoEngine({
     store,
     backend: fake.backend,
     folder: root,
+    ...(writesCaptions
+      ? {
+          writeCaption: async (rule: string, language: string) => {
+            if (failing) throw new Error('The model is away');
+            written.push({ rule, language });
+            return `${language}: ${rule}`;
+          },
+        }
+      : {}),
     fetch: (async () => new Response(new Uint8Array([0xff, 0xd8, 0xff]), { status: 200 })) as unknown as typeof fetch,
   });
   await engine.copyClip({ id: CLIP, scenario: SCENARIO });
@@ -106,6 +118,7 @@ async function start({ ceilingMicroUsd = 5_000_000, setUp = async () => SETUP, g
     cameras: new CameraFolder(root),
     guidePlanner: guide,
     setUp,
+    voiceNotes: { read: async (request, keywords, beforeAsking) => { for await (const _ of request) void _; await beforeAsking?.(); voiceKeywordsAsked.push(keywords); return { status: 200, body: { text: heard } }; } },
     folder: root,
     trackSeconds: 30,
     ...(abilities ? { abilities } : {}),
@@ -122,7 +135,7 @@ async function start({ ceilingMicroUsd = 5_000_000, setUp = async () => SETUP, g
     const text = await res.text();
     return { status: res.status, text, body: text ? (JSON.parse(text) as any) : null };
   };
-  return { base, visitor, engine, root, ...fake };
+  return { base, visitor, engine, root, written, failCaptions: (to: boolean) => (failing = to), ...fake };
 }
 
 describe('the demo engine', () => {
@@ -146,7 +159,7 @@ describe('the demo engine', () => {
   });
 
   it('never shows an alert before its rule was ticked', () => {
-    const alert = { key: 'k', rule: 'r', atMs: 42_000, shownMs: 60_000, delayMs: 18_000, message: 'm', severity: 'medium', picture: null, caption: null };
+    const alert = { key: 'k', rule: 'r', atMs: 42_000, shownMs: 60_000, delayMs: 18_000, message: 'm', severity: 'medium', picture: null, caption: null, captions: {} };
     expect(showing([alert], 44_000)[0]!.shownMs).toBe(60_000);
     expect(showing([alert], 70_000)[0]!.shownMs).toBe(70_000);
   });
@@ -284,7 +297,89 @@ describe('the guide on a clip', () => {
   });
 });
 
+describe('alert captions in other languages', () => {
+  const tick = { ticks: [{ rule: 'rule-1', armedMs: 0 }] };
+
+  it('writes each rule once per language, however many alerts it raises, and keeps it', async () => {
+    const { written, engine } = await start();
+    expect(written.map((w) => w.language).sort()).toEqual(['pidgin', 'yoruba']);
+    expect(written[0]!.rule).toBe('Door');
+    await engine.copyClip({ id: CLIP, scenario: SCENARIO });
+    expect(written).toHaveLength(2);
+  });
+
+  it('carries the kept captions with the alert, and playing asks the model nothing', async () => {
+    const { visitor, written } = await start();
+    const before = written.length;
+    const { body } = await visitor('v1')(`/api/demo/clips/${CLIP}/alerts`, tick);
+    expect(body.alerts[0].captions).toEqual({ pidgin: 'pidgin: Door', yoruba: 'yoruba: Door' });
+    expect(written.length).toBe(before);
+  });
+
+  it('writes a copy with no captions when there is no model to write them, and the alert still shows', async () => {
+    const { visitor } = await start({ writesCaptions: false });
+    const { body } = await visitor('v1')(`/api/demo/clips/${CLIP}/alerts`, tick);
+    expect(body.alerts[0].captions).toEqual({});
+    expect(body.alerts[0].message).toBe('A door opened.');
+  });
+
+  it('keeps the alert when a caption cannot be written, and tries again on the next copy', async () => {
+    const { visitor, engine, failCaptions, written } = await start({ captionsFail: true });
+    expect((await visitor('v1')(`/api/demo/clips/${CLIP}/alerts`, tick)).body.alerts).toHaveLength(1);
+    failCaptions(false);
+    await engine.copyClip({ id: CLIP, scenario: SCENARIO });
+    expect(written).toHaveLength(2);
+    expect((await visitor('v1')(`/api/demo/clips/${CLIP}/alerts`, tick)).body.alerts[0].captions).toEqual({ pidgin: 'pidgin: Door', yoruba: 'yoruba: Door' });
+  });
+
+  it('writes a typed rule’s captions before it says it is ready', async () => {
+    const { visitor, setDraft, written } = await start();
+    const ask = visitor('v1');
+    const before = written.length;
+    const { body } = await ask(`/api/demo/clips/${CLIP}/rules`, { text: 'Tell me when a door opens' });
+    setDraft('ready');
+    await ask(`/api/demo/clips/${CLIP}/rules/${body.id}`);
+    expect(written.length).toBeGreaterThan(before);
+    expect(written.at(-1)!.rule).toBe('Door');
+  });
+});
+
+describe('a voice note on a clip', () => {
+  const voice = (base: string, cookie = 'v1') => fetch(`${base}/api/demo/clips/${CLIP}/voice-notes`, { method: 'POST', headers: { 'content-type': 'audio/webm', cookie: `streamatic_demo=${cookie}` }, body: new Uint8Array([1, 2, 3]) });
+
+  it('answers with what was said, listening for the zones setup outlined on the clip', async () => {
+    const { base } = await start();
+    voiceKeywordsAsked.length = 0;
+    const res = await voice(base);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ text: 'Tell me when someone opens the door.' });
+    expect(voiceKeywordsAsked[0]).toContain('door');
+  });
+
+  it('counts as a plan against the visitor’s limit', async () => {
+    const { base, visitor } = await start();
+    const post = visitor('v1');
+    for (let i = 0; i < 10; i++) expect((await voice(base)).status).toBe(200);
+    for (let i = 0; i < 10; i++) expect((await post(`/api/demo/clips/${CLIP}/plans`, { sentence: 'Tell me when a door opens' })).status).toBe(200);
+    const res = await voice(base);
+    expect(res.status).toBe(429);
+  });
+
+  it('is refused on a clip that does not exist', async () => {
+    const { base } = await start();
+    const res = await fetch(`${base}/api/demo/clips/nowhere/voice-notes`, { method: 'POST', body: new Uint8Array([1]) });
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('a copy of the page with no keys and no login', () => {
+  it('refuses a voice note as it refuses a plan', async () => {
+    const { base } = await start({ abilities: { models: false, rules: false } });
+    const res = await fetch(`${base}/api/demo/clips/${CLIP}/voice-notes`, { method: 'POST', body: new Uint8Array([1]) });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toBe(NEEDS_KEYS);
+  });
+
   it('plays its clips and alerts, and says plainly what it cannot do, spending nothing', async () => {
     const { visitor, typed, base } = await start({ abilities: { models: false, rules: false } });
     const ask = visitor('v1');

@@ -25,6 +25,15 @@ function event(at: number, overrides: Partial<NewEvent> = {}): NewEvent {
 const store = () => new EventStore(':memory:', 'Africa/Lagos');
 
 describe('EventStore', () => {
+  it('keeps a caption by the rule and language, so a rule is written once whatever its events', () => {
+    const store = new EventStore(':memory:', 'Africa/Lagos');
+    expect(store.caption('Door', 'pidgin')).toBeNull();
+    store.saveCaption('Door', 'pidgin', 'Pesin don open door.');
+    expect(store.caption('Door', 'pidgin')).toBe('Pesin don open door.');
+    expect(store.caption('Door', 'yoruba')).toBeNull();
+    expect(store.caption('Gate', 'pidgin')).toBeNull();
+  });
+
   it('returns an added event by its id', () => {
     const events = store();
     const id = events.add(event(EVENING));

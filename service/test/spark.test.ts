@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { SparkClient } from '../src/spark/client.js';
+import { SparkAlertCaption } from '../src/spark/alert-caption.js';
 import { SparkSetupPlanner } from '../src/spark/setup-planner.js';
 
 function reply(content: string, status = 200): Response {
@@ -85,5 +86,35 @@ describe('SparkSetupPlanner', () => {
     expect(prompt).toContain('a residential street gate');
     expect(prompt).toContain('gate (seen: day, night)');
     expect(rules).toEqual([{ sentence: 'Alert me if the gate is open after 10 pm.', zones: ['gate'] }]);
+  });
+});
+
+describe('SparkAlertCaption', () => {
+  const asked: string[] = [];
+  const spark = { json: (async (instruction: string, pictures: unknown[], shape: z.ZodType) => (asked.push(instruction), expect(pictures).toEqual([]), shape.parse({ caption: ' Person don open the door. ' }))) as never };
+
+  it('asks for the language chosen, from the rule alone', async () => {
+    const caption = await new SparkAlertCaption(spark).write('Someone opens the door', 'pidgin');
+    expect(caption).toBe('Person don open the door.');
+    expect(asked.at(-1)).toContain('Nigerian Pidgin');
+    expect(asked.at(-1)).toContain('Someone opens the door');
+  });
+
+  it('asks for fixed text the software sends, so a rule worded as a request is not read as a doubt', async () => {
+    await new SparkAlertCaption(spark).write('Tell me when someone is opening the front door.', 'pidgin');
+    expect(asked.at(-1)).toMatch(/fixed notice text/);
+    expect(asked.at(-1)).toMatch(/claims nothing about this moment/);
+    expect(asked.at(-1)).toMatch(/never say it is unknown/i);
+  });
+
+  it('refuses a Yoruba caption left in English, so that it is not kept', async () => {
+    await expect(new SparkAlertCaption(spark).write('Someone opens the door', 'yoruba')).rejects.toThrow(/Yoruba/);
+    const yoruba = { json: (async (_: string, __: unknown[], shape: z.ZodType) => shape.parse({ caption: 'Ẹnìkan ṣí ìlẹ̀kùn.' })) as never };
+    expect(await new SparkAlertCaption(yoruba).write('Someone opens the door', 'yoruba')).toBe('Ẹnìkan ṣí ìlẹ̀kùn.');
+  });
+
+  it('asks for Yoruba with its marks', async () => {
+    await new SparkAlertCaption(spark).write('Someone opens the door', 'yoruba').catch(() => null);
+    expect(asked.at(-1)).toContain('Yoruba, with its proper tone marks');
   });
 });

@@ -1,17 +1,19 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Cctv, Check, Clock, Compass, Eye, EyeOff, History, Loader2, MousePointerClick, Pencil, Plus, ScanSearch, Sparkles, SquareDashed, Trash2, Wand2, X } from 'lucide-react';
+import { Cctv, Check, Clock, Compass, Eye, EyeOff, History, Loader2, Minus, MousePointerClick, Pencil, Plus, ScanSearch, Sparkles, SquareDashed, Trash2, Wand2, X } from 'lucide-react';
 import { PageHeader } from '@/components/layout/page-header';
 import { OverlayChip, PictureFrame, ZONE_COLOURS, type DrawnPath } from '@/components/picture-frame';
 import { Badge } from '@/components/ui/badge';
+import { VoiceNote } from '@/components/voice-note';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Label, Select, Textarea } from '@/components/ui/input';
 import { Notice } from '@/components/ui/notice';
 import { Segmented } from '@/components/ui/segmented';
 import { Skeleton } from '@/components/ui/skeleton';
-import { api, nowUrl, pictureUrl, type Box, type Camera, type CameraZone, type GuidePlan, type NewRule, type RuleReading, type TrialEstimate, type NewZone, type PlanAttempt, type SavedRule, type Trial } from '@/lib/api';
+import { api, nowUrl, pictureUrl, type Box, type Camera, type CameraZone, type ElsewhereCamera, type GuidePlan, type NewRule, type RuleReading, type TrialEstimate, type NewZone, type PlanAttempt, type SavedRule, type Trial } from '@/lib/api';
 import { cn } from '@/lib/cn';
+import { navigate } from '@/lib/router';
 import { clockTime, dateAndTime, sentence, shortDate } from '@/lib/time';
 
 // One SAM outline the person selected, as setup knows it: the zone is the one that holds this piece.
@@ -313,7 +315,7 @@ function CameraView({ camera }: { camera: Camera }) {
               }}
             />
           ) : (
-            camera.setup && <GuideCard camera={camera} note={guideNote} onPlanned={startGuide} onBuildYourself={(text) => startRule({ ...EMPTY_DRAFT, sentence: text })} />
+            camera.setup && <GuideCard key={camera.id} camera={camera} note={guideNote} onPlanned={startGuide} onBuildYourself={(text) => startRule({ ...EMPTY_DRAFT, sentence: text })} />
           )}
           {!composing &&
             camera.setup &&
@@ -598,7 +600,46 @@ function SetupReport({ camera }: { camera: Camera }) {
           note={setup.notOutlined.map((m) => `${m.item} (tried ${m.triedWords.join(', ')})`).join('; ') || 'none'}
         />
       </CardContent>
+      {Object.keys(camera.pictures).length > 1 && camera.coverage.length > 0 && <CoverageReport camera={camera} />}
     </Card>
+  );
+}
+
+function CoverageReport({ camera }: { camera: Camera }) {
+  const pictures = Object.keys(camera.pictures);
+  const uncertain = camera.coverage.filter((z) => z.uncertainAtNight).length;
+  return (
+    <CardContent className='border-t pt-4'>
+      <h3 className='text-sm font-medium'>Which pictures found each zone</h3>
+      <p className='text-muted-foreground mt-1 text-xs leading-relaxed'>
+        {uncertain === 0
+          ? 'Every zone was found on the night picture.'
+          : `${uncertain} of ${camera.coverage.length} zones were not found on the night picture, so a rule on them may not hold after dark.`}
+      </p>
+      <ul className='mt-3 divide-y text-sm'>
+        {camera.coverage.map((zone) => (
+          <li key={zone.name} className='flex flex-wrap items-center gap-x-3 gap-y-1.5 py-2'>
+            <span className='min-w-32 flex-1 font-medium'>{zone.name}</span>
+            <span className='flex flex-wrap items-center gap-1.5'>
+              {pictures.map((label) => {
+                const found = zone.foundOn.includes(label);
+                return (
+                  <span
+                    key={label}
+                    className={cn('inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs capitalize', found ? 'bg-muted/60' : 'text-muted-foreground border-dashed')}
+                  >
+                    {found ? <Check className='size-3' /> : <Minus className='size-3' />}
+                    {label}
+                    <span className='sr-only'>{found ? ': found' : ': not found'}</span>
+                  </span>
+                );
+              })}
+              {zone.uncertainAtNight && <Badge variant='warning'>Uncertain at night</Badge>}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </CardContent>
   );
 }
 
@@ -1105,6 +1146,27 @@ function PlanSummary({ plan, attempts }: { plan: GuidePlan; attempts: PlanAttemp
   );
 }
 
+function CameraOffer({ offer, sentence: asked }: { offer: ElsewhereCamera; sentence: string }) {
+  const cameras = useQuery({ queryKey: ['cameras'], queryFn: api.cameras });
+  const camera = cameras.data?.find((c) => c.id === offer.camera);
+  const [label, file] = Object.entries(camera?.pictures ?? {})[0] ?? [];
+  const paths: DrawnPath[] = (camera?.zones ?? [])
+    .filter((z) => offer.zones.includes(z.name))
+    .flatMap((z, i) => (z.outlines[label ?? ''] ?? []).map((o) => ({ key: `${z.name}-${o.objectId}`, d: o.path, colour: colourAt(i), style: 'selected' as const })));
+  return (
+    <div className='space-y-2 rounded-lg border p-3'>
+      {camera && file && <PictureFrame src={pictureUrl(camera.id, file)} alt={`${offer.name}, with ${offer.zones.join(' and ')} outlined`} paths={paths} />}
+      <p className='text-sm'>
+        <span className='font-medium'>{offer.name}</span>
+        <span className='text-muted-foreground'> outlined {offer.zones.join(', ')}.</span>
+      </p>
+      <Button size='sm' onClick={() => navigate(`/cameras/${encodeURIComponent(offer.camera)}?ask=${encodeURIComponent(asked)}`)}>
+        Open {offer.name}
+      </Button>
+    </div>
+  );
+}
+
 function GuideCard({
   camera,
   note,
@@ -1116,12 +1178,19 @@ function GuideCard({
   onPlanned: (run: GuideRun) => void;
   onBuildYourself: (sentence: string) => void;
 }) {
-  const [text, setText] = useState('');
+  // Another camera's guide can send a sentence here, so the person need not say it twice.
+  const [text, setText] = useState(() => new URLSearchParams(location.search).get('ask') ?? '');
+  const [stayed, setStayed] = useState(false);
   const planning = useMutation({
     mutationFn: (sentence: string) => api.planRule(camera.id, sentence),
-    onSuccess: (result) => result.status === 'ready' && onPlanned({ plan: result.plan, attempts: result.attempts }),
+    onMutate: () => setStayed(false),
+    onSuccess: (result) => {
+      if (result.status === 'ready' && result.elsewhere.length === 0) onPlanned({ plan: result.plan, attempts: result.attempts });
+    },
   });
-  const refused = planning.data?.status === 'needs-person' ? planning.data : null;
+  const planned = planning.data;
+  const elsewhere = planned && !stayed ? planned.elsewhere : [];
+  const refused = planned?.status === 'needs-person' && elsewhere.length === 0 ? planned : null;
 
   return (
     <Card>
@@ -1152,6 +1221,7 @@ function GuideCard({
             onChange={(e) => setText(e.target.value)}
             placeholder='Tell me if anyone is in the yard after 11 pm.'
           />
+          <VoiceNote read={(audio) => api.voiceNoteOnCamera(camera.id, audio)} onText={setText} />
           <Button type='submit' disabled={planning.isPending || !text.trim()}>
             {planning.isPending ? <Loader2 className='animate-spin' /> : <Compass />}
             {planning.isPending ? 'Planning' : 'Plan the rule'}
@@ -1159,6 +1229,24 @@ function GuideCard({
         </form>
         {note && <Notice>{note}</Notice>}
         {planning.isError && <Notice tone='error'>{planning.error.message}</Notice>}
+        {elsewhere.length > 0 && (
+          <div className='space-y-3'>
+            <Notice>Setup did not outline that on this camera. It did on {elsewhere.map((c) => c.name).join(' and ')}.</Notice>
+            {elsewhere.map((other) => (
+              <CameraOffer key={other.camera} offer={other} sentence={text.trim()} />
+            ))}
+            <Button
+              variant='outline'
+              size='sm'
+              onClick={() => {
+                setStayed(true);
+                if (planned?.status === 'ready') onPlanned({ plan: planned.plan, attempts: planned.attempts });
+              }}
+            >
+              Stay on this camera
+            </Button>
+          </div>
+        )}
         {refused && (
           <div className='space-y-2'>
             <Notice tone='error'>

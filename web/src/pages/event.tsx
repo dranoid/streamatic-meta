@@ -1,7 +1,8 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { BellRing, Cctv, Clock, ScanSearch, Target } from 'lucide-react';
 import { ClipPlayer } from '@/components/clip-player';
+import { LanguageChoice, type AlertLanguage } from '@/components/language-choice';
 import { PageHeader } from '@/components/layout/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Notice } from '@/components/ui/notice';
@@ -42,11 +43,36 @@ export function EventPage({ id }: { id: number }) {
                 <Fact icon={<Cctv />} term='Camera' value={e.camera} />
                 <Fact icon={<Clock />} term='Time' value={e.recorded ? `${dateAndTime(e.at)}, from a recorded run` : dateAndTime(e.at)} />
               </dl>
+              <EventCaption id={e.id} />
             </CardContent>
           </Card>
         </aside>
       </div>
     </>
+  );
+}
+
+// A language is written the first time it is chosen, and kept with the event.
+function EventCaption({ id }: { id: number }) {
+  const [language, setLanguage] = useState<AlertLanguage>('english');
+  const caption = useQuery({
+    queryKey: ['event-caption', id, language],
+    queryFn: () => api.eventCaption(id, language as Exclude<AlertLanguage, 'english'>),
+    enabled: language !== 'english',
+    retry: false,
+    staleTime: Infinity,
+  });
+  return (
+    <div className='mt-4 space-y-2 border-t pt-4'>
+      <LanguageChoice value={language} onChange={setLanguage} />
+      {language !== 'english' && caption.isPending && <Skeleton className='h-10 rounded-md' />}
+      {language !== 'english' && caption.isError && <Notice tone='error'>{caption.error.message}</Notice>}
+      {language !== 'english' && caption.data && (
+        <p lang={language === 'yoruba' ? 'yo' : 'pcm'} className='text-sm font-medium leading-relaxed'>
+          {caption.data.text}
+        </p>
+      )}
+    </div>
   );
 }
 

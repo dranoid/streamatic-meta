@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cameraZones, zoneAt, type CameraZone } from '../src/cameras/camera-zones.js';
+import { cameraZones, nightCoverage, setupMeasure, zoneAt, type CameraZone } from '../src/cameras/camera-zones.js';
 import type { Outline } from '../src/sam/outlines.js';
 import type { CameraSetup } from '../src/setup/camera-setup.js';
 
@@ -35,6 +35,11 @@ describe('cameraZones', () => {
     expect(doors.map((z) => z.name)).toEqual(['door 1', 'door 2']);
     expect(ids(doors[0]!)).toEqual({ day: ['1'], night: ['0'] });
     expect(ids(doors[1]!)).toEqual({ day: ['0'], evening: ['0'], night: ['1'] });
+  });
+
+  it('keeps the word the thing was first listed under, for when SAM outlined it under another', () => {
+    const renamed: CameraSetup = { ...setup, zones: [{ name: 'auto rickshaw', item: 'keke', seenAt: ['day'], outlines: { day: [outline('auto rickshaw', '0', tv)] } }] };
+    expect(cameraZones(renamed, [])[0]).toMatchObject({ word: 'auto rickshaw', item: 'keke' });
   });
 
   it("names a zone after SAM's word when the word outlines one thing", () => {
@@ -82,5 +87,36 @@ describe('zoneAt', () => {
     const zones = cameraZones(setup, []);
     expect(zoneAt(zones, 'door', nudge(front, 2))?.name).toBe('door 2');
     expect(zoneAt(zones, 'door', tv)).toBeNull();
+  });
+});
+
+describe('setupMeasure', () => {
+  it('counts the words outlined, those found on every picture and those found at night, per camera and overall, naming no camera', () => {
+    const measured = setupMeasure([
+      { pictures: ['day', 'evening', 'night'], setup },
+      { pictures: ['day', 'evening', 'night'], setup: { ...setup, zones: [setup.zones[1]!], notOutlined: [{ item: 'drain', triedWords: ['drain', 'ditch'] }] } },
+    ]);
+    expect(measured.cameras[0]).toEqual({ camera: 'Camera 1', outlined: 2, onEveryPicture: 1, atNight: 1, notOutlined: [], words: [{ word: 'door', foundOn: ['day', 'evening', 'night'] }, { word: 'television', foundOn: ['day'] }] });
+    expect(measured.cameras[1]).toMatchObject({ camera: 'Camera 2', outlined: 1, onEveryPicture: 0, atNight: 0, notOutlined: ['drain'] });
+    expect(measured.total).toEqual({ outlined: 3, onEveryPicture: 1, atNight: 1, notOutlined: 1 });
+  });
+});
+
+describe('nightCoverage', () => {
+  const zones = cameraZones(setup, []);
+
+  it('says for each zone which pictures found it, in the order the camera lists its pictures', () => {
+    const report = nightCoverage(zones, ['day', 'evening', 'night']);
+    expect(report.find((z) => z.name === 'door 1')).toMatchObject({ foundOn: ['day', 'night'], missedOn: ['evening'], uncertainAtNight: false });
+    expect(report.find((z) => z.name === 'door 2')).toMatchObject({ foundOn: ['day', 'evening', 'night'], missedOn: [], uncertainAtNight: false });
+  });
+
+  it('flags a zone no night picture found as uncertain at night', () => {
+    const report = nightCoverage(zones, ['day', 'evening', 'night']);
+    expect(report.find((z) => z.name === 'television')).toMatchObject({ foundOn: ['day'], missedOn: ['evening', 'night'], uncertainAtNight: true });
+  });
+
+  it('flags nothing on a camera that has no night picture to judge by', () => {
+    expect(nightCoverage(zones, ['day', 'evening']).some((z) => z.uncertainAtNight)).toBe(false);
   });
 });

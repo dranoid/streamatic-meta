@@ -58,6 +58,12 @@ export class EventStore {
   constructor(path: string, timeZone: string) {
     this.#db = new DatabaseSync(path);
     this.#hour = new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hourCycle: 'h23', timeZone });
+    this.#db.exec(`CREATE TABLE IF NOT EXISTS rule_captions (
+      rule TEXT NOT NULL,
+      language TEXT NOT NULL,
+      text TEXT NOT NULL,
+      PRIMARY KEY (rule, language)
+    )`);
     this.#db.exec(`CREATE TABLE IF NOT EXISTS events (
       id INTEGER PRIMARY KEY,
       camera TEXT NOT NULL,
@@ -126,6 +132,16 @@ export class EventStore {
   addFrames(eventId: number, frames: EventFrame[]): void {
     const insert = this.#db.prepare('INSERT INTO event_frames (event_id, at, file, outline) VALUES (?, ?, ?, ?)');
     for (const frame of frames) insert.run(eventId, frame.at, frame.file, frame.outline);
+  }
+
+  // Kept by the rule's sentence, so a rule's events all say the same thing and it is written once.
+  caption(rule: string, language: string): string | null {
+    const row = this.#db.prepare('SELECT text FROM rule_captions WHERE rule = ? AND language = ?').get(rule, language) as { text: string } | undefined;
+    return row?.text ?? null;
+  }
+
+  saveCaption(rule: string, language: string, text: string): void {
+    this.#db.prepare('INSERT OR REPLACE INTO rule_captions (rule, language, text) VALUES (?, ?, ?)').run(rule, language, text);
   }
 
   frames(eventId: number): EventFrame[] {

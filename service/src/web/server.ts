@@ -8,7 +8,10 @@ import { BackendError, type RuleBackend, type RuleDraft, type StoredAsk } from '
 import { sentenceWithPlaces } from '../backend/place.js';
 import type { Camera, CameraFolder } from '../cameras/camera-folder.js';
 import type { Trials } from '../backend/trials.js';
-import { zoneAt, type CameraZone } from '../cameras/camera-zones.js';
+import { nightCoverage, zoneAt, type CameraZone } from '../cameras/camera-zones.js';
+import { camerasThatOutlined } from '../guide/route.js';
+import { captionLanguages, type CaptionLanguage, type WriteCaption } from '../spark/alert-caption.js';
+import { voiceKeywords, type VoiceNotes } from '../voice/voice-note.js';
 import { keepStretch } from '../events/copy-alert.js';
 import type { EventStore } from '../events/store.js';
 import type { ClipFolder } from '../follow/clips.js';
@@ -62,6 +65,7 @@ const thingsInput = z.union([
   z.object({ point: z.object({ x: z.number().int().min(0), y: z.number().int().min(0) }) }),
   z.object({}),
 ]);
+const captionAsked = z.object({ language: z.enum(captionLanguages as [CaptionLanguage, ...CaptionLanguage[]]) });
 const followInput = z.object({ frame: z.number().int().min(0), thing: text(10) });
 
 // A draft waits here for the person's yes, so what is saved is exactly what they were shown.
@@ -108,6 +112,8 @@ export function appHandler({
   webDir,
   planner,
   guidePlanner,
+  voiceNotes,
+  writeCaption,
   backend,
   trials,
   pictureSize,
@@ -125,6 +131,8 @@ export function appHandler({
   webDir: string;
   planner: QuestionPlanner;
   guidePlanner: GuidePlanner;
+  voiceNotes: Pick<VoiceNotes, 'read'>;
+  writeCaption: WriteCaption;
   // Rules live in the backend, which answers them; null when the app runs without one.
   backend: RuleBackend | null;
   trials: Trials;
@@ -181,6 +189,18 @@ export function appHandler({
       return;
     }
     if (method === 'GET' && path === '/api/events') return send(response, 200, events.list({}));
+    if (method === 'POST' && (match = /^\/api\/events\/(\d+)\/captions$/.exec(path))) {
+      const parsed = captionAsked.safeParse(await readJson(request));
+      if (!parsed.success) throw new RequestError(400, 'Choose a language for the caption.');
+      const event = events.get(Number(match[1]));
+      if (!event) return send(response, 404, { error: 'No such event.' });
+      const { language } = parsed.data;
+      const kept = events.caption(event.rule, language);
+      if (kept !== null) return send(response, 200, { language, text: kept });
+      const text = await writeCaption(event.rule, language);
+      events.saveCaption(event.rule, language, text);
+      return send(response, 200, { language, text });
+    }
     if (method === 'GET' && (match = /^\/api\/events\/(\d+)\/frames$/.exec(path))) {
       return send(response, 200, events.frames(Number(match[1])));
     }
@@ -268,7 +288,14 @@ export function appHandler({
       if (!parsed.success) throw new RequestError(400, 'Tell the guide what to watch.');
       const camera = await cameras.get(parsed.data.camera);
       if (!camera) throw new RequestError(404, 'No such camera.');
-      return send(response, 200, await planRule({ sentence: parsed.data.sentence, site: camera.site, zones: camera.zones, planner: guidePlanner }));
+      const planned = await planRule({ sentence: parsed.data.sentence, site: camera.site, zones: camera.zones, planner: guidePlanner });
+      return send(response, 200, { ...planned, elsewhere: camerasThatOutlined(parsed.data.sentence, camera, await cameras.list()) });
+    }
+    if (method === 'POST' && (match = /^\/api\/cameras\/([^/]+)\/voice-notes$/.exec(path))) {
+      const camera = await cameras.get(decodeURIComponent(match[1]!));
+      if (!camera) throw new RequestError(404, 'No such camera.');
+      const { status, body } = await voiceNotes.read(request, voiceKeywords(camera.zones));
+      return send(response, status, body);
     }
     if (method === 'GET' && (match = /^\/api\/rule-drafts\/([^/]+)\/trial-estimate$/.exec(path))) {
       const { held, ask } = askFor(decodeURIComponent(match[1]!));
@@ -374,13 +401,14 @@ export function appHandler({
 
   // Each zone with the rules that watch it, found by place, so the camera page can tell active zones from the rest.
   async function withRules(full: Camera) {
-    const { episode, backend: linked, ...camera } = full;
+    const { episode, backend: linked, group: _group, ...camera } = full;
     const onCamera = rules.list(camera.id);
     return {
       ...camera,
       playing: episode ? { at: playing(camera.id)?.at ?? null } : null,
       connected: backend !== null && linked !== null,
       stored: linked?.recorded ? { from: Date.parse(linked.recorded.from), to: Date.parse(linked.recorded.to) } : null,
+      coverage: nightCoverage(camera.zones, Object.keys(camera.pictures)),
       zones: camera.zones.map((zone) => ({
         ...zone,
         rules: onCamera.filter((r) => r.zones.some((z) => z.kind === 'outline' && zoneAt(camera.zones, z.word, z.reference) === zone)).map((r) => r.id),

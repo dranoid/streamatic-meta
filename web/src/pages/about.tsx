@@ -18,7 +18,7 @@ const PARTS = [
   {
     title: 'The guide',
     sam: null,
-    spark: 'Drafts a plan for the rule from the person’s sentence.',
+    spark: 'Drafts a plan for the rule from the person’s sentence, typed or written out from a voice note by Muse Voice Transcribe.',
     code: 'Checks the plan against the camera’s zones and the person’s own words, and sends a refused plan back with the reason. Shows how Streamatic reads the rule, and ticks a step only when the page shows it done and the person confirms it.',
   },
   {
@@ -34,6 +34,12 @@ const PARTS = [
     code: 'Keeps the clips and rules in this page’s own database, serves the videos, and works out from the rule’s tick what you see and when. Whether and when a rule alerts is decided by Streamatic’s existing rules, built before this event, and copied here once.',
   },
   {
+    title: 'Alerts in Pidgin and Yoruba',
+    sam: null,
+    spark: 'Says what a rule’s alert means in the language chosen, from the rule alone. It is not asked whether the rule holds.',
+    code: 'Keeps what was written, so each rule is written once and playing a clip calls no model.',
+  },
+  {
     title: 'Questions about events',
     sam: null,
     spark: 'Chooses what to look up for the question.',
@@ -47,7 +53,7 @@ export function AboutPage() {
       <PageHeader
         icon={<Info />}
         title='About'
-        description='Streamatic, built for the Meta hackathon on SAM 3.1 and Muse Spark Open. This page sets out what each part does.'
+        description='Streamatic, built for the Meta hackathon on SAM 3.1, Muse Spark Open and Muse Voice Transcribe. This page sets out what each part does.'
       />
       <div className='grid gap-4 lg:grid-cols-2'>
         {PARTS.map((part) => (
@@ -69,7 +75,7 @@ export function AboutPage() {
         <CardHeader>
           <div>
             <CardTitle>Where the models run</CardTitle>
-            <CardDescription>SAM 3.1 is called through Meta’s Model API. Muse Spark Open runs on Baseten.</CardDescription>
+            <CardDescription>SAM 3.1 and Muse Voice Transcribe are called through Meta’s Model API. Muse Spark Open runs on Baseten.</CardDescription>
           </div>
         </CardHeader>
       </Card>

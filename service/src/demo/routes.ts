@@ -11,6 +11,7 @@ import type { CameraZone } from '../cameras/camera-zones.js';
 import type { Clip, ClipFolder } from '../follow/clips.js';
 import { checkPlan, planRule, type GuidePlan, type GuidePlanner } from '../guide/plan.js';
 import type { Box } from '../sam/outlines.js';
+import { voiceKeywords, type VoiceNotes } from '../voice/voice-note.js';
 import type { DemoEngine } from './engine.js';
 import type { DemoLimits, Spending } from './limits.js';
 import type { DemoRule, DemoStore, RuleZone } from './store.js';
@@ -107,6 +108,7 @@ export function demoHandler({
   cameras,
   guidePlanner,
   setUp,
+  voiceNotes,
   folder,
   trackSeconds,
   abilities = { models: true, rules: true },
@@ -118,6 +120,7 @@ export function demoHandler({
   cameras: Pick<CameraFolder, 'get'>;
   guidePlanner: GuidePlanner;
   setUp: (bytes: Uint8Array) => Promise<unknown>;
+  voiceNotes: Pick<VoiceNotes, 'read'>;
   folder: string;
   trackSeconds: number;
   // What this copy can spend on; a judge's own copy may have neither, and the recorded clips need neither.
@@ -209,6 +212,16 @@ export function demoHandler({
       await charge(visitorOf(request, response), 'plan');
       const result = await planRule({ sentence: parsed.data.sentence, site: camera.site, zones: camera.zones, planner: guidePlanner });
       send(response, 200, result.status === 'ready' ? { ...result, plan: placedBox(result.plan, camera.zones) } : result);
+      return true;
+    }
+    if (method === 'POST' && (match = /^\/api\/demo\/clips\/([^/]+)\/voice-notes$/.exec(path))) {
+      const id = decodeURIComponent(match[1]!);
+      clipRow(id);
+      if (!abilities.models) throw new Refusal(409, NEEDS_KEYS);
+      const camera = await cameras.get(id);
+      const visitor = visitorOf(request, response);
+      const { status, body } = await voiceNotes.read(request, voiceKeywords(camera?.zones ?? []), () => charge(visitor, 'plan'));
+      send(response, status, body);
       return true;
     }
     if (method === 'POST' && (match = /^\/api\/demo\/clips\/([^/]+)\/rules$/.exec(path))) {

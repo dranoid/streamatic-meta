@@ -11,8 +11,17 @@ export interface ZoneName {
 // One thing SAM outlined, matched across the camera's pictures: its outline on each picture, in pieces where SAM cut it up.
 export interface CameraZone {
   word: string;
+  // What it was first listed as, when SAM only outlined it under another word.
+  item: string;
   name: string;
   outlines: Record<string, Outline[]>;
+}
+
+export interface ZoneCoverage {
+  name: string;
+  foundOn: string[];
+  missedOn: string[];
+  uncertainAtNight: boolean;
 }
 
 // The camera does not move, so one thing outlines in nearly the same box on every picture, or as pieces inside that box.
@@ -42,9 +51,42 @@ export function cameraZones(setup: CameraSetup, names: ZoneName[]): CameraZone[]
         (n) => likenessTo(outlines, n.box),
       );
       const numbered = ordered.length > 1 ? `${setupZone.name} ${i + 1}` : setupZone.name;
-      return { word: setupZone.name, name: saved?.name ?? numbered, outlines };
+      return { word: setupZone.name, item: setupZone.item, name: saved?.name ?? numbered, outlines };
     });
   });
+}
+
+// Which of the camera's pictures found each zone. A rule on a zone the night picture missed may not hold after dark.
+export function nightCoverage(zones: CameraZone[], pictures: string[]): ZoneCoverage[] {
+  return zones.map((zone) => {
+    const found = (label: string) => (zone.outlines[label]?.length ?? 0) > 0;
+    return {
+      name: zone.name,
+      foundOn: pictures.filter(found),
+      missedOn: pictures.filter((label) => !found(label)),
+      uncertainAtNight: pictures.includes('night') && !found('night'),
+    };
+  });
+}
+
+// The numbers behind eval/: what setup outlined under each word, read from its results, naming no camera or place.
+export function setupMeasure(runs: Array<{ pictures: string[]; setup: CameraSetup }>) {
+  const cameras = runs.map(({ pictures, setup }, i) => {
+    const found = (seenAt: string[]) => pictures.filter((label) => seenAt.includes(label));
+    return {
+      camera: `Camera ${i + 1}`,
+      outlined: setup.zones.length,
+      onEveryPicture: setup.zones.filter((z) => found(z.seenAt).length === pictures.length).length,
+      atNight: setup.zones.filter((z) => z.seenAt.includes('night')).length,
+      notOutlined: setup.notOutlined.map((m) => m.item),
+      words: setup.zones.map((z) => ({ word: z.name, foundOn: found(z.seenAt) })),
+    };
+  });
+  const sum = (count: (c: (typeof cameras)[number]) => number) => cameras.reduce((total, c) => total + count(c), 0);
+  return {
+    cameras,
+    total: { outlined: sum((c) => c.outlined), onEveryPicture: sum((c) => c.onEveryPicture), atNight: sum((c) => c.atNight), notOutlined: sum((c) => c.notOutlined.length) },
+  };
 }
 
 // The zone a box under this word belongs to: how a saved rule finds its zone again after a rename or a fresh setup.

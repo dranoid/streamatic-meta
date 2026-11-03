@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { CameraFolder, type Camera } from '../cameras/camera-folder.js';
+import { requireMediaTools } from '../cameras/media-tools.js';
 import { AlertCopier } from '../backend/alert-copier.js';
 import { BackendClient } from '../backend/client.js';
 import { Trials } from '../backend/trials.js';
@@ -34,6 +35,8 @@ import { SparkGuidePlanner } from '../spark/guide-planner.js';
 import { SparkQuestionPlanner } from '../spark/question-planner.js';
 import { SparkSetupPlanner } from '../spark/setup-planner.js';
 import { appHandler } from '../web/server.js';
+import { SparkAlertCaption } from '../spark/alert-caption.js';
+import { VoiceClient, VoiceNotes } from '../voice/voice-note.js';
 
 const args = process.argv.slice(2);
 const isPublic = args.includes('--public');
@@ -45,6 +48,8 @@ if (!folder || (!isPublic && !hasModels)) {
   console.error('Usage: npm run serve -- <app folder> [port] [--public]   (META_MODEL_API_KEY and BASETEN_API_KEY in ../.env)');
   process.exit(1);
 }
+
+await requireMediaTools();
 
 const timeZone = 'Africa/Lagos';
 // How often the backend's alerts are read.
@@ -61,6 +66,7 @@ const cameras = new CameraFolder(folder);
 const clips = new ClipFolder(folder);
 const followPlanner = new SparkFollowPlanner(spark);
 const guidePlanner = new SparkGuidePlanner(spark);
+const voiceNotes = new VoiceNotes(new VoiceClient({ apiKey: metaKey ?? '' }));
 const mediaDir = join(folder, 'media');
 await mkdir(mediaDir, { recursive: true });
 
@@ -119,6 +125,8 @@ const app = appHandler({
   webDir: fileURLToPath(new URL('../../../web/dist/', import.meta.url)),
   planner: new SparkQuestionPlanner(spark),
   guidePlanner,
+  voiceNotes,
+  writeCaption: new SparkAlertCaption(spark).write,
   backend,
   trials,
   pictureSize: async (camera) => {
@@ -151,12 +159,18 @@ function publicHandler() {
   const store = new DemoStore(join(folder!, 'demo.db'));
   const demo = demoHandler({
     // Without a login nothing asks the engine for the backend: the route refuses first, and the copy already holds its clips.
-    engine: new DemoEngine({ store, backend: backend ?? { demoScenario: unconnected, demoSchedule: unconnected, typeDemoRule: unconnected, demoRule: unconnected }, folder: folder! }),
+    engine: new DemoEngine({
+      store,
+      backend: backend ?? { demoScenario: unconnected, demoSchedule: unconnected, typeDemoRule: unconnected, demoRule: unconnected },
+      folder: folder!,
+      writeCaption: hasModels ? new SparkAlertCaption(spark).write : null,
+    }),
     store,
     limits,
     clips,
     cameras,
     guidePlanner,
+    voiceNotes,
     setUp: (bytes) =>
       setUpCamera({
         pictures: [{ label: 'picture', picture: { bytes, mimeType: 'image/jpeg' } }],

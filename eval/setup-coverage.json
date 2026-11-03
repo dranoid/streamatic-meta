@@ -1,0 +1,290 @@
+{
+  "cameras": [
+    {
+      "camera": "Camera 1",
+      "outlined": 11,
+      "onEveryPicture": 6,
+      "atNight": 8,
+      "notOutlined": [
+        "drain",
+        "bridge"
+      ],
+      "words": [
+        {
+          "word": "gate",
+          "foundOn": [
+            "day",
+            "dusk",
+            "night"
+          ]
+        },
+        {
+          "word": "fence",
+          "foundOn": [
+            "day",
+            "dusk",
+            "night"
+          ]
+        },
+        {
+          "word": "wall",
+          "foundOn": [
+            "day",
+            "dusk",
+            "night"
+          ]
+        },
+        {
+          "word": "building",
+          "foundOn": [
+            "day",
+            "dusk",
+            "night"
+          ]
+        },
+        {
+          "word": "shed",
+          "foundOn": [
+            "day",
+            "dusk"
+          ]
+        },
+        {
+          "word": "barrel",
+          "foundOn": [
+            "day",
+            "dusk",
+            "night"
+          ]
+        },
+        {
+          "word": "chair",
+          "foundOn": [
+            "dusk",
+            "night"
+          ]
+        },
+        {
+          "word": "solar panel",
+          "foundOn": [
+            "day",
+            "dusk",
+            "night"
+          ]
+        },
+        {
+          "word": "yard",
+          "foundOn": [
+            "day",
+            "dusk"
+          ]
+        },
+        {
+          "word": "auto rickshaw",
+          "foundOn": [
+            "day",
+            "night"
+          ]
+        },
+        {
+          "word": "dirt road",
+          "foundOn": [
+            "day",
+            "dusk"
+          ]
+        }
+      ]
+    },
+    {
+      "camera": "Camera 2",
+      "outlined": 9,
+      "onEveryPicture": 4,
+      "atNight": 5,
+      "notOutlined": [
+        "drain"
+      ],
+      "words": [
+        {
+          "word": "gate",
+          "foundOn": [
+            "day",
+            "dusk",
+            "night"
+          ]
+        },
+        {
+          "word": "wall",
+          "foundOn": [
+            "day",
+            "dusk",
+            "night"
+          ]
+        },
+        {
+          "word": "fence",
+          "foundOn": [
+            "day",
+            "dusk"
+          ]
+        },
+        {
+          "word": "road",
+          "foundOn": [
+            "day",
+            "night"
+          ]
+        },
+        {
+          "word": "pole",
+          "foundOn": [
+            "day",
+            "dusk"
+          ]
+        },
+        {
+          "word": "light",
+          "foundOn": [
+            "day"
+          ]
+        },
+        {
+          "word": "house",
+          "foundOn": [
+            "day",
+            "dusk",
+            "night"
+          ]
+        },
+        {
+          "word": "car",
+          "foundOn": [
+            "day",
+            "dusk",
+            "night"
+          ]
+        },
+        {
+          "word": "person",
+          "foundOn": [
+            "dusk"
+          ]
+        }
+      ]
+    },
+    {
+      "camera": "Camera 3",
+      "outlined": 13,
+      "onEveryPicture": 6,
+      "atNight": 7,
+      "notOutlined": [
+        "power line",
+        "drain"
+      ],
+      "words": [
+        {
+          "word": "road",
+          "foundOn": [
+            "day",
+            "dusk",
+            "night"
+          ]
+        },
+        {
+          "word": "building",
+          "foundOn": [
+            "day",
+            "dusk",
+            "night"
+          ]
+        },
+        {
+          "word": "house",
+          "foundOn": [
+            "day",
+            "dusk",
+            "night"
+          ]
+        },
+        {
+          "word": "shop",
+          "foundOn": [
+            "day",
+            "dusk"
+          ]
+        },
+        {
+          "word": "shack",
+          "foundOn": [
+            "day",
+            "night"
+          ]
+        },
+        {
+          "word": "fence",
+          "foundOn": [
+            "day",
+            "dusk"
+          ]
+        },
+        {
+          "word": "wall",
+          "foundOn": [
+            "day",
+            "dusk"
+          ]
+        },
+        {
+          "word": "gate",
+          "foundOn": [
+            "day",
+            "dusk"
+          ]
+        },
+        {
+          "word": "door",
+          "foundOn": [
+            "day",
+            "dusk"
+          ]
+        },
+        {
+          "word": "car",
+          "foundOn": [
+            "day",
+            "dusk",
+            "night"
+          ]
+        },
+        {
+          "word": "utility pole",
+          "foundOn": [
+            "day",
+            "dusk"
+          ]
+        },
+        {
+          "word": "air conditioner",
+          "foundOn": [
+            "day",
+            "dusk",
+            "night"
+          ]
+        },
+        {
+          "word": "person",
+          "foundOn": [
+            "day",
+            "dusk",
+            "night"
+          ]
+        }
+      ]
+    }
+  ],
+  "total": {
+    "outlined": 33,
+    "onEveryPicture": 16,
+    "atNight": 20,
+    "notOutlined": 5
+  }
+}

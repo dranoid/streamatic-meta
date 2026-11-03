@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { BellRing, Crosshair, LoaderCircle, Pause, Play, Search, SkipForward, X } from 'lucide-react';
 import { DemoGuide } from '@/components/demo-guide';
+import { LanguageChoice, type AlertLanguage } from '@/components/language-choice';
 import { PageHeader } from '@/components/layout/page-header';
 import { PictureFrame, ZONE_COLOURS, type DrawnPath } from '@/components/picture-frame';
 import { Timeline } from '@/components/timeline';
@@ -60,6 +61,7 @@ function ClipWatch({ clip, follows, demo, trackSeconds }: { clip: Clip; follows:
   // Each ticked rule with the moment on the clip it was ticked at.
   const [ticks, setTicks] = useState<Record<string, number>>({});
   const [showZones, setShowZones] = useState(false);
+  const [language, setLanguage] = useState<AlertLanguage>('english');
   const [guideZones, setGuideZones] = useState<DemoZone[] | null>(null);
   const tickList = useMemo(() => Object.entries(ticks).map(([rule, armedMs]) => ({ rule, armedMs })), [ticks]);
   const alertsFound = useQuery({
@@ -140,7 +142,7 @@ function ClipWatch({ clip, follows, demo, trackSeconds }: { clip: Clip; follows:
             {banner && (
               <div role='status' className='bg-destructive absolute inset-x-3 top-3 flex items-start gap-2 rounded-md px-3 py-2 text-sm font-medium text-white shadow'>
                 <BellRing className='mt-0.5 size-4 shrink-0' />
-                <span>{ruleLabel(rulesById.get(banner.rule))}</span>
+                <span>{inLanguage(banner, language) ?? ruleLabel(rulesById.get(banner.rule))}</span>
               </div>
             )}
             {here && (
@@ -240,7 +242,7 @@ function ClipWatch({ clip, follows, demo, trackSeconds }: { clip: Clip; follows:
                 })
               }
             />
-            <AlertsCard alerts={reached} rules={rulesById} ticking={tickList.length > 0} next={nextAlert} onGoTo={goToAlert} />
+            <AlertsCard alerts={reached} rules={rulesById} ticking={tickList.length > 0} next={nextAlert} language={language} onLanguage={setLanguage} onGoTo={goToAlert} />
           </>
         )}
         <Card>
@@ -317,13 +319,19 @@ function RulesCard({ rules, ticks, onToggle }: { rules: DemoRule[]; ticks: Recor
   );
 }
 
-function AlertsCard({ alerts, rules, ticking, next, onGoTo }: { alerts: DemoAlert[]; rules: Map<string, DemoRule>; ticking: boolean; next: DemoAlert | null; onGoTo: (alert: DemoAlert) => void }) {
+// An alert's words in the language chosen; an alert not written in it stays in English.
+const inLanguage = (alert: DemoAlert, language: AlertLanguage) => (language === 'english' ? null : (alert.captions[language] ?? null));
+
+function AlertsCard({ alerts, rules, ticking, next, language, onLanguage, onGoTo }: { alerts: DemoAlert[]; rules: Map<string, DemoRule>; ticking: boolean; next: DemoAlert | null; language: AlertLanguage; onLanguage: (language: AlertLanguage) => void; onGoTo: (alert: DemoAlert) => void }) {
   return (
     <Card>
       <CardHeader>
-        <div>
-          <CardTitle>Alerts</CardTitle>
-          <CardDescription>What Streamatic’s rules really raised on this clip, each when it would have reached you.</CardDescription>
+        <div className='space-y-3'>
+          <div>
+            <CardTitle>Alerts</CardTitle>
+            <CardDescription>What Streamatic’s rules really raised on this clip, each when it would have reached you.</CardDescription>
+          </div>
+          <LanguageChoice value={language} onChange={onLanguage} />
         </div>
       </CardHeader>
       <CardContent>
@@ -336,7 +344,13 @@ function AlertsCard({ alerts, rules, ticking, next, onGoTo }: { alerts: DemoAler
               <button type='button' onClick={() => onGoTo(a)} className='hover:bg-accent w-full rounded-lg border p-2 text-left transition-colors'>
                 {a.picture && <img src={a.picture} alt={a.caption ?? 'The picture this alert carries'} className='mb-2 aspect-video w-full rounded object-cover' loading='lazy' />}
                 <span className='block text-sm font-medium'>{ruleLabel(rules.get(a.rule))}</span>
-                {a.caption && <span className='text-muted-foreground mt-1 line-clamp-2 text-xs'>{a.caption}</span>}
+                {inLanguage(a, language) ? (
+                  <span lang={language === 'yoruba' ? 'yo' : 'pcm'} className='mt-1 block text-sm'>
+                    {inLanguage(a, language)}
+                  </span>
+                ) : (
+                  a.caption && <span className='text-muted-foreground mt-1 line-clamp-2 text-xs'>{a.caption}</span>
+                )}
                 <span className='text-muted-foreground mt-1 block text-xs'>
                   Happened at {duration(a.atMs / 1000)}. It would have reached you {Math.round(a.delayMs / 1000)} seconds later.
                 </span>

@@ -57,7 +57,7 @@ export function AppShell({ route, isPublic = false, children }: { route: Route; 
       <div className='text-muted-foreground mt-auto rounded-lg border bg-background/60 p-3 text-xs leading-relaxed dark:bg-muted/40'>
         <p className='text-foreground font-medium'>Meta hackathon build</p>
         <p className='mt-1'>
-          Built on SAM 3.1 and Muse Spark Open.{' '}
+          Built on SAM 3.1, Muse Spark Open and Muse Voice Transcribe.{' '}
           <Link href='/about' className='text-foreground underline underline-offset-2'>
             What each one does
           </Link>
@@ -98,7 +98,7 @@ export function AppShell({ route, isPublic = false, children }: { route: Route; 
 function SmallPrint() {
   return (
     <footer className='text-muted-foreground mx-auto w-full max-w-[90rem] space-y-1 border-t px-4 py-4 text-xs leading-relaxed md:px-6'>
-      <p>A picture you upload is sent to Meta and to Baseten to be analysed, under the hackathon’s credit terms, which allow Meta to use it for product improvement. This page keeps no copy of it. Please upload only a picture you are allowed to share.</p>
+      <p>A picture you upload is sent to Meta and to Baseten to be analysed, and a voice note is sent to Meta to be written out, under the hackathon’s credit terms, which allow Meta to use them for product improvement. This page keeps no copy of either. Please upload only a picture you are allowed to share.</p>
       <p>
         Clips: MEVA dataset by Kitware Inc. and IARPA,{' '}
         <a className='underline underline-offset-2' href='https://mevadata.org/resources/MEVA-data-license.txt' target='_blank' rel='noreferrer'>

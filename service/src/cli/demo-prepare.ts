@@ -19,6 +19,8 @@ import { SamClient } from '../sam/client.js';
 import { setUpCamera } from '../setup/camera-setup.js';
 import { SparkClient } from '../spark/client.js';
 import { SparkSetupPlanner } from '../spark/setup-planner.js';
+import { SparkAlertCaption } from '../spark/alert-caption.js';
+import { requireMediaTools } from '../cameras/media-tools.js';
 
 const run = promisify(execFile);
 const PAGE_WIDTH = 1280;
@@ -32,6 +34,8 @@ if (!folder || !metaKey || !basetenKey || !STREAMATIC_API || !STREAMATIC_COMPANY
   process.exit(1);
 }
 
+await requireMediaTools();
+
 const list = z
   .array(z.object({ id: z.string().regex(/^[\w-]+$/), scenario: z.string(), site: z.string(), words: z.array(z.string()), stillSeconds: z.number().min(0) }))
   .parse(JSON.parse(await readFile(join(folder, 'demo.json'), 'utf8')));
@@ -41,7 +45,7 @@ const clips = new ClipFolder(folder);
 const cameras = new CameraFolder(folder);
 const sam = new SamClient({ apiKey: metaKey });
 const spark = new SparkClient({ apiKey: basetenKey });
-const engine = new DemoEngine({ store: new DemoStore(join(folder, 'demo.db')), backend, folder });
+const engine = new DemoEngine({ store: new DemoStore(join(folder, 'demo.db')), backend, folder, writeCaption: new SparkAlertCaption(spark).write });
 const exists = async (path: string) => (await stat(path).catch(() => null)) !== null;
 
 for (const { id, scenario, site, words, stillSeconds } of list) {

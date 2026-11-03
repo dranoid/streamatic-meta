@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -12,6 +12,7 @@ import { ClipThings } from '../src/follow/things.js';
 import { EventStore } from '../src/events/store.js';
 import type { Plan } from '../src/questions/answer.js';
 import { Trials } from '../src/backend/trials.js';
+import type { GuidePlan } from '../src/guide/plan.js';
 import { BackendError, type RuleBackend } from '../src/backend/client.js';
 import { RuleStore } from '../src/rules/rule-store.js';
 import type { CameraSetup } from '../src/setup/camera-setup.js';
@@ -38,6 +39,7 @@ const setupResult: CameraSetup = {
   rules: [{ sentence: 'Alert me if the door opens.', zones: ['door'] }],
 };
 
+const voiceKeywordsAsked: string[][] = [];
 let server: Server | undefined;
 afterEach(() => new Promise<void>((done) => (server ? server.close(() => done()) : done())));
 
@@ -50,7 +52,10 @@ async function start({
   backendFails,
   connected = true,
   spend,
+  planned,
 }: {
+  // What the guide's planner drafts, in place of its plain plan on the door.
+  planned?: Partial<GuidePlan>;
   plan?: Plan;
   setUp?: () => Promise<CameraSetup>;
   playing?: { at: number | null; picture: Uint8Array | null };
@@ -133,6 +138,7 @@ async function start({
     startQuestion: async (ask, asked, cost) => (backendCalls.push({ call: 'startQuestion', args: [ask, asked, cost] }), 'replay-1'),
     replay: async () => ({ id: 'replay-1', status: 'completed', counted: { coverage: { framesRead: 3, framesRecorded: 3 } }, stretches: [{ startIso: new Date(AT).toISOString(), endIso: new Date(AT + 5000).toISOString(), frameUrl: 'https://pictures.test/1' }] }),
   };
+  const written: unknown[] = [];
   const followCalls = { lists: 0, tracks: [] as Array<{ frame: number; target: unknown }> };
   const carBox = { left: 5, top: 5, right: 20, bottom: 20 };
   const clips = new ClipFolder(root);
@@ -145,8 +151,10 @@ async function start({
       webDir: web,
       planner: { plan: async (q) => (questions.push(q), plan ?? { tool: 'count', camera: null, zone: 'front door', period: 'all', hours: null }) },
       guidePlanner: {
-        draft: async ({ sentence, zones }) => ({ sentence, about: 'front door', zones: zones.length ? [zones[zones.length - 1]!.name] : ['door'], box: null, hours: { from: 21, to: 6 } }),
+        draft: async ({ sentence, zones }) => ({ sentence, about: 'front door', zones: zones.length ? [zones[zones.length - 1]!.name] : ['door'], box: null, hours: { from: 21, to: 6 }, ...planned }),
       },
+      writeCaption: async (rule, language) => (written.push({ rule, language }), `${language}: ${rule}`),
+      voiceNotes: { read: async (_request, keywords) => (voiceKeywordsAsked.push(keywords), { status: 200, body: { text: 'Tell me when the front door opens.' } }) },
       backend: connected ? backend : null,
       trials: new Trials(backend, async () => new Uint8Array([1, 2, 3])),
       pictureSize: async () => ({ width: 1200, height: 700 }),
@@ -190,7 +198,7 @@ async function start({
     const draft = await post('/api/rule-drafts', rule);
     return draft.status === 200 ? post('/api/rules', { draft: draft.body.id }) : draft;
   };
-  return { base, eventId, questions, setUpCalls, backendCalls, followCalls, json, post, patch, saveRule };
+  return { base, root, eventId, questions, setUpCalls, backendCalls, followCalls, written, json, post, patch, saveRule };
 }
 
 describe('pages', () => {
@@ -250,10 +258,21 @@ describe('cameras', () => {
   it('lists each camera with its pictures, before setup has run', async () => {
     const { json, base } = await start();
     expect((await json('/api/cameras')).body).toEqual([
-      { connected: true, id: 'table-parlour', name: 'Table parlour', site: 'a family home', baseWords: ['door'], pictures: { day: 'day.jpg', night: 'night.jpg' }, setup: null, zones: [], playing: null, stored: null },
+      { connected: true, id: 'table-parlour', name: 'Table parlour', site: 'a family home', baseWords: ['door'], pictures: { day: 'day.jpg', night: 'night.jpg' }, setup: null, zones: [], coverage: [], playing: null, stored: null },
     ]);
     expect(await (await fetch(`${base}/camera-pictures/table-parlour/day.jpg`)).text()).toBe('day bytes');
     expect((await fetch(`${base}/camera-pictures/table-parlour/..%2Fcamera.json`)).status).toBe(404);
+  });
+
+  it('reports which pictures found each zone once setup has run', async () => {
+    const { json, post } = await start();
+    await post('/api/cameras/table-parlour/setup', {});
+    const coverage = (await json('/api/cameras')).body[0].coverage;
+    expect(coverage.length).toBeGreaterThan(0);
+    for (const zone of coverage) {
+      expect([...zone.foundOn, ...zone.missedOn].sort()).toEqual(['day', 'night']);
+      expect(zone.uncertainAtNight).toBe(!zone.foundOn.includes('night'));
+    }
   });
 
   it('says when a camera is playing its recording on a loop, with the time and picture playing', async () => {
@@ -391,6 +410,69 @@ describe('rules', () => {
   });
 });
 
+describe('an event’s caption in another language', () => {
+  it('writes it once for the rule, and keeps it', async () => {
+    const { post, json, eventId, written } = await start();
+    const rule = (await json(`/api/events/${eventId}`)).body.rule as string;
+    const first = await post(`/api/events/${eventId}/captions`, { language: 'yoruba' });
+    expect(first.status).toBe(200);
+    expect(first.body).toEqual({ language: 'yoruba', text: `yoruba: ${rule}` });
+    expect((await post(`/api/events/${eventId}/captions`, { language: 'yoruba' })).body).toEqual(first.body);
+    expect(written).toHaveLength(1);
+  });
+
+  it('refuses a language it does not write, and an event that does not exist', async () => {
+    const { post, eventId, written } = await start();
+    expect((await post(`/api/events/${eventId}/captions`, { language: 'french' })).status).toBe(400);
+    expect((await post('/api/events/999/captions', { language: 'pidgin' })).status).toBe(404);
+    expect(written).toEqual([]);
+  });
+});
+
+describe('a voice note on a camera', () => {
+  it('answers with what was said, listening for the zones setup outlined there', async () => {
+    const { base, post } = await start();
+    await post('/api/cameras/table-parlour/setup', {});
+    voiceKeywordsAsked.length = 0;
+    const res = await fetch(`${base}/api/cameras/table-parlour/voice-notes`, { method: 'POST', body: new Uint8Array([1]) });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ text: 'Tell me when the front door opens.' });
+    expect(voiceKeywordsAsked[0]).toContain('door');
+  });
+
+  it('is refused on a camera that does not exist', async () => {
+    const { base } = await start();
+    expect((await fetch(`${base}/api/cameras/nowhere/voice-notes`, { method: 'POST', body: new Uint8Array([1]) })).status).toBe(404);
+  });
+});
+
+describe('the guide on a camera that did not outline the thing', () => {
+  const group = async (root: string, id: string, group: string, word: string) => {
+    await mkdir(join(root, 'cameras', id), { recursive: true });
+    await writeFile(join(root, 'cameras', id, 'camera.json'), JSON.stringify({ name: `${id} road`, site: 's', baseWords: [], pictures: { day: 'day.jpg' }, group }));
+    await writeFile(join(root, 'cameras', id, 'setup.json'), JSON.stringify({ zones: [{ name: word, item: word, seenAt: ['day'], outlines: { day: [{ word, objectId: '0', box: { left: 1, top: 1, right: 9, bottom: 9 }, path: 'M1 1Z' }] } }], notOutlined: [], rules: [] }));
+  };
+
+  it('offers the camera in its group whose setup outlined it, from the person’s own words', async () => {
+    const { post, root } = await start({ planned: { about: 'shop', zones: [], box: { name: 'shop', question: 'Is someone at the shop?', over: null } } });
+    await post('/api/cameras/table-parlour/setup', {});
+    const config = join(root, 'cameras', 'table-parlour', 'camera.json');
+    await writeFile(config, JSON.stringify({ ...JSON.parse(await readFile(config, 'utf8')), group: 'estate' }));
+    await group(root, 'foursquare', 'estate', 'shop');
+    await group(root, 'elsewhere', 'another', 'shop');
+    const planned = await post('/api/guide/plans', { camera: 'table-parlour', sentence: 'Tell me when someone is at the shop.' });
+    expect(planned.status).toBe(200);
+    expect(planned.body.elsewhere).toEqual([{ camera: 'foursquare', name: 'foursquare road', zones: ['shop'] }]);
+  });
+
+  it('offers nothing when this camera outlined it', async () => {
+    const { post } = await start();
+    await post('/api/cameras/table-parlour/setup', {});
+    const planned = await post('/api/guide/plans', { camera: 'table-parlour', sentence: 'Tell me if the front door opens at night.' });
+    expect(planned.body.elsewhere).toEqual([]);
+  });
+});
+
 describe('the guide', () => {
   it("plans a rule on the camera's zones and returns the plan with its checked attempts", async () => {
     const { post } = await start();
@@ -403,6 +485,7 @@ describe('the guide', () => {
       status: 'ready',
       plan: { sentence: 'Tell me if the front door opens at night.', about: 'front door', zones: ['door 2'], box: null, hours: { from: 21, to: 6 } },
       attempts: [expect.objectContaining({ problems: [] })],
+      elsewhere: [],
     });
   });
 

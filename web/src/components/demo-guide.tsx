@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label, Textarea } from '@/components/ui/input';
 import { Notice } from '@/components/ui/notice';
+import { VoiceNote } from '@/components/voice-note';
 import { api, type DemoClip, type DemoRule, type DemoZone, type GuidePlan, type PlanAttempt } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { clockTime } from '@/lib/time';
@@ -206,6 +207,7 @@ export function DemoGuide({
         >
           <Label htmlFor='clip-guide'>What should this camera watch?</Label>
           <Textarea id='clip-guide' rows={2} maxLength={300} value={text} onChange={(e) => setText(e.target.value)} placeholder='Tell me when someone stops by the entrance.' />
+          <VoiceNote read={(audio) => api.voiceNoteOnClip(clip.id, audio)} onText={setText} />
           <Button type='submit' disabled={planning.isPending || text.trim().length < 3}>
             {planning.isPending ? <Loader2 className='animate-spin' /> : <Compass />}
             {planning.isPending ? 'Planning' : 'Plan the rule'}

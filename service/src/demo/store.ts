@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import type { CaptionLanguage } from '../spark/alert-caption.js';
 
 export interface DemoClipRow {
   id: string;
@@ -44,6 +45,8 @@ export interface DemoAlert {
   // A file in the clip's evidence folder.
   picture: string | null;
   caption: string | null;
+  // What this rule's alerts say in other languages, written once and kept; a language missing here simply has none yet.
+  captions: Partial<Record<CaptionLanguage, string>>;
 }
 
 interface ClipRow {
@@ -122,6 +125,10 @@ export class DemoStore {
         delay_ms INTEGER NOT NULL, message TEXT NOT NULL, severity TEXT NOT NULL, picture TEXT, caption TEXT,
         PRIMARY KEY (rule, piece, key)
       );
+      CREATE TABLE IF NOT EXISTS demo_captions (
+        rule TEXT NOT NULL REFERENCES demo_rules(id), language TEXT NOT NULL, text TEXT NOT NULL,
+        PRIMARY KEY (rule, language)
+      );
     `);
   }
 
@@ -175,7 +182,7 @@ export class DemoStore {
   }
 
   // A rule's alerts for each piece of the clip it could be ticked in, all at once, so a half-finished copy is never read.
-  saveAlerts(rule: string, byPiece: Array<{ piece: number; alerts: Array<Omit<DemoAlert, 'rule'>> }>): void {
+  saveAlerts(rule: string, byPiece: Array<{ piece: number; alerts: Array<Omit<DemoAlert, 'rule' | 'captions'>> }>): void {
     const insert = this.#db.prepare(
       'INSERT OR REPLACE INTO demo_alerts (rule, piece, key, at_ms, shown_ms, delay_ms, message, severity, picture, caption) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     );
@@ -194,7 +201,17 @@ export class DemoStore {
 
   alerts(rule: string, piece: number): DemoAlert[] {
     const rows = this.#db.prepare('SELECT * FROM demo_alerts WHERE rule = ? AND piece = ? ORDER BY at_ms, key').all(rule, piece) as unknown as AlertRow[];
-    return rows.map(({ key, at_ms, shown_ms, delay_ms, message, severity, picture, caption }) => ({ key, rule, atMs: at_ms, shownMs: shown_ms, delayMs: delay_ms, message, severity, picture, caption }));
+    const captions = this.captions(rule);
+    return rows.map(({ key, at_ms, shown_ms, delay_ms, message, severity, picture, caption }) => ({ key, rule, atMs: at_ms, shownMs: shown_ms, delayMs: delay_ms, message, severity, picture, caption, captions }));
+  }
+
+  captions(rule: string): DemoAlert['captions'] {
+    const rows = this.#db.prepare('SELECT language, text FROM demo_captions WHERE rule = ?').all(rule) as unknown as Array<{ language: CaptionLanguage; text: string }>;
+    return Object.fromEntries(rows.map(({ language, text }) => [language, text]));
+  }
+
+  saveCaption(rule: string, language: CaptionLanguage, text: string): void {
+    this.#db.prepare('INSERT OR REPLACE INTO demo_captions (rule, language, text) VALUES (?, ?, ?)').run(rule, language, text);
   }
 
   // How many alerts a rule gives when it is ticked from the clip's start.

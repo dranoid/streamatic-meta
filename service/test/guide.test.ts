@@ -4,9 +4,9 @@ import { checkPlan, planRule, type GuidePlan, type GuidePlanner } from '../src/g
 
 const outline = (word: string) => ({ word, objectId: '0', box: { left: 0, top: 0, right: 1, bottom: 1 }, path: 'M0 0Z' });
 const zones: CameraZone[] = [
-  { word: 'gate', name: 'Main gate', outlines: { night: [outline('gate')] } },
-  { word: 'auto rickshaw', name: 'auto rickshaw 1', outlines: { day: [outline('auto rickshaw')] } },
-  { word: 'yard', name: 'yard', outlines: { day: [outline('yard')] } },
+  { word: 'gate', item: 'gate', name: 'Main gate', outlines: { night: [outline('gate')] } },
+  { word: 'auto rickshaw', item: 'auto rickshaw', name: 'auto rickshaw 1', outlines: { day: [outline('auto rickshaw')] } },
+  { word: 'yard', item: 'yard', name: 'yard', outlines: { day: [outline('yard')] } },
 ];
 
 const asked = 'Alert me if the main gate is open after 10 pm.';
@@ -50,7 +50,7 @@ describe('checkPlan', () => {
 describe('checkPlan on what the rule is about', () => {
   const kekeAsked = 'Tell me when a keke is parked by the main gate after 11 pm.';
   const kekePlan: GuidePlan = { sentence: kekeAsked, about: 'keke', zones: ['Main gate'], box: null, hours: { from: 23, to: 6 } };
-  const door: CameraZone = { word: 'door', name: 'front door', outlines: { day: [outline('door')] } };
+  const door: CameraZone = { word: 'door', item: 'door', name: 'front door', outlines: { day: [outline('door')] } };
 
   it('refuses a zone when the rule is about something else near it', () => {
     expect(checkPlan(kekePlan, zones, kekeAsked).problems).toEqual([
