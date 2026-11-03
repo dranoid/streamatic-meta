@@ -208,6 +208,7 @@ export interface AppInfo {
   // What this copy of the public page can spend on; the recorded clips need neither.
   models?: boolean;
   rules?: boolean;
+  telegram?: boolean;
 }
 
 export interface DemoClipSummary extends Clip {
@@ -245,18 +246,24 @@ export interface DemoClip {
   rules: DemoRule[];
 }
 
+export interface DemoSetup {
+  picture: string;
+  zones: Array<DemoZone & { item: string }>;
+  notOutlined: Array<{ item: string; triedWords: string[] }>;
+  rules: string[];
+}
+
 export interface DemoTick {
   rule: string;
   armedMs: number;
 }
 
-// When a rule alerts on the clip, counted from its start: atMs is the moment it is about, shownMs when it reached the person.
+// When a rule alerts on the clip, counted from its start: atMs is the moment it is about, shownMs when the page shows it.
 export interface DemoAlert {
   key: string;
   rule: string;
   atMs: number;
   shownMs: number;
-  delayMs: number;
   message: string;
   severity: string;
   picture: string | null;
@@ -328,8 +335,14 @@ export const api = {
   app: () => request<AppInfo>('/api/app'),
   demoClips: () => request<DemoClipSummary[]>('/api/demo/clips'),
   demoClip: (clip: string) => request<DemoClip>(`/api/demo/clips/${encodeURIComponent(clip)}`),
+  demoSetup: (clip: string) => request<DemoSetup>(`/api/demo/clips/${encodeURIComponent(clip)}/setup`),
   demoAlerts: (clip: string, ticks: DemoTick[]) =>
     request<{ alerts: DemoAlert[] }>(`/api/demo/clips/${encodeURIComponent(clip)}/alerts`, { method: 'POST', body: JSON.stringify({ ticks }) }),
+  telegramStatus: (clip: string) => request<{ linked: boolean; link: string | null }>(`/api/demo/telegram?clip=${encodeURIComponent(clip)}`),
+  telegramChoose: (clip: string, language: string) => request<{ linked: boolean }>('/api/demo/telegram', { method: 'PUT', body: JSON.stringify({ clip, language }) }),
+  telegramTurnOff: () => request<{ linked: boolean }>('/api/demo/telegram', { method: 'DELETE' }),
+  sendAlertToTelegram: (clip: string, rule: string, key: string) =>
+    request<{ sent: true }>(`/api/demo/clips/${encodeURIComponent(clip)}/telegram-alerts`, { method: 'POST', body: JSON.stringify({ rule, key }) }),
   voiceNoteOnCamera: (camera: string, audio: Blob) => sendVoiceNote(`/api/cameras/${encodeURIComponent(camera)}/voice-notes`, audio),
   voiceNoteOnClip: (clip: string, audio: Blob) => sendVoiceNote(`/api/demo/clips/${encodeURIComponent(clip)}/voice-notes`, audio),
   planOnClip: (clip: string, sentence: string) => request<PlanResult>(`/api/demo/clips/${encodeURIComponent(clip)}/plans`, { method: 'POST', body: JSON.stringify({ sentence }) }),

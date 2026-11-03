@@ -205,6 +205,13 @@ export class DemoStore {
     return rows.map(({ key, at_ms, shown_ms, delay_ms, message, severity, picture, caption }) => ({ key, rule, atMs: at_ms, shownMs: shown_ms, delayMs: delay_ms, message, severity, picture, caption, captions }));
   }
 
+  alert(rule: string, key: string): DemoAlert | null {
+    const row = this.#db.prepare('SELECT * FROM demo_alerts WHERE rule = ? AND key = ? LIMIT 1').get(rule, key) as unknown as AlertRow | undefined;
+    if (!row) return null;
+    const { at_ms, shown_ms, delay_ms, message, severity, picture, caption } = row;
+    return { key, rule, atMs: at_ms, shownMs: shown_ms, delayMs: delay_ms, message, severity, picture, caption, captions: this.captions(rule) };
+  }
+
   captions(rule: string): DemoAlert['captions'] {
     const rows = this.#db.prepare('SELECT language, text FROM demo_captions WHERE rule = ?').all(rule) as unknown as Array<{ language: CaptionLanguage; text: string }>;
     return Object.fromEntries(rows.map(({ language, text }) => [language, text]));

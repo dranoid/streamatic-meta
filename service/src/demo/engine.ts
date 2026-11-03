@@ -11,8 +11,17 @@ const PIECE_MS = 15_000;
 // Inside the piece rather than on its edge, since the backend counts a tick on the edge as belonging to the piece before.
 const TICK_INTO_PIECE_MS = 1_000;
 const FINAL = new Set(['ready', 'refused', 'failed']);
+// A fixed wait for the page, not a measurement: the backend's own figure for a live camera is longer and varies by clip.
+const ALERT_LAG_MS = 3_000;
+// A player can stop a moment short of a clip's stated length, so an alert is shown before the very end.
+const LAST_SHOWN_BEFORE_END_MS = 1_000;
 
 const pieceOf = (ms: number) => Math.max(0, Math.floor(ms / PIECE_MS));
+
+// When the page shows an alert about a moment. Near the clip's end it comes sooner, because past the end it would never appear.
+export function alertShownMs(atMs: number, lengthMs: number): number {
+  return Math.max(atMs, Math.min(atMs + ALERT_LAG_MS, lengthMs - LAST_SHOWN_BEFORE_END_MS));
+}
 
 // What a visitor sees for one rule ticked at a moment: the alerts the backend decided for that piece, never before the tick.
 export function showing(alerts: DemoAlert[], armedMs: number): DemoAlert[] {
@@ -55,7 +64,7 @@ export class DemoEngine {
       for (let piece = 0; piece < pieces; piece++) {
         const armedAt = new Date(startsAt + piece * PIECE_MS + TICK_INTO_PIECE_MS).toISOString();
         const { alerts } = await this.#backend.demoSchedule(scenario, [{ ruleId: rule.id, armedAt }]);
-        byPiece.push({ piece, alerts: await this.#kept(id, startsAt, alerts) });
+        byPiece.push({ piece, alerts: await this.#kept(id, startsAt, lengthMs, alerts) });
       }
       this.#store.saveAlerts(rule.id, byPiece);
       await this.#writeCaptions(rule.id, rule.name);
@@ -89,7 +98,7 @@ export class DemoEngine {
   }
 
   // Null unless it is this visitor's own rule on this clip. A rule still being worked on is read from the backend, once at a time.
-  async typed(clip: { id: string; scenario: string; startsAt: number }, visitor: string, id: string): Promise<DemoRule | null> {
+  async typed(clip: { id: string; scenario: string; startsAt: number; lengthMs: number }, visitor: string, id: string): Promise<DemoRule | null> {
     const rule = this.#store.rule(id);
     if (!rule || rule.clip !== clip.id || rule.kind !== 'typed' || rule.visitor !== visitor) return null;
     if (FINAL.has(rule.status)) return rule;
@@ -102,12 +111,12 @@ export class DemoEngine {
     return this.#store.rule(id);
   }
 
-  async #refresh(clip: { id: string; scenario: string; startsAt: number }, rule: DemoRule): Promise<void> {
+  async #refresh(clip: { id: string; scenario: string; startsAt: number; lengthMs: number }, rule: DemoRule): Promise<void> {
     const latest = await this.#backend.demoRule(clip.scenario, rule.id);
     // The alerts are in place before the rule says it is ready.
     if (latest.status === 'ready' && !this.#store.isCopied(rule.id)) {
       const { alerts } = await this.#backend.demoSchedule(clip.scenario, [{ draftRuleId: rule.id }]);
-      this.#store.saveAlerts(rule.id, [{ piece: 0, alerts: await this.#kept(clip.id, clip.startsAt, alerts) }]);
+      this.#store.saveAlerts(rule.id, [{ piece: 0, alerts: await this.#kept(clip.id, clip.startsAt, clip.lengthMs, alerts) }]);
       await this.#writeCaptions(rule.id, latest.rule?.name ?? rule.name);
     }
     this.#store.updateRule(rule.id, {
@@ -122,18 +131,22 @@ export class DemoEngine {
   }
 
   // Each alert on the clip's own clock, with its evidence picture fetched here, since the backend's address lapses within the hour.
-  async #kept(clip: string, startsAt: number, alerts: BackendAlert[]): Promise<Array<Omit<DemoAlert, 'rule' | 'captions'>>> {
+  async #kept(clip: string, startsAt: number, lengthMs: number, alerts: BackendAlert[]): Promise<Array<Omit<DemoAlert, 'rule' | 'captions'>>> {
     return Promise.all(
-      alerts.map(async (a) => ({
-        key: a.key,
-        atMs: Date.parse(a.triggeredAt) - startsAt,
-        shownMs: Date.parse(a.shownAt) - startsAt,
-        delayMs: a.delayMs,
-        message: a.message,
-        severity: a.severity,
-        picture: a.evidenceFrame ? await this.#keepPicture(clip, a.key, a.evidenceFrame.url) : null,
-        caption: a.evidenceFrame?.caption ?? null,
-      })),
+      alerts.map(async (a) => {
+        const atMs = Date.parse(a.triggeredAt) - startsAt;
+        const shownMs = alertShownMs(atMs, lengthMs);
+        return {
+          key: a.key,
+          atMs,
+          shownMs,
+          delayMs: shownMs - atMs,
+          message: a.message,
+          severity: a.severity,
+          picture: a.evidenceFrame ? await this.#keepPicture(clip, a.key, a.evidenceFrame.url) : null,
+          caption: a.evidenceFrame?.caption ?? null,
+        };
+      }),
     );
   }
 

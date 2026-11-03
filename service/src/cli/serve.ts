@@ -3,6 +3,8 @@
 // A camera with a recording in cameras/<id>/episode/ plays it on a loop as its pictures. Rules live in Streamatic's backend,
 // reached with STREAMATIC_API, STREAMATIC_COMPANY, STREAMATIC_EMAIL and STREAMATIC_PASSWORD; its alerts are copied here as events.
 // With --public it serves the public page instead: only the demo, the clips and the About page, with spending limited per visitor.
+// DEMO_TELEGRAM_TOKEN is a bot of this app's own, never Streamatic's: on the public page visitors link it from a clip; on the app its
+// alerts go to TELEGRAM_CHAT_ID, in TELEGRAM_ALERT_LANGUAGE if set.
 // npm run serve -- <app folder> [port] [--public]
 
 import { mkdir, readFile } from 'node:fs/promises';
@@ -34,8 +36,12 @@ import { SparkFollowPlanner } from '../spark/follow-planner.js';
 import { SparkGuidePlanner } from '../spark/guide-planner.js';
 import { SparkQuestionPlanner } from '../spark/question-planner.js';
 import { SparkSetupPlanner } from '../spark/setup-planner.js';
+import { pollUpdates, TelegramApi } from '../telegram/api.js';
+import { sendEventAlert } from '../telegram/demo-alert.js';
+import { DemoBot } from '../telegram/demo-bot.js';
+import { TelegramLinks } from '../telegram/links.js';
 import { appHandler } from '../web/server.js';
-import { SparkAlertCaption } from '../spark/alert-caption.js';
+import { CAPTION_LANGUAGES, SparkAlertCaption, type CaptionLanguage } from '../spark/alert-caption.js';
 import { VoiceClient, VoiceNotes } from '../voice/voice-note.js';
 
 const args = process.argv.slice(2);
@@ -84,6 +90,9 @@ const unconnected = () => {
 };
 const trials = new Trials(backend ?? { startQuestion: unconnected, replay: unconnected }, download);
 
+const { DEMO_TELEGRAM_TOKEN, DEMO_PAGE_URL, TELEGRAM_CHAT_ID, TELEGRAM_ALERT_LANGUAGE } = process.env;
+const telegramApi = DEMO_TELEGRAM_TOKEN ? new TelegramApi({ token: DEMO_TELEGRAM_TOKEN }) : null;
+
 const playing = new Map<string, EpisodeLoop>();
 for (const camera of await cameras.list()) {
   if (!camera.episode) continue;
@@ -95,6 +104,16 @@ for (const camera of await cameras.list()) {
 
 if (backend && !isPublic) {
   const alertPicture = new SparkAlertPicture(spark);
+  const writeCaption = new SparkAlertCaption(spark).write;
+  const alertLanguage = TELEGRAM_ALERT_LANGUAGE && TELEGRAM_ALERT_LANGUAGE in CAPTION_LANGUAGES ? (TELEGRAM_ALERT_LANGUAGE as CaptionLanguage) : null;
+  const inLanguage = async (rule: string) => {
+    if (!alertLanguage) return rule;
+    const kept = events.caption(rule, alertLanguage);
+    if (kept) return kept;
+    const written = await writeCaption(rule, alertLanguage).catch(() => null);
+    if (written) events.saveCaption(rule, alertLanguage, written);
+    return written ?? rule;
+  };
   const copier = new AlertCopier({
     backend,
     rules,
@@ -107,6 +126,14 @@ if (backend && !isPublic) {
       pickPicture: (event, pictures) => alertPicture.pick(event, pictures),
       outlineAll: (picture, words) => sam.outlineAll(picture, words),
     },
+    ...(telegramApi && TELEGRAM_CHAT_ID
+      ? {
+          notify: async (id: number) => {
+            const event = events.get(id);
+            if (event) await sendEventAlert({ chat: telegramApi, to: Number(TELEGRAM_CHAT_ID), mediaDir, event, words: await inLanguage(event.rule) });
+          },
+        }
+      : {}),
   });
   const copyAlerts = () =>
     copier.pass().catch((error: unknown) => console.error(`Copying alerts: ${error instanceof Error ? error.message : String(error)}`));
@@ -155,16 +182,47 @@ const app = appHandler({
     : {}),
 });
 
-function publicHandler() {
+async function publicHandler() {
   const store = new DemoStore(join(folder!, 'demo.db'));
-  const demo = demoHandler({
-    // Without a login nothing asks the engine for the backend: the route refuses first, and the copy already holds its clips.
-    engine: new DemoEngine({
+  // Without a login nothing asks the engine for the backend: the route refuses first, and the copy already holds its clips.
+  const engine = new DemoEngine({
+    store,
+    backend: backend ?? { demoScenario: unconnected, demoSchedule: unconnected, typeDemoRule: unconnected, demoRule: unconnected },
+    folder: folder!,
+    writeCaption: hasModels ? new SparkAlertCaption(spark).write : null,
+  });
+  const abilities = { models: hasModels, rules: backend !== null };
+  let telegram = null;
+  if (telegramApi) {
+    const links = new TelegramLinks(join(folder!, 'telegram.db'));
+    // A bot that cannot start leaves the page as a copy without one; the clips do not depend on it.
+    const username = await telegramApi.me().then((me) => me.username, (error: unknown) => {
+      console.error(`Telegram: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    });
+    if (username) {
+    telegram = { links, botName: username, chat: telegramApi };
+    const bot = new DemoBot({
+      chat: telegramApi,
+      links,
       store,
-      backend: backend ?? { demoScenario: unconnected, demoSchedule: unconnected, typeDemoRule: unconnected, demoRule: unconnected },
+      engine,
+      limits,
+      cameras,
+      clips,
+      planner: guidePlanner,
+      voiceNotes,
+      alertsOf: (rule) => store.alerts(rule, 0),
       folder: folder!,
-      writeCaption: hasModels ? new SparkAlertCaption(spark).write : null,
-    }),
+      page: DEMO_PAGE_URL ?? null,
+      abilities,
+    });
+    void pollUpdates(telegramApi, (update) => void bot.handle(update));
+    console.log(`Telegram: @${username}`);
+    }
+  }
+  const demo = demoHandler({
+    engine,
     store,
     limits,
     clips,
@@ -180,12 +238,13 @@ function publicHandler() {
       }),
     folder: folder!,
     trackSeconds: TRACK_SECONDS,
-    abilities: { models: hasModels, rules: backend !== null },
+    abilities,
+    telegram,
   });
   return publicOnly({ app, demo });
 }
 
-const handler = isPublic ? publicHandler() : app;
+const handler = isPublic ? await publicHandler() : app;
 createServer((request, response) => void handler(request, response)).listen(Number(port), '127.0.0.1', () =>
   console.log(`${isPublic ? 'Public page' : 'App'}: http://127.0.0.1:${port}`),
 );

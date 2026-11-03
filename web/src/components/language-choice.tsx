@@ -10,5 +10,5 @@ const LANGUAGES: Array<{ value: AlertLanguage; label: string }> = [
 ];
 
 export function LanguageChoice({ value, onChange }: { value: AlertLanguage; onChange: (language: AlertLanguage) => void }) {
-  return <Segmented label='Language of the alert' value={value} options={LANGUAGES} onChange={onChange} />;
+  return <Segmented pill label='Language of the alert' value={value} options={LANGUAGES} onChange={onChange} />;
 }

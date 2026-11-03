@@ -19,3 +19,17 @@ channel, drainage ditch, open drain, storm drain, culvert, trench, canal or conc
 four of those at 1280×720. The app names such things in its setup report, so a rule on one uses a drawn box instead of an outline.
 
 **Limits.** This counts what was outlined, not whether each outline is right, and one picture stands for each time of day.
+
+# A rule by voice note
+
+`voice-notes.json` holds three real voice notes in English as Muse Voice Transcribe wrote them out, each with the plan from its words
+and the plan from the sentence as typed. The recordings are not in this repository. Voice notes are supported in English only, since
+Meta's list of supported languages does not include Nigerian Pidgin or Yoruba, and the words came out wrong in a trial of Pidgin notes.
+
+**The measure.** Two of the three gave the same rule as the typed sentence. One of those was written out word for word; in the other,
+"allow me" for "alert me" did not change the rule.
+
+**What it got wrong.** "Ikeke" for "a keke" reached the plan's question. The page shows the words before anything is planned, and the
+chat shows them with the plan before Confirm, so a wrong word can be put right.
+
+**Limits.** One speaker and one recording of each sentence, and plans can vary from run to run.

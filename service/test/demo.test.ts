@@ -6,10 +6,11 @@ import { join } from 'node:path';
 import sharp from 'sharp';
 import { afterEach, describe, expect, it } from 'vitest';
 import { CameraFolder } from '../src/cameras/camera-folder.js';
-import { DemoEngine, showing, type DemoEngineBackend } from '../src/demo/engine.js';
+import { alertShownMs, DemoEngine, showing, type DemoEngineBackend } from '../src/demo/engine.js';
 import { DemoLimits } from '../src/demo/limits.js';
 import { demoHandler, publicOnly, NEEDS_KEYS } from '../src/demo/routes.js';
 import { DemoStore } from '../src/demo/store.js';
+import { TelegramLinks } from '../src/telegram/links.js';
 import type { GuidePlan, GuidePlanner } from '../src/guide/plan.js';
 
 const CLIP = 'entrance';
@@ -84,7 +85,7 @@ const planner = (over: Partial<GuidePlan> = {}): GuidePlanner => ({
   draft: async ({ sentence }) => ({ sentence, about: 'door', zones: ['door'], box: null, hours: null, ...over }),
 });
 
-async function start({ ceilingMicroUsd = 5_000_000, setUp = async () => SETUP, guide = planner(), setup = SETUP, abilities, heard = 'Tell me when someone opens the door.', writesCaptions = true, captionsFail = false }: { writesCaptions?: boolean; captionsFail?: boolean;  ceilingMicroUsd?: number; setUp?: (bytes: Uint8Array) => Promise<unknown>; guide?: GuidePlanner; setup?: unknown; abilities?: { models: boolean; rules: boolean }; heard?: string } = {}) {
+async function start({ telegram = false, ceilingMicroUsd = 5_000_000, setUp = async () => SETUP, guide = planner(), setup = SETUP, abilities, heard = 'Tell me when someone opens the door.', writesCaptions = true, captionsFail = false }: { telegram?: boolean; writesCaptions?: boolean; captionsFail?: boolean;  ceilingMicroUsd?: number; setUp?: (bytes: Uint8Array) => Promise<unknown>; guide?: GuidePlanner; setup?: unknown; abilities?: { models: boolean; rules: boolean }; heard?: string } = {}) {
   const fake = fakeBackend();
   const root = await mkdtemp(join(tmpdir(), 'demo-'));
   await mkdir(join(root, 'cameras', CLIP), { recursive: true });
@@ -109,6 +110,8 @@ async function start({ ceilingMicroUsd = 5_000_000, setUp = async () => SETUP, g
     fetch: (async () => new Response(new Uint8Array([0xff, 0xd8, 0xff]), { status: 200 })) as unknown as typeof fetch,
   });
   await engine.copyClip({ id: CLIP, scenario: SCENARIO });
+  const links = new TelegramLinks(':memory:');
+  const delivered: Array<{ to: number; text: string }> = [];
   const clip = { id: CLIP, name: 'Building entrance', width: 1280, height: 720, fps: 10, frames: 600, video: join(root, 'clip.mp4') };
   const handle = demoHandler({
     engine,
@@ -122,6 +125,18 @@ async function start({ ceilingMicroUsd = 5_000_000, setUp = async () => SETUP, g
     folder: root,
     trackSeconds: 30,
     ...(abilities ? { abilities } : {}),
+    ...(telegram
+      ? {
+          telegram: {
+            links,
+            botName: 'streamatic_demo_bot',
+            chat: {
+              sendText: async (to: number, text: string) => void delivered.push({ to, text }),
+              sendPicture: async (to: number, _picture: Uint8Array, text: string) => void delivered.push({ to, text }),
+            },
+          },
+        }
+      : {}),
   });
   server = createServer((req, res) => {
     void handle(req, res, new URL(req.url ?? '/', 'http://x')).then((handled) => {
@@ -135,7 +150,7 @@ async function start({ ceilingMicroUsd = 5_000_000, setUp = async () => SETUP, g
     const text = await res.text();
     return { status: res.status, text, body: text ? (JSON.parse(text) as any) : null };
   };
-  return { base, visitor, engine, root, written, failCaptions: (to: boolean) => (failing = to), ...fake };
+  return { base, visitor, engine, root, links, delivered, written, failCaptions: (to: boolean) => (failing = to), ...fake };
 }
 
 describe('the demo engine', () => {
@@ -146,7 +161,7 @@ describe('the demo engine', () => {
     await engine.copyClip({ id: CLIP, scenario: SCENARIO });
     expect(asked.length).toBe(copied);
     const { body } = await visitor('v1')(`/api/demo/clips/${CLIP}/alerts`, { ticks: [{ rule: 'rule-1', armedMs: 0 }] });
-    expect(body.alerts).toMatchObject([{ key: 'key-1', rule: 'rule-1', atMs: 42_000, shownMs: 60_000, delayMs: 18_000, message: 'A door opened.' }]);
+    expect(body.alerts).toMatchObject([{ key: 'key-1', rule: 'rule-1', atMs: 42_000, shownMs: 45_000, delayMs: 3_000, message: 'A door opened.' }]);
     expect(asked.length).toBe(copied);
   });
 
@@ -156,6 +171,36 @@ describe('the demo engine', () => {
     const at = async (armedMs: number) => (await ask(`/api/demo/clips/${CLIP}/alerts`, { ticks: [{ rule: 'rule-1', armedMs }] })).body.alerts;
     expect(await at(16_000)).toHaveLength(1);
     expect(await at(46_000)).toEqual([]);
+  });
+
+  it('shows an alert 3 seconds after its moment, and inside the clip when that would fall past its end', () => {
+    expect(alertShownMs(42_000, 300_000)).toBe(45_000);
+    expect(alertShownMs(298_000, 300_000)).toBe(299_000);
+    expect(alertShownMs(299_500, 300_000)).toBe(299_500);
+  });
+
+  it('gives the setup page each zone, what could not be outlined, the rules suggested and the picture setup ran on', async () => {
+    const notOutlined = [{ item: 'handrail', triedWords: ['handrail', 'railing'] }];
+    const { visitor, base, root } = await start({ setup: { ...SETUP, notOutlined } });
+    await writeFile(join(root, 'cameras', CLIP, 'still.jpg'), new Uint8Array([0xff, 0xd8, 0xff]));
+    const { body } = await visitor('v1')(`/api/demo/clips/${CLIP}/setup`);
+    expect(body).toEqual({
+      picture: `/demo-still/${CLIP}`,
+      zones: [{ name: 'door', item: 'door', paths: ['M960 100 Z'] }],
+      notOutlined,
+      rules: ['Tell me when the door opens.'],
+    });
+    const still = await fetch(`${base}/demo-still/${CLIP}`);
+    expect(still.status).toBe(200);
+    expect(still.headers.get('content-type')).toBe('image/jpeg');
+    expect(new Uint8Array(await still.arrayBuffer())).toEqual(new Uint8Array([0xff, 0xd8, 0xff]));
+  });
+
+  it('serves a clip’s setup picture and nothing else from the camera folder', async () => {
+    const { base, root } = await start();
+    await writeFile(join(root, 'cameras', CLIP, 'still.jpg'), new Uint8Array([0xff]));
+    expect((await fetch(`${base}/demo-still/${encodeURIComponent('../../demo.db')}`)).status).toBe(404);
+    expect((await fetch(`${base}/demo-still/no-such-clip`)).status).toBe(404);
   });
 
   it('never shows an alert before its rule was ticked', () => {
@@ -402,6 +447,91 @@ describe('a copy of the page with no keys and no login', () => {
     const ask = visitor('v1');
     expect((await ask(`/api/demo/clips/${CLIP}/plans`, { sentence: 'Tell me when the door opens.' })).body.status).toBe('ready');
     expect((await ask(`/api/demo/clips/${CLIP}/rules`, { text: 'Tell me when the door opens.' })).status).toBe(409);
+  });
+});
+
+describe('alerts on Telegram', () => {
+  const PERSON = 555;
+  const alertOf = (ask: ReturnType<Awaited<ReturnType<typeof start>>['visitor']>) => ask(`/api/demo/clips/${CLIP}/telegram-alerts`, { rule: 'rule-1', key: 'key-1' });
+
+  it('says a copy has no bot, and refuses to link', async () => {
+    const { visitor } = await start();
+    const ask = visitor('v1');
+    expect((await ask('/api/app')).body.telegram).toBe(false);
+    const res = await ask(`/api/demo/telegram?clip=${CLIP}`);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe(NEEDS_KEYS);
+  });
+
+  it('gives the page a link that carries who is asking, and reports it once the person has pressed Start', async () => {
+    const { visitor, links } = await start({ telegram: true });
+    const ask = visitor('v1');
+    expect((await ask('/api/app')).body.telegram).toBe(true);
+    const before = (await ask(`/api/demo/telegram?clip=${CLIP}`)).body;
+    expect(before.linked).toBe(false);
+    expect(before.link).toMatch(/^https:\/\/t\.me\/streamatic_demo_bot\?start=[\w-]+$/);
+    links.claim(new URL(before.link).searchParams.get('start')!, PERSON);
+    expect((await ask(`/api/demo/telegram?clip=${CLIP}`)).body).toEqual({ linked: true, link: null });
+    expect((await visitor('v2')(`/api/demo/telegram?clip=${CLIP}`)).body.linked).toBe(false);
+  });
+
+  it('sends a ticked rule’s alert to the visitor’s own chat, in the language they chose, naming only the camera', async () => {
+    const { visitor, links, delivered, base } = await start({ telegram: true });
+    const ask = visitor('v1');
+    links.claim(links.token('v1', CLIP), PERSON);
+    const chosen = await fetch(`${base}/api/demo/telegram`, { method: 'PUT', headers: { cookie: 'streamatic_demo=v1', 'content-type': 'application/json' }, body: JSON.stringify({ clip: CLIP, language: 'pidgin' }) });
+    expect(chosen.status).toBe(200);
+    const res = await alertOf(ask);
+    expect(res.status).toBe(200);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]!.to).toBe(PERSON);
+    expect(delivered[0]!.text.split('\n')[0]).toBe('Building entrance');
+    expect(delivered[0]!.text).toContain('pidgin: ');
+  });
+
+  it('sends nothing for a visitor who has not linked', async () => {
+    const { visitor, delivered } = await start({ telegram: true });
+    const res = await alertOf(visitor('v1'));
+    expect(res.status).toBe(409);
+    expect(delivered).toEqual([]);
+  });
+
+  it('will not send an alert of another visitor’s typed rule, or one the rule does not have', async () => {
+    const { visitor, links, delivered, setDraft } = await start({ telegram: true });
+    const typist = visitor('v1');
+    const { body } = await typist(`/api/demo/clips/${CLIP}/rules`, { text: 'Tell me when someone opens the door.' });
+    setDraft('ready');
+    expect((await typist(`/api/demo/clips/${CLIP}/rules/${body.id}`)).body.status).toBe('ready');
+    const other = visitor('v2');
+    links.claim(links.token('v2', CLIP), PERSON);
+    expect((await other(`/api/demo/clips/${CLIP}/telegram-alerts`, { rule: body.id, key: 'key-1' })).status).toBe(404);
+    expect((await other(`/api/demo/clips/${CLIP}/telegram-alerts`, { rule: 'rule-1', key: 'no-such-key' })).status).toBe(404);
+    expect(delivered).toEqual([]);
+  });
+
+  it('stops at a day’s number of alerts for a visitor, so a page cannot be used to flood a chat', async () => {
+    const { visitor, links, delivered } = await start({ telegram: true });
+    const ask = visitor('v1');
+    links.claim(links.token('v1', CLIP), PERSON);
+    for (let i = 0; i < 40; i++) await alertOf(ask);
+    expect(delivered).toHaveLength(30);
+    expect((await alertOf(ask)).status).toBe(429);
+  });
+
+  it('keeps sending once the model ceiling is reached, since an alert already kept costs no model call', async () => {
+    const { visitor, links, delivered } = await start({ telegram: true, ceilingMicroUsd: 0 });
+    const ask = visitor('v1');
+    links.claim(links.token('v1', CLIP), PERSON);
+    expect((await alertOf(ask)).status).toBe(200);
+    expect(delivered).toHaveLength(1);
+  });
+
+  it('unlinks when the visitor turns it off', async () => {
+    const { links, base } = await start({ telegram: true });
+    links.claim(links.token('v1', CLIP), PERSON);
+    const res = await fetch(`${base}/api/demo/telegram`, { method: 'DELETE', headers: { cookie: 'streamatic_demo=v1' } });
+    expect(res.status).toBe(200);
+    expect(links.ofPerson(PERSON)).toBeNull();
   });
 });
 

@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { BellRing, Cctv, Clapperboard, ImageUp, Info, Menu, Moon, Search, Sun, X } from 'lucide-react';
+import { BellRing, Cctv, Clapperboard, ImageUp, Info, Menu, Moon, Search, Sun, Wand2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Link } from '@/components/ui/link';
 import { cn } from '@/lib/cn';
@@ -14,6 +14,7 @@ const PRIVATE_NAV = [
 
 const PUBLIC_NAV = [
   { href: '/clips', label: 'Clips', icon: Clapperboard, pages: ['clips', 'clip'] },
+  { href: '/setup', label: 'Setup', icon: Wand2, pages: ['setup'] },
   { href: '/try', label: 'Your own picture', icon: ImageUp, pages: ['try'] },
   { href: '/about', label: 'About', icon: Info, pages: ['about'] },
 ];
@@ -98,7 +99,7 @@ export function AppShell({ route, isPublic = false, children }: { route: Route; 
 function SmallPrint() {
   return (
     <footer className='text-muted-foreground mx-auto w-full max-w-[90rem] space-y-1 border-t px-4 py-4 text-xs leading-relaxed md:px-6'>
-      <p>A picture you upload is sent to Meta and to Baseten to be analysed, and a voice note is sent to Meta to be written out, under the hackathon’s credit terms, which allow Meta to use them for product improvement. This page keeps no copy of either. Please upload only a picture you are allowed to share.</p>
+      <p>A picture you upload is sent to Meta and to Baseten to be analysed, and a voice note, on this page or in the Telegram chat you link from it, is sent to Meta to be written out, under the hackathon’s credit terms, which allow Meta to use them for product improvement. This page keeps no copy of either. Please upload only a picture you are allowed to share.</p>
       <p>
         Clips: MEVA dataset by Kitware Inc. and IARPA,{' '}
         <a className='underline underline-offset-2' href='https://mevadata.org/resources/MEVA-data-license.txt' target='_blank' rel='noreferrer'>

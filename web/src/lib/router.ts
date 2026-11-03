@@ -9,6 +9,7 @@ export type Route =
   | { page: 'clips' }
   | { page: 'clip'; id: string }
   | { page: 'try' }
+  | { page: 'setup' }
   | { page: 'about' };
 
 export function parse(path: string): Route {
@@ -21,6 +22,7 @@ export function parse(path: string): Route {
   if (clip) return { page: 'clip', id: decodeURIComponent(clip[1]!) };
   if (path === '/clips') return { page: 'clips' };
   if (path === '/try') return { page: 'try' };
+  if (path === '/setup') return { page: 'setup' };
   if (path === '/about') return { page: 'about' };
   return { page: 'cameras' };
 }

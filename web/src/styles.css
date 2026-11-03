@@ -112,3 +112,24 @@
     }
   }
 }
+
+.picture-scan {
+  background: linear-gradient(90deg, transparent, rgb(83 142 231 / 0.45), transparent);
+  animation: picture-scan 1.6s ease-in-out infinite;
+}
+
+@keyframes picture-scan {
+  from {
+    left: -33%;
+  }
+  to {
+    left: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .picture-scan {
+    animation: none;
+    left: 33%;
+  }
+}

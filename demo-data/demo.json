@@ -1,6 +1,6 @@
 [
- {"id":"building-entrance","scenario":"74cabacb-ec8a-4416-a1db-ea30c4416ce7","site":"the entrance of a public building","words":["door","vehicle"],"stillSeconds":10},
- {"id":"car-park","scenario":"9e6448b6-0f2e-4f8b-a8a6-715feb3529ee","site":"a car park","words":["car","road"],"stillSeconds":10},
- {"id":"waiting-room","scenario":"bc67bc94-3c16-4e61-9421-a713808c5d2a","site":"a waiting room","words":["bench","door"],"stillSeconds":10},
- {"id":"school-hall","scenario":"a161b745-f10f-4acf-88cf-e7b641a93aa8","site":"a school hall","words":["door","basketball hoop"],"stillSeconds":10}
+ {"id":"building-entrance","scenario":"83789da3-ea1b-4ce8-8725-0f98556db6b2","site":"the entrance of a public building","words":["door","vehicle"],"stillSeconds":10},
+ {"id":"car-park","scenario":"1d42c08e-2e3d-4d76-82ed-3def144a579f","site":"a car park","words":["car","road"],"stillSeconds":10},
+ {"id":"waiting-room","scenario":"2922038f-ff39-4e3c-a65f-f90739686ab5","site":"a waiting room","words":["bench","door"],"stillSeconds":10},
+ {"id":"school-hall","scenario":"868d99c0-cc87-4400-aa49-3944d9aa1ea9","site":"a school hall","words":["door","basketball hoop"],"stillSeconds":10}
 ]

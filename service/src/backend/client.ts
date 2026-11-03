@@ -222,7 +222,7 @@ export class BackendClient {
   }
 
   async demoSchedule(id: string, rules: DemoScheduleRule[]) {
-    return z.object({ alerts: z.array(demoAlert) }).parse(await this.#company('POST', `/demo-scenarios/${id}/schedules`, { rules, timing: 'real-delay' }));
+    return z.object({ alerts: z.array(demoAlert) }).parse(await this.#company('POST', `/demo-scenarios/${id}/schedules`, { rules, timing: 'event' }));
   }
 
   async typeDemoRule(id: string, text: string): Promise<string> {

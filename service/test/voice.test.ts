@@ -146,6 +146,15 @@ describe('VoiceNotes', () => {
     expect(fake.calls).toEqual([]);
   });
 
+  it('reads a recording it already holds, as a Telegram voice note is, in the same way', async () => {
+    const fake = transcriber('Tell me if the gate is open.');
+    let charged = 0;
+    const reply = await new VoiceNotes(fake).readAudio(await recording(1), ['gate'], async () => void charged++);
+    expect(reply).toEqual({ status: 200, body: { text: 'Tell me if the gate is open.' } });
+    expect(charged).toBe(1);
+    expect((await new VoiceNotes(fake).readAudio(new TextEncoder().encode('hello'), [])).status).toBe(400);
+  });
+
   it('says so when nothing was heard', async () => {
     const reply = await new VoiceNotes(transcriber('  ')).read(posted(await recording(1)), []);
     expect(reply.status).toBe(422);

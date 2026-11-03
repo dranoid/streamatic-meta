@@ -5,7 +5,9 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label, Textarea } from '@/components/ui/input';
 import { Notice } from '@/components/ui/notice';
+import { NeedsKeys } from '@/components/needs-keys';
 import { VoiceNote } from '@/components/voice-note';
+import { useAbilities } from '@/lib/abilities';
 import { api, type DemoClip, type DemoRule, type DemoZone, type GuidePlan, type PlanAttempt } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { clockTime } from '@/lib/time';
@@ -15,12 +17,12 @@ const GUIDE_PAUSE_MS = 700;
 const FINISHED = new Set(['ready', 'refused', 'failed']);
 
 function statusLine(rule: DemoRule | undefined): string {
-  if (rule?.status === 'probing') return 'Checking this clip can answer it';
+  if (rule?.status === 'probing') return 'Checking that this clip can answer the rule';
   if (rule?.status === 'asking') {
     const { done, total } = rule.progress;
-    return total ? `Asking over the clip: ${done} of ${total} parts` : 'Asking over the clip';
+    return total ? `Running the rule over the clip: ${done} of ${total} parts` : 'Running the rule over the clip';
   }
-  return 'Reading the sentence';
+  return 'Reading the rule';
 }
 
 function zonesOf(clip: DemoClip, plan: GuidePlan): DemoZone[] {
@@ -55,6 +57,7 @@ export function DemoGuide({
   onAdd: (rule: string) => void;
   onTyped: () => void;
 }) {
+  const { models } = useAbilities();
   const [text, setText] = useState('');
   const [plan, setPlan] = useState<{ plan: GuidePlan; attempts: PlanAttempt[] } | null>(null);
   const [planChecked, setPlanChecked] = useState(false);
@@ -112,7 +115,7 @@ export function DemoGuide({
     const rejected = plan.attempts.filter((a) => a.problems.length > 0);
     steps.push({
       key: 'plan',
-      title: 'Check the plan',
+      title: 'Review the plan',
       detail: (
         <div className='space-y-1'>
           <p>Watches for: {plan.plan.about}</p>
@@ -126,16 +129,16 @@ export function DemoGuide({
         </div>
       ),
       ready: true,
-      confirm: 'The plan is right',
+      confirm: 'Confirm the plan',
       onConfirm: () => setPlanChecked(true),
       done: planChecked,
     });
     steps.push({
       key: 'zones',
-      title: 'See where it watches',
+      title: 'Review the zones',
       detail: zones.length ? `Outlined on the player: ${zones.map((z) => z.name).join(', ')}. The sentence sent to Streamatic says where each one is in the picture.` : 'This rule watches the whole picture, so nothing is outlined.',
       ready: zonesShown,
-      confirm: 'Read the rule over this clip',
+      confirm: 'Run the rule on this clip',
       onConfirm: () => {
         setZonesChecked(true);
         onShowZones(null);
@@ -147,7 +150,7 @@ export function DemoGuide({
   if ((plan && zonesChecked) || ruleId || adding.isPending) {
     steps.push({
       key: 'read',
-      title: 'Check how Streamatic reads it',
+      title: 'Review how Streamatic reads the rule',
       detail: !reading || !FINISHED.has(reading.status) ? `${statusLine(reading)}. This usually takes under a minute.` : reading.status === 'ready' ? (
         <div className='space-y-1'>
           <p>Reads as: {reading.readsAs ?? reading.name}</p>
@@ -167,7 +170,7 @@ export function DemoGuide({
       ),
       ready: reading?.status === 'ready',
       waiting: reading && FINISHED.has(reading.status) ? 'This step cannot go further' : 'Streamatic is working on this step',
-      confirm: 'That is what I meant',
+      confirm: 'Confirm the reading',
       onConfirm: () => setReadingChecked(true),
       done: readingChecked,
     });
@@ -175,10 +178,10 @@ export function DemoGuide({
   if (readingChecked && ruleId) {
     steps.push({
       key: 'add',
-      title: 'Add it to the clip',
-      detail: added(ruleId) ? 'Added. It runs from the start of the clip. After an alert a new rule stays quiet for 5 minutes, as it would on a live camera, so on this clip it alerts about once.' : 'The rule will be ticked and the clip will play from the start.',
+      title: 'Add the rule to the clip',
+      detail: added(ruleId) ? 'Added. The rule runs from the start of the clip. A new rule waits 5 minutes after an alert before it can alert again, as it would on a live camera, so on this clip it alerts about once.' : 'The rule will be ticked and the clip will play from the start.',
       ready: true,
-      confirm: 'Add it and play from the start',
+      confirm: 'Add the rule and play from the start',
       onConfirm: () => onAdd(ruleId),
       done: added(ruleId),
     });
@@ -193,7 +196,7 @@ export function DemoGuide({
             <Compass className='text-primary size-4' />
             Guide
           </CardTitle>
-          <CardDescription>Say what to watch on this clip. The guide plans the rule, does each step on this page, and waits for you to confirm it.</CardDescription>
+          <CardDescription>Describe what to monitor on this clip. The guide plans the rule, completes each step on this page, and asks you to confirm it.</CardDescription>
         </div>
       </CardHeader>
       <CardContent className='space-y-3'>
@@ -205,15 +208,16 @@ export function DemoGuide({
             if (text.trim()) planning.mutate(text.trim());
           }}
         >
-          <Label htmlFor='clip-guide'>What should this camera watch?</Label>
-          <Textarea id='clip-guide' rows={2} maxLength={300} value={text} onChange={(e) => setText(e.target.value)} placeholder='Tell me when someone stops by the entrance.' />
-          <VoiceNote read={(audio) => api.voiceNoteOnClip(clip.id, audio)} onText={setText} />
-          <Button type='submit' disabled={planning.isPending || text.trim().length < 3}>
+          <Label htmlFor='clip-guide'>What should this camera monitor?</Label>
+          <Textarea id='clip-guide' rows={2} maxLength={300} disabled={!models} value={text} onChange={(e) => setText(e.target.value)} placeholder='Tell me when someone stops by the entrance.' />
+          <VoiceNote disabled={!models} read={(audio) => api.voiceNoteOnClip(clip.id, audio)} onText={setText} />
+          <Button type='submit' disabled={!models || planning.isPending || text.trim().length < 3}>
             {planning.isPending ? <Loader2 className='animate-spin' /> : <Compass />}
-            {planning.isPending ? 'Planning' : 'Plan the rule'}
+            {planning.isPending ? 'Planning the rule' : 'Add rule'}
           </Button>
         </form>
-        {clip.suggestions.length > 0 && !plan && (
+        {!models && <NeedsKeys />}
+        {models && clip.suggestions.length > 0 && !plan && (
           <div className='space-y-1.5'>
             <p className='text-muted-foreground text-xs'>Suggested when this clip was set up:</p>
             <div className='flex flex-wrap gap-1.5'>
@@ -229,9 +233,9 @@ export function DemoGuide({
         {adding.isError && <Notice tone='error'>{adding.error.message}</Notice>}
         {refused && !ruleId && (
           <div className='space-y-2'>
-            <Notice>The guide could not plan this rule on this clip’s zones after {refused.attempts.length} tries. {refused.problems.join(' ')}</Notice>
+            <Notice>The guide could not plan this rule on this clip’s zones after {refused.attempts.length} attempts. {refused.problems.join(' ')}</Notice>
             <Button variant='outline' size='sm' disabled={adding.isPending} onClick={() => adding.mutate({ text: text.trim() })}>
-              Read it as written
+              Run the rule as written
             </Button>
           </div>
         )}

@@ -6,11 +6,14 @@ import { PictureFrame, ZONE_COLOURS, type DrawnPath } from '@/components/picture
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Notice } from '@/components/ui/notice';
+import { NeedsKeys } from '@/components/needs-keys';
+import { useAbilities } from '@/lib/abilities';
 import { api } from '@/lib/api';
 import { sentence } from '@/lib/time';
 
 // A visitor's own picture goes through the same setup as a camera, on this one picture, and nothing is kept.
 export function TryPage() {
+  const { models } = useAbilities();
   const input = useRef<HTMLInputElement>(null);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const setting = useMutation({ mutationFn: api.setUpOwnPicture, onSuccess: () => setHidden(new Set()) });
@@ -23,14 +26,14 @@ export function TryPage() {
           ? []
           : Object.values(zone.outlines)
               .flat()
-              .map((outline, j) => ({ key: `${zone.name}-${j}`, d: outline.path, colour: ZONE_COLOURS[i % ZONE_COLOURS.length]!, style: 'fill' as const, title: sentence(zone.name) })),
+              .map((outline, j) => ({ key: `${zone.name}-${j}`, d: outline.path, colour: ZONE_COLOURS[i % ZONE_COLOURS.length]!, style: 'fill' as const, title: sentence(zone.name), group: zone.name })),
       ),
     [zones, hidden],
   );
 
   return (
     <>
-      <PageHeader icon={<ImageUp />} title='Your own picture' description='Upload a picture from a camera. Streamatic lists what matters in it, outlines each thing and suggests the rules worth having.' />
+      <PageHeader icon={<ImageUp />} title='Your own picture' description='Upload a picture from a camera. Streamatic lists what matters in it, outlines each item and suggests rules.' />
       <div className='grid gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]'>
         <Card className='min-w-0'>
           <CardContent className='space-y-4'>
@@ -43,7 +46,7 @@ export function TryPage() {
               </div>
             )}
             <div className='flex flex-wrap items-center gap-2'>
-              <Button size='sm' variant={result ? 'outline' : 'default'} disabled={setting.isPending} onClick={() => input.current?.click()}>
+              <Button size='sm' variant={result ? 'outline' : 'default'} disabled={!models || setting.isPending} onClick={() => input.current?.click()}>
                 <ImageUp />
                 {result ? 'Choose another picture' : 'Choose a picture'}
               </Button>
@@ -61,6 +64,7 @@ export function TryPage() {
                 }}
               />
             </div>
+            {!models && <NeedsKeys />}
             {setting.isError && <Notice tone='error'>{setting.error.message}</Notice>}
           </CardContent>
         </Card>
@@ -70,7 +74,7 @@ export function TryPage() {
             <Card>
               <CardHeader>
                 <div>
-                  <CardTitle>What was found</CardTitle>
+                  <CardTitle>Items found</CardTitle>
                   <CardDescription>Select one to show or hide it.</CardDescription>
                 </div>
               </CardHeader>
@@ -105,7 +109,7 @@ export function TryPage() {
             {result.setup.rules.length > 0 && (
               <Card>
                 <CardHeader>
-                  <CardTitle>Rules worth having</CardTitle>
+                  <CardTitle>Suggested rules</CardTitle>
                 </CardHeader>
                 <CardContent>
                   <ul className='list-disc space-y-1.5 pl-4 text-sm'>

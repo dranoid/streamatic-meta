@@ -10,7 +10,7 @@ import { RuleStore } from '../src/rules/rule-store.js';
 
 const alertAt = (id: string, iso: string): BackendAlert => ({ id, cameraRuleId: 'backend-1', message: 'answered true', triggeredAt: iso, evidence: { question: 'q', sampledFrames: [] } });
 
-async function setup(backend: unknown) {
+async function setup(backend: unknown, notify?: (id: number) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), 'copier-'));
   await mkdir(join(root, 'cameras', 'parlour'), { recursive: true });
   await writeFile(join(root, 'cameras', 'parlour', 'camera.json'), JSON.stringify({ name: 'Table parlour', site: 's', baseWords: [], pictures: {}, backend }));
@@ -32,11 +32,29 @@ async function setup(backend: unknown) {
     rules,
     cameras: new CameraFolder(root),
     copy: { store, mediaDir: root, pictureUrls: async () => ({}), download: async () => null, pickPicture: async () => 0, outlineAll: async () => ({}) },
+    ...(notify ? { notify } : {}),
   });
   return { copier, store };
 }
 
 describe('AlertCopier', () => {
+  it('tells its listener of each newly copied alert once, and only those inside the stored hours', async () => {
+    const told: number[] = [];
+    const { copier, store } = await setup({ deviceId: 'd', recorded: { from: '2026-11-02T20:00:00.000Z', to: '2026-11-02T22:00:00.000Z' } }, async (id) => void told.push(id));
+    await copier.pass();
+    await copier.pass();
+    expect(told).toEqual(store.list({}).map((e) => e.id));
+    expect(told).toHaveLength(1);
+  });
+
+  it('keeps copying when telling its listener fails', async () => {
+    const { copier, store } = await setup({ deviceId: 'd', recorded: null }, async () => {
+      throw new Error('Telegram is away');
+    });
+    expect(await copier.pass()).toBe(2);
+    expect(store.list({})).toHaveLength(2);
+  });
+
   it('copies only the alerts inside a camera’s stored hours, because the app never sees its other hours', async () => {
     const { copier, store } = await setup({ deviceId: 'd', recorded: { from: '2026-11-02T20:00:00.000Z', to: '2026-11-02T22:00:00.000Z' } });
 

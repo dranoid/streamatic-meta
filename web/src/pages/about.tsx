@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 const PARTS = [
   {
     title: 'Setting up a camera',
-    sam: 'Outlines each listed thing on the day, dusk and night pictures, so it becomes a zone a rule can watch.',
+    sam: 'Outlines each listed item on the day, dusk and night pictures, so it becomes a zone a rule can watch.',
     spark: 'Lists what it sees in the three pictures, and suggests rules for what was outlined.',
     code: 'Matches each zone across the three pictures, so it is named once.',
   },
@@ -19,11 +19,11 @@ const PARTS = [
     title: 'The guide',
     sam: null,
     spark: 'Drafts a plan for the rule from the person’s sentence, typed or written out from a voice note by Muse Voice Transcribe.',
-    code: 'Checks the plan against the camera’s zones and the person’s own words, and sends a refused plan back with the reason. Shows how Streamatic reads the rule, and ticks a step only when the page shows it done and the person confirms it.',
+    code: 'Checks the plan against the camera’s zones and the person’s own words, and sends a refused plan back with the reason. Shows how Streamatic reads the rule, and marks a step done only when the page shows it done and the person confirms it.',
   },
   {
     title: 'Searching a clip',
-    sam: 'Outlines what is on the paused frame, under each word or at a click. Then tracks the selected outline through the whole clip, both ways from that frame, from its box alone.',
+    sam: 'Outlines what is on the paused frame, under each word or at a click. Then tracks the selected outline both ways from that frame, from its box alone: through the whole clip on a private copy, and over the minute around that frame on this public page, where each frame is charged.',
     spark: 'Lists the kinds of thing on the frame that could be searched for, and names something selected by a click.',
     code: 'Accumulates what each search finds on the one frame, works out when the thing was in view, and keeps each result so asking again costs nothing.',
   },
@@ -31,13 +31,19 @@ const PARTS = [
     title: 'The clips on this page',
     sam: 'Outlines what a clip shows when the clip is set up, and on a picture you upload.',
     spark: 'Lists what is worth outlining, suggests rules and drafts the guide’s plan.',
-    code: 'Keeps the clips and rules in this page’s own database, serves the videos, and works out from the rule’s tick what you see and when. Whether and when a rule alerts is decided by Streamatic’s existing rules, built before this event, and copied here once.',
+    code: 'Keeps the clips and rules in this page’s own database, serves the videos, and works out from the moment a rule is selected what you see and when. Whether and when a rule alerts is decided by Streamatic’s existing rules, built before this event, and copied here once.',
   },
   {
     title: 'Alerts in Pidgin and Yoruba',
     sam: null,
     spark: 'Says what a rule’s alert means in the language chosen, from the rule alone. It is not asked whether the rule holds.',
     code: 'Keeps what was written, so each rule is written once and playing a clip calls no model.',
+  },
+  {
+    title: 'Alerts on Telegram',
+    sam: null,
+    spark: 'Plans a rule from a voice note or a sentence sent in the chat, as the guide does on the page.',
+    code: 'Links the chat from the page by Telegram’s own number for the person, keeps the page’s daily limits, and sends each alert as the clip plays through it.',
   },
   {
     title: 'Questions about events',

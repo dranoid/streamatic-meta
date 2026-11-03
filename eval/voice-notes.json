@@ -1,0 +1,87 @@
+[
+  {
+    "n": 1,
+    "typed": "Tell me when someone is opening the front door.",
+    "heard": "tell me when someone is opening the front door.",
+    "planFromVoice": {
+      "status": "ready",
+      "about": "someone",
+      "zones": [],
+      "box": {
+        "over": "front door",
+        "question": "is someone opening the front door?"
+      },
+      "hours": null,
+      "tries": 1
+    },
+    "planFromTyped": {
+      "status": "ready",
+      "about": "someone",
+      "zones": [],
+      "box": {
+        "over": "front door",
+        "question": "is someone opening the front door?"
+      },
+      "hours": null,
+      "tries": 1
+    }
+  },
+  {
+    "n": 2,
+    "typed": "Alert me if the gate is left open after ten at night.",
+    "heard": "allow me. if the gate is left open after ten at night.",
+    "planFromVoice": {
+      "status": "ready",
+      "about": "gate",
+      "zones": [
+        "gate"
+      ],
+      "box": null,
+      "hours": {
+        "from": 22,
+        "to": 6
+      },
+      "tries": 1
+    },
+    "planFromTyped": {
+      "status": "ready",
+      "about": "gate",
+      "zones": [
+        "gate"
+      ],
+      "box": null,
+      "hours": {
+        "from": 22,
+        "to": 6
+      },
+      "tries": 1
+    }
+  },
+  {
+    "n": 3,
+    "typed": "Tell me when a keke is parked in the yard.",
+    "heard": "tell me when Ikeke is parked in the yard.",
+    "planFromVoice": {
+      "status": "ready",
+      "about": "Ikeke",
+      "zones": [],
+      "box": {
+        "over": "yard",
+        "question": "is Ikeke parked here?"
+      },
+      "hours": null,
+      "tries": 1
+    },
+    "planFromTyped": {
+      "status": "ready",
+      "about": "keke",
+      "zones": [],
+      "box": {
+        "over": "yard",
+        "question": "is a keke parked here?"
+      },
+      "hours": null,
+      "tries": 1
+    }
+  }
+]

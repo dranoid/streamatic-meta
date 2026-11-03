@@ -5,22 +5,23 @@ import { basename, join } from 'node:path';
 import sharp from 'sharp';
 import { z } from 'zod';
 import { BackendError } from '../backend/client.js';
-import { sentenceWithPlaces } from '../backend/place.js';
 import type { CameraFolder } from '../cameras/camera-folder.js';
-import type { CameraZone } from '../cameras/camera-zones.js';
 import type { Clip, ClipFolder } from '../follow/clips.js';
-import { checkPlan, planRule, type GuidePlan, type GuidePlanner } from '../guide/plan.js';
-import type { Box } from '../sam/outlines.js';
+import { planRule, type GuidePlanner } from '../guide/plan.js';
+import type { BotChat } from '../telegram/api.js';
+import { sendDemoAlert } from '../telegram/demo-alert.js';
+import type { TelegramLinks } from '../telegram/links.js';
 import { voiceKeywords, type VoiceNotes } from '../voice/voice-note.js';
 import type { DemoEngine } from './engine.js';
 import type { DemoLimits, Spending } from './limits.js';
-import type { DemoRule, DemoStore, RuleZone } from './store.js';
+import { placedBox, ruleFromPlan, zonePaths } from './rule-plan.js';
+import type { DemoRule, DemoStore } from './store.js';
 
-export const NEEDS_KEYS = 'This copy of the page has no model keys, so this is not available here. The clips and their alerts still work. The README says which keys to add.';
-const NEEDS_BACKEND = 'Reading a new rule needs Streamatic’s backend, which this copy is not connected to. It works on the hosted page, whose address is in the README.';
+export const NEEDS_KEYS = 'Provide your keys for the full experience. The README says which to add. The clips and their alerts work without them.';
+export const NEEDS_BACKEND = 'Reading a new rule needs Streamatic’s backend, which this copy is not connected to. It works on the hosted page, whose address is in the README.';
 
 // What each kind of request is counted as against the day's ceiling, a little above what was measured, so the ceiling errs early.
-export const COST_MICRO_USD: Record<Spending, number> = { rule: 100_000, plan: 20_000, look: 20_000, track: 150_000, upload: 80_000 };
+export const COST_MICRO_USD: Record<Spending, number> = { rule: 100_000, plan: 20_000, look: 20_000, track: 150_000, upload: 80_000, send: 0 };
 const MAX_UPLOAD_BYTES = 8_000_000;
 const MAX_JSON_BYTES = 4_000;
 const VISITOR_COOKIE = 'streamatic_demo';
@@ -40,6 +41,8 @@ const planShape = z.object({
 const newRule = z.union([z.object({ text: sentence }), z.object({ plan: planShape })]);
 const ticked = z.object({ ticks: z.array(z.object({ rule: z.string().max(64), armedMs: z.number().min(0) })).max(10) });
 const planAsked = z.object({ sentence });
+const telegramAlert = z.object({ rule: z.string().max(64), key: z.string().max(200) });
+const telegramChoice = z.object({ clip: z.string().max(200), language: z.enum(['english', 'pidgin', 'yoruba']) });
 
 class Refusal extends Error {
   constructor(
@@ -83,19 +86,6 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
   }
 }
 
-const boxPath = ({ left, top, right, bottom }: Box) => `M${left} ${top}H${right}V${bottom}H${left}Z`;
-const zonePaths = (zone: CameraZone) => Object.values(zone.outlines).flat().map((o) => o.path);
-const zoneBoxOf = (zone: CameraZone): Box => Object.values(zone.outlines).flat()[0]!.box;
-
-// On a clip nobody can draw, so a box the plan left unplaced goes over the one zone its sentence names, if it names one.
-function placedBox(plan: GuidePlan, zones: CameraZone[]): GuidePlan {
-  if (!plan.box || plan.box.over !== null) return plan;
-  const said = new Set(plan.sentence.toLowerCase().split(/[^\p{L}\p{N}]+/u));
-  const named = zones.filter((z) => z.word.toLowerCase().split(/\s+/).every((w) => said.has(w)));
-  // Two zones under one word could be either, and a wrong place in the sentence is worse than none.
-  return named.length === 1 ? { ...plan, box: { ...plan.box, over: named[0]!.name } } : plan;
-}
-
 const viewOf = ({ id, kind, text, name, readsAs, status, progress, rewrites, reason, canAnswer, zones }: DemoRule) => ({ id, kind, text, name, readsAs, status, progress, rewrites, reason, canAnswer, zones });
 
 // The public page's routes over the demo engine. Spending is limited here, the login stays on this server, and no signed
@@ -112,6 +102,7 @@ export function demoHandler({
   folder,
   trackSeconds,
   abilities = { models: true, rules: true },
+  telegram = null,
 }: {
   engine: DemoEngine;
   store: DemoStore;
@@ -125,6 +116,8 @@ export function demoHandler({
   trackSeconds: number;
   // What this copy can spend on; a judge's own copy may have neither, and the recorded clips need neither.
   abilities?: { models: boolean; rules: boolean };
+  // Present when this copy has a bot of its own to send alerts with.
+  telegram?: { links: TelegramLinks; botName: string; chat: Pick<BotChat, 'sendText' | 'sendPicture'> } | null;
 }): (request: IncomingMessage, response: ServerResponse, url: URL) => Promise<boolean> {
   const charge = async (visitor: string, kind: Spending) => {
     const reached = await limits.charge(visitor, kind, COST_MICRO_USD[kind]);
@@ -142,23 +135,17 @@ export function demoHandler({
     return shown;
   };
 
-  // What a planned rule sends: each zone's place is written into the sentence, and its outlines go to the player.
-  const planned = async (clip: string, plan: GuidePlan) => {
+  const planned = async (clip: string, plan: Parameters<typeof ruleFromPlan>[0]) => {
     const camera = await cameras.get(clip);
     const size = await clips.get(clip);
     if (!camera || !size) throw new Refusal(404, 'No such clip.');
-    const { passed } = checkPlan(plan, camera.zones, plan.about);
-    if (!passed) throw new Refusal(400, 'That plan does not fit this clip. Please plan the rule again.');
-    const named = (name: string) => camera.zones.find((z) => z.name.toLowerCase() === name.trim().toLowerCase())!;
-    const zones = plan.zones.map(named);
-    const over = plan.box?.over ? named(plan.box.over) : null;
-    const places = [...zones, ...(over && !zones.includes(over) ? [over] : [])].map((z) => ({ name: z.name, box: zoneBoxOf(z) }));
-    const shown: RuleZone[] = [
-      ...zones.map((z) => ({ name: z.name, paths: zonePaths(z) })),
-      ...(plan.box && over ? [{ name: plan.box.name, paths: [boxPath(zoneBoxOf(over))] }] : []),
-    ];
-    const asked = [plan.sentence, ...(plan.box ? [plan.box.question] : [])].join(' ');
-    return { sent: sentenceWithPlaces(asked, places, { width: size.width, height: size.height }), zones: shown };
+    const made = ruleFromPlan(plan, camera.zones, size);
+    if (!made) throw new Refusal(400, 'That plan does not fit this clip. Please plan the rule again.');
+    return made;
+  };
+  const needsBot = () => {
+    if (!telegram) throw new Refusal(409, NEEDS_KEYS);
+    return telegram;
   };
 
   async function route(request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean> {
@@ -167,7 +154,7 @@ export function demoHandler({
     let match: RegExpExecArray | null;
 
     if (method === 'GET' && path === '/api/app') {
-      send(response, 200, { public: true, trackSeconds, ...abilities });
+      send(response, 200, { public: true, trackSeconds, ...abilities, telegram: telegram !== null });
       return true;
     }
     if (method === 'GET' && path === '/api/demo/clips') {
@@ -192,6 +179,19 @@ export function demoHandler({
       });
       return true;
     }
+    if (method === 'GET' && (match = /^\/api\/demo\/clips\/([^/]+)\/setup$/.exec(path))) {
+      const id = decodeURIComponent(match[1]!);
+      clipRow(id);
+      const setup = (await cameras.get(id))?.setup;
+      if (!setup) throw new Refusal(404, 'This clip has not been set up.');
+      send(response, 200, {
+        picture: `/demo-still/${encodeURIComponent(id)}`,
+        zones: setup.zones.map((z) => ({ name: z.name, item: z.item, paths: zonePaths(z) })),
+        notOutlined: setup.notOutlined,
+        rules: setup.rules.map((r) => r.sentence),
+      });
+      return true;
+    }
     if (method === 'POST' && (match = /^\/api\/demo\/clips\/([^/]+)\/alerts$/.exec(path))) {
       const id = decodeURIComponent(match[1]!);
       clipRow(id);
@@ -205,7 +205,7 @@ export function demoHandler({
       const id = decodeURIComponent(match[1]!);
       clipRow(id);
       const parsed = planAsked.safeParse(await readJson(request));
-      if (!parsed.success) throw new Refusal(400, 'Write what to watch in a sentence.');
+      if (!parsed.success) throw new Refusal(400, 'Please describe the rule in a sentence.');
       if (!abilities.models) throw new Refusal(409, NEEDS_KEYS);
       const camera = await cameras.get(id);
       if (!camera) throw new Refusal(404, 'No such clip.');
@@ -245,6 +245,48 @@ export function demoHandler({
       send(response, 200, viewOf(rule));
       return true;
     }
+    if (path === '/api/demo/telegram') {
+      const { links, botName } = needsBot();
+      const visitor = visitorOf(request, response);
+      if (method === 'GET') {
+        const clip = url.searchParams.get('clip') ?? '';
+        clipRow(clip);
+        const linked = links.ofVisitor(visitor) !== null;
+        send(response, 200, { linked, link: linked ? null : `https://t.me/${botName}?start=${links.token(visitor, clip)}` });
+        return true;
+      }
+      if (method === 'PUT') {
+        const parsed = telegramChoice.safeParse(await readJson(request));
+        if (!parsed.success) throw new Refusal(400, 'The request is not valid.');
+        clipRow(parsed.data.clip);
+        links.choose(visitor, parsed.data.clip, parsed.data.language);
+        send(response, 200, { linked: links.ofVisitor(visitor) !== null });
+        return true;
+      }
+      if (method === 'DELETE') {
+        links.unlink(visitor);
+        send(response, 200, { linked: false });
+        return true;
+      }
+    }
+    if (method === 'POST' && (match = /^\/api\/demo\/clips\/([^/]+)\/telegram-alerts$/.exec(path))) {
+      const id = decodeURIComponent(match[1]!);
+      clipRow(id);
+      const { links, chat } = needsBot();
+      const parsed = telegramAlert.safeParse(await readJson(request));
+      if (!parsed.success) throw new Refusal(400, 'The request is not valid.');
+      const visitor = visitorOf(request, response);
+      const link = links.ofVisitor(visitor);
+      if (!link) throw new Refusal(409, 'This page is not linked to Telegram.');
+      const rule = store.rules(id, visitor).find((r) => r.id === parsed.data.rule);
+      const alert = rule ? store.alert(rule.id, parsed.data.key) : null;
+      const clip = await clips.get(id);
+      if (!rule || !alert || !clip) throw new Refusal(404, 'No such alert.');
+      await charge(visitor, 'send');
+      await sendDemoAlert({ chat, to: link.person, folder, clip, rule, alert, language: link.language });
+      send(response, 200, { sent: true });
+      return true;
+    }
     if (method === 'POST' && path === '/api/demo/uploads') {
       const type = String(request.headers['content-type'] ?? '').split(';')[0]!.trim();
       if (!PICTURE_TYPES.has(type)) throw new Refusal(400, 'Please choose a JPEG, PNG or WebP picture.');
@@ -261,6 +303,14 @@ export function demoHandler({
       await charge(visitorOf(request, response), 'upload');
       const setup = await setUp(new Uint8Array(data));
       send(response, 200, { picture: `data:image/jpeg;base64,${data.toString('base64')}`, width: info.width, height: info.height, setup });
+      return true;
+    }
+    if (method === 'GET' && (match = /^\/demo-still\/([^/]+)$/.exec(path))) {
+      const clip = decodeURIComponent(match[1]!);
+      const bytes = basename(clip) === clip ? await readFile(join(folder, 'cameras', clip, 'still.jpg')).catch(() => null) : null;
+      if (!bytes) throw new Refusal(404, 'Not found.');
+      response.writeHead(200, { 'Content-Type': 'image/jpeg' });
+      response.end(bytes);
       return true;
     }
     if (method === 'GET' && (match = /^\/demo-evidence\/([^/]+)\/([^/]+)$/.exec(path))) {

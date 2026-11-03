@@ -17,3 +17,4 @@ pictures/
 demo-data/limits.json
 demo-data/clips/*/frames/
 demo-data/events.db
+demo-data/telegram.db

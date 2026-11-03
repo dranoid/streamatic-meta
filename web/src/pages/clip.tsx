@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { BellRing, Crosshair, LoaderCircle, Pause, Play, Search, SkipForward, X } from 'lucide-react';
+import { Outlines, PictureBusy, PictureFrame, ZONE_COLOURS, type DrawnPath } from '@/components/picture-frame';
 import { DemoGuide } from '@/components/demo-guide';
 import { LanguageChoice, type AlertLanguage } from '@/components/language-choice';
+import { NeedsKeys } from '@/components/needs-keys';
+import { TelegramAlerts, useTelegramLink } from '@/components/telegram-alerts';
 import { PageHeader } from '@/components/layout/page-header';
-import { PictureFrame, ZONE_COLOURS, type DrawnPath } from '@/components/picture-frame';
 import { Timeline } from '@/components/timeline';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -12,6 +14,7 @@ import { Input, Label } from '@/components/ui/input';
 import { Notice } from '@/components/ui/notice';
 import { Skeleton } from '@/components/ui/skeleton';
 import { api, clipPictureUrl, clipVideoUrl, type Clip, type DemoAlert, type DemoClip, type DemoRule, type DemoZone, type Follow, type FollowJob, type Thing } from '@/lib/api';
+import { useAbilities } from '@/lib/abilities';
 import { cn } from '@/lib/cn';
 import { sentence } from '@/lib/time';
 
@@ -23,6 +26,9 @@ const RULE_ZONE_COLOUR = '#538ee7';
 const ALERT_BANNER_MS = 6_000;
 // Going to an alert starts a little before the moment it is about, so the moment itself is seen.
 const LEAD_IN_MS = 3_000;
+// A longer step than this between readings of the clock is a jump, not the clip playing through a moment.
+const LONGEST_PLAYED_STEP_MS = 2_000;
+const REFRESH_LINKED_MS = 15_000;
 
 function duration(seconds: number): string {
   const whole = Math.max(0, Math.round(seconds));
@@ -43,7 +49,7 @@ export function ClipPage({ id, isPublic = false, trackSeconds = null }: { id: st
         trail={[{ href: '/clips', label: isPublic ? 'Clips' : 'Search' }]}
         icon={<Search />}
         title={clip.name}
-        description={isPublic ? 'Tick a rule, or tell the guide what to watch, and play the clip. Pause on any frame to search for what is in it.' : 'Pause on a frame where it appears, then search for it.'}
+        description={isPublic ? 'Select a rule, or describe a new one to the guide, and play the clip. Pause on any frame to search it.' : 'Pause on a frame where it appears, then search for it.'}
       />
       <ClipWatch clip={clip} follows={follows.data ?? []} demo={demo.data ?? null} trackSeconds={trackSeconds} />
     </>
@@ -52,6 +58,7 @@ export function ClipPage({ id, isPublic = false, trackSeconds = null }: { id: st
 
 function ClipWatch({ clip, follows, demo, trackSeconds }: { clip: Clip; follows: Follow[]; demo: DemoClip | null; trackSeconds: number | null }) {
   const queryClient = useQueryClient();
+  const { models } = useAbilities();
   const video = useRef<HTMLVideoElement>(null);
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -101,16 +108,41 @@ function ClipWatch({ clip, follows, demo, trackSeconds }: { clip: Clip; follows:
   }, []);
   const refreshDemo = useCallback(() => void queryClient.invalidateQueries({ queryKey: ['demo-clip', clip.id] }), [queryClient, clip.id]);
   const nowMs = time * 1000;
+  const telegram = useTelegramLink(clip.id, language);
+  const [telegramProblem, setTelegramProblem] = useState<string | null>(null);
+  const lastPlayedMs = useRef(0);
+  const sentToTelegram = useRef(new Set<string>());
+  // An alert goes to the chat as the clip plays through it, as it would on a live camera; going to a moment sends nothing.
+  useEffect(() => {
+    const from = lastPlayedMs.current;
+    lastPlayedMs.current = nowMs;
+    if (nowMs < from) sentToTelegram.current.clear();
+    if (!telegram.linked || !playing || nowMs < from || nowMs - from > LONGEST_PLAYED_STEP_MS) return;
+    for (const alert of alerts) {
+      const id = `${alert.rule}:${alert.key}`;
+      if (alert.shownMs < from || alert.shownMs > nowMs || sentToTelegram.current.has(id)) continue;
+      sentToTelegram.current.add(id);
+      api.sendAlertToTelegram(clip.id, alert.rule, alert.key).catch((error: Error) => setTelegramProblem(error.message));
+    }
+  }, [nowMs, telegram.linked, playing, alerts, clip.id]);
+  // A rule added from the chat joins this page's list.
+  useEffect(() => {
+    if (!telegram.linked) return;
+    const refresh = setInterval(refreshDemo, REFRESH_LINKED_MS);
+    return () => clearInterval(refresh);
+  }, [telegram.linked, refreshDemo]);
   const reached = alerts.filter((a) => a.shownMs <= nowMs).sort((a, b) => b.shownMs - a.shownMs);
   const banner = reached.find((a) => nowMs - a.shownMs < ALERT_BANNER_MS) ?? null;
   const nextAlert = alerts.filter((a) => a.shownMs > nowMs).sort((a, b) => a.atMs - b.atMs)[0] ?? null;
   const rulesById = new Map(demo?.rules.map((r) => [r.id, r]));
   const goToAlert = (alert: DemoAlert) => seek(Math.max(0, alert.atMs - LEAD_IN_MS) / 1000);
-  const overlays: Array<{ key: string; d: string; colour: string; strong?: boolean }> = [
-    ...(showZones ? (demo?.zones ?? []).flatMap((z, i) => z.paths.map((d, j) => ({ key: `zone-${i}-${j}`, d, colour: ZONE_COLOURS[i % ZONE_COLOURS.length]! }))) : []),
-    ...(demo?.rules ?? []).filter((r) => ticks[r.id] !== undefined).flatMap((r) => r.zones.flatMap((z, i) => z.paths.map((d, j) => ({ key: `${r.id}-${i}-${j}`, d, colour: RULE_ZONE_COLOUR })))),
-    ...(guideZones ?? []).flatMap((z, i) => z.paths.map((d, j) => ({ key: `guide-${i}-${j}`, d, colour: FOLLOW_COLOUR, strong: true }))),
+  const zoneOverlay = (z: DemoZone, prefix: string, colour: string): DrawnPath[] => z.paths.map((d, j) => ({ key: `${prefix}-${j}`, d, colour, style: 'fill', title: sentence(z.name), group: prefix }));
+  const overlays: DrawnPath[] = [
+    ...(showZones ? (demo?.zones ?? []).flatMap((z, i) => zoneOverlay(z, `zone-${i}`, ZONE_COLOURS[i % ZONE_COLOURS.length]!)) : []),
+    ...(demo?.rules ?? []).filter((r) => ticks[r.id] !== undefined).flatMap((r) => r.zones.flatMap((z, i) => zoneOverlay(z, `${r.id}-${i}`, RULE_ZONE_COLOUR))),
+    ...(guideZones ?? []).flatMap((z, i) => zoneOverlay(z, `guide-${i}`, FOLLOW_COLOUR)),
   ];
+  const togglePlaying = () => (video.current?.paused ? void video.current.play() : video.current?.pause());
 
   return (
     <div className='grid gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]'>
@@ -132,13 +164,7 @@ function ClipWatch({ clip, follows, demo, trackSeconds }: { clip: Clip; follows:
               className='absolute inset-0 h-full w-full object-contain'
               aria-label={clip.name}
             />
-            {overlays.length > 0 && (
-              <svg viewBox={`0 0 ${clip.width} ${clip.height}`} preserveAspectRatio='xMidYMid meet' className='pointer-events-none absolute inset-0 h-full w-full' aria-hidden>
-                {overlays.map((o) => (
-                  <path key={o.key} d={o.d} fillRule='evenodd' fill={o.colour} fillOpacity={o.strong ? 0.35 : 0.2} stroke={o.colour} strokeWidth={Math.max(2, clip.width / 360)} strokeLinejoin='round' />
-                ))}
-              </svg>
-            )}
+            {overlays.length > 0 && <Outlines width={clip.width} height={clip.height} paths={overlays} stroke={Math.max(2, clip.width / 360)} passThrough onPathClick={togglePlaying} />}
             {banner && (
               <div role='status' className='bg-destructive absolute inset-x-3 top-3 flex items-start gap-2 rounded-md px-3 py-2 text-sm font-medium text-white shadow'>
                 <BellRing className='mt-0.5 size-4 shrink-0' />
@@ -153,7 +179,7 @@ function ClipWatch({ clip, follows, demo, trackSeconds }: { clip: Clip; follows:
           </div>
 
           {choosingAt !== null ? (
-            <Choosing clip={clip} frame={choosingAt} onCancel={() => setChoosingAt(null)} onFollowed={followed} />
+            <Choosing clip={clip} frame={choosingAt} trackSeconds={trackSeconds} onCancel={() => setChoosingAt(null)} onFollowed={followed} />
           ) : (
             <>
               <Timeline length={length * 1000} play={time * 1000} onSeek={(ms) => seek(ms / 1000)} label={(ms) => duration(ms / 1000)}>
@@ -187,12 +213,12 @@ function ClipWatch({ clip, follows, demo, trackSeconds }: { clip: Clip; follows:
                   size='sm'
                   variant='outline'
                   aria-label={playing ? 'Pause' : 'Play'}
-                  onClick={() => (video.current?.paused ? void video.current.play() : video.current?.pause())}
+                  onClick={togglePlaying}
                 >
                   {playing ? <Pause /> : <Play />}
                   {playing ? 'Pause' : 'Play'}
                 </Button>
-                <Button size='sm' onClick={startChoosing}>
+                <Button size='sm' disabled={!models} onClick={startChoosing}>
                   <Search />
                   Search this frame
                 </Button>
@@ -208,7 +234,8 @@ function ClipWatch({ clip, follows, demo, trackSeconds }: { clip: Clip; follows:
                   </Button>
                 )}
               </div>
-              {trackSeconds !== null && <p className='text-muted-foreground text-xs'>Pause where it appears and search for it. Streamatic then tracks it from {trackSeconds} seconds before that frame to {trackSeconds} seconds after it.</p>}
+              {!models && <NeedsKeys />}
+              {trackSeconds !== null && models && <p className='text-muted-foreground text-xs'>Pause the clip where an item appears and search this frame. Streamatic can then track the item from {trackSeconds} seconds before that frame to {trackSeconds} seconds after it.</p>}
             </>
           )}
         </CardContent>
@@ -242,7 +269,7 @@ function ClipWatch({ clip, follows, demo, trackSeconds }: { clip: Clip; follows:
                 })
               }
             />
-            <AlertsCard alerts={reached} rules={rulesById} ticking={tickList.length > 0} next={nextAlert} language={language} onLanguage={setLanguage} onGoTo={goToAlert} />
+            <AlertsCard alerts={reached} rules={rulesById} ticking={tickList.length > 0} next={nextAlert} language={language} onLanguage={setLanguage} onGoTo={goToAlert} telegram={<TelegramAlerts telegram={telegram} problem={telegramProblem} />} />
           </>
         )}
         <Card>
@@ -296,7 +323,7 @@ function RulesCard({ rules, ticks, onToggle }: { rules: DemoRule[]; ticks: Recor
       <CardHeader>
         <div>
           <CardTitle>Rules</CardTitle>
-          <CardDescription>Tick a rule and play. It watches from the moment it is ticked, as a newly saved rule does.</CardDescription>
+          <CardDescription>Select a rule and play the clip. A rule applies from the moment it is selected, as a newly saved rule does.</CardDescription>
         </div>
       </CardHeader>
       <CardContent>
@@ -322,21 +349,22 @@ function RulesCard({ rules, ticks, onToggle }: { rules: DemoRule[]; ticks: Recor
 // An alert's words in the language chosen; an alert not written in it stays in English.
 const inLanguage = (alert: DemoAlert, language: AlertLanguage) => (language === 'english' ? null : (alert.captions[language] ?? null));
 
-function AlertsCard({ alerts, rules, ticking, next, language, onLanguage, onGoTo }: { alerts: DemoAlert[]; rules: Map<string, DemoRule>; ticking: boolean; next: DemoAlert | null; language: AlertLanguage; onLanguage: (language: AlertLanguage) => void; onGoTo: (alert: DemoAlert) => void }) {
+function AlertsCard({ alerts, rules, ticking, next, language, onLanguage, onGoTo, telegram }: { alerts: DemoAlert[]; rules: Map<string, DemoRule>; ticking: boolean; next: DemoAlert | null; language: AlertLanguage; onLanguage: (language: AlertLanguage) => void; onGoTo: (alert: DemoAlert) => void; telegram: ReactNode }) {
   return (
     <Card>
       <CardHeader>
         <div className='space-y-3'>
           <div>
             <CardTitle>Alerts</CardTitle>
-            <CardDescription>What Streamatic’s rules really raised on this clip, each when it would have reached you.</CardDescription>
+            <CardDescription>What Streamatic’s rules really raised on this clip. Here each appears 3 seconds after its moment. A live camera takes longer, since its pictures must first be uploaded and read.</CardDescription>
           </div>
           <LanguageChoice value={language} onChange={onLanguage} />
+          {telegram}
         </div>
       </CardHeader>
       <CardContent>
         {alerts.length === 0 && (
-          <p className='text-muted-foreground text-sm'>{!ticking ? 'Tick a rule to see its alerts.' : next ? `Nothing yet. The next alert reaches you at ${duration(next.shownMs / 1000)}.` : 'This rule raises nothing from here on. Tick it earlier in the clip, or try another.'}</p>
+          <p className='text-muted-foreground text-sm'>{!ticking ? 'Select a rule to see its alerts.' : next ? `No alerts yet. The next alert appears at ${duration(next.shownMs / 1000)}.` : 'This rule raises no further alerts from this point. Select it earlier in the clip, or select another rule.'}</p>
         )}
         <ul className='space-y-3'>
           {alerts.map((a) => (
@@ -352,7 +380,7 @@ function AlertsCard({ alerts, rules, ticking, next, language, onLanguage, onGoTo
                   a.caption && <span className='text-muted-foreground mt-1 line-clamp-2 text-xs'>{a.caption}</span>
                 )}
                 <span className='text-muted-foreground mt-1 block text-xs'>
-                  Happened at {duration(a.atMs / 1000)}. It would have reached you {Math.round(a.delayMs / 1000)} seconds later.
+                  Happened at {duration(a.atMs / 1000)}.
                 </span>
               </button>
             </li>
@@ -364,7 +392,7 @@ function AlertsCard({ alerts, rules, ticking, next, language, onLanguage, onGoTo
 }
 
 // The follow mode, on one paused frame: everything found is outlined, and the person selects what to follow.
-function Choosing({ clip, frame, onCancel, onFollowed }: { clip: Clip; frame: number; onCancel: () => void; onFollowed: (id: string) => void }) {
+function Choosing({ clip, frame, trackSeconds, onCancel, onFollowed }: { clip: Clip; frame: number; trackSeconds: number | null; onCancel: () => void; onFollowed: (id: string) => void }) {
   const queryClient = useQueryClient();
   const [things, setThings] = useState<Thing[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
@@ -383,7 +411,7 @@ function Choosing({ clip, frame, onCancel, onFollowed }: { clip: Clip; frame: nu
     mutationFn: (w: string) => api.outline(clip.id, frame, { word: w }),
     onSuccess: (result, w) => {
       setThings(result.things);
-      setNote(result.found === 0 ? `Nothing was found under “${w}”. Try another word, or select it on the picture.` : null);
+      setNote(result.found === 0 ? `No item was found for “${w}”. Enter another name, or select the item on the picture.` : null);
       if (result.found) setWord('');
     },
   });
@@ -392,7 +420,7 @@ function Choosing({ clip, frame, onCancel, onFollowed }: { clip: Clip; frame: nu
     onSuccess: (result) => {
       setThings(result.things);
       setSelected(result.selected ?? null);
-      setNote(result.selected ? null : 'Nothing could be outlined there. Select another place, or search for it.');
+      setNote(result.selected ? null : 'No item could be outlined at that point. Select another point, or search by name.');
     },
   });
   const start = useMutation({
@@ -421,8 +449,17 @@ function Choosing({ clip, frame, onCancel, onFollowed }: { clip: Clip; frame: nu
   }, [jobId, clip.id, queryClient, onFollowed]);
 
   const running = (jobId !== null && job?.state !== 'failed') || start.isPending;
-  const words = [...new Set(things.map((t) => t.name))];
   const selectedThing = things.find((t) => t.id === selected) ?? null;
+  const busyLabel = running
+    ? `Tracking the ${selectedThing?.name ?? job?.name ?? 'item'}`
+    : name.isPending
+      ? 'Finding the items in this frame'
+      : search.isPending
+        ? 'Searching this frame'
+        : click.isPending
+          ? 'Outlining the selection'
+          : null;
+  const words = [...new Set(things.map((t) => t.name))];
   const paths: DrawnPath[] = things.map((t) => ({
     key: t.id,
     d: t.path,
@@ -434,7 +471,7 @@ function Choosing({ clip, frame, onCancel, onFollowed }: { clip: Clip; frame: nu
 
   // A click off every outline asks for an outline of what is there, so something no word found can still be followed.
   const onPictureClick = (event: MouseEvent<HTMLDivElement>) => {
-    if (running || click.isPending || (event.target as Element).tagName === 'path' || !svg.current) return;
+    if (busyLabel !== null || (event.target as Element).tagName === 'path' || !svg.current) return;
     const matrix = svg.current.getScreenCTM();
     if (!matrix) return;
     const at = new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix.inverse());
@@ -451,7 +488,7 @@ function Choosing({ clip, frame, onCancel, onFollowed }: { clip: Clip; frame: nu
   const error = name.error ?? search.error ?? click.error ?? start.error;
   return (
     <div className='space-y-4'>
-      <div onClick={onPictureClick} className={cn(!running && 'cursor-crosshair')}>
+      <div onClick={onPictureClick} className={cn(busyLabel === null && 'cursor-crosshair')}>
         <PictureFrame
           src={clipPictureUrl(clip.id, frame)}
           alt={`Frame ${frame} of ${clip.name}`}
@@ -459,51 +496,33 @@ function Choosing({ clip, frame, onCancel, onFollowed }: { clip: Clip; frame: nu
           onPicture={(el) => {
             svg.current = el;
           }}
-        />
+        >
+          {busyLabel && <PictureBusy label={busyLabel} />}
+        </PictureFrame>
       </div>
 
       {running ? (
-        <div role='status' className='space-y-2'>
-          <p className='flex items-center gap-2 text-sm font-medium'>
-            <LoaderCircle className='size-4 animate-spin' />
-            Tracking the {selectedThing?.name ?? job?.name} through the clip
-          </p>
-          <div className='bg-muted h-2 overflow-hidden rounded-full'>
-            <div className='bg-primary h-full w-1/3 animate-pulse rounded-full' />
-          </div>
-          <p className='text-muted-foreground text-xs'>
-            {job?.framesSeen ? `Found on ${job.framesSeen.toLocaleString('en-GB')} frames so far. ` : ''}
-            This usually takes under a minute.
-          </p>
-        </div>
+        <p className='text-muted-foreground text-xs'>
+          {job?.framesSeen ? `Found on ${job.framesSeen.toLocaleString('en-GB')} frames so far. ` : ''}
+          {trackSeconds === null ? 'This usually takes under a minute.' : `Tracking covers ${trackSeconds} seconds either side of this frame, and usually takes about a minute.`}
+        </p>
       ) : (
         <>
-          {name.isPending ? (
-            <p role='status' className='text-muted-foreground flex items-center gap-2 text-sm'>
-              <LoaderCircle className='size-4 animate-spin' />
-              Finding what is in this picture
-            </p>
-          ) : (
+          {!name.isPending && (
             <p className='text-muted-foreground text-sm'>
-              {things.length === 0 ? 'Nothing was outlined on this frame.' : 'This is what Streamatic found on this frame. Select an outline to track it.'} If what you want is not outlined, type it or select it on the picture.
+              {things.length === 0 ? 'No items were outlined on this frame.' : 'Streamatic outlined these items on this frame. Select an outline to track it.'} If an item is not outlined, enter its name or select it on the picture.
             </p>
           )}
           <form onSubmit={onSearch} className='flex flex-wrap items-end gap-2'>
             <Label className='min-w-48 flex-1 flex-col items-start gap-1.5'>
-              Search for it
-              <Input value={word} maxLength={60} onChange={(e) => setWord(e.target.value)} placeholder='For example, red car, or a bag on someone’s back' />
+              Item name
+              <Input value={word} maxLength={60} onChange={(e) => setWord(e.target.value)} placeholder='For example, red car or backpack' />
             </Label>
             <Button type='submit' variant='outline' disabled={!word.trim() || search.isPending}>
               {search.isPending ? <LoaderCircle className='animate-spin' /> : <Search />}
               Search
             </Button>
           </form>
-          {click.isPending && (
-            <p role='status' className='text-muted-foreground flex items-center gap-2 text-sm'>
-              <LoaderCircle className='size-4 animate-spin' />
-              Outlining what you selected
-            </p>
-          )}
           {note && <Notice>{note}</Notice>}
           {job?.state === 'failed' && <Notice tone='error'>This could not be tracked. Please try again.</Notice>}
           {error && <Notice tone='error'>{error.message}</Notice>}
@@ -518,7 +537,7 @@ function Choosing({ clip, frame, onCancel, onFollowed }: { clip: Clip; frame: nu
               }}
             >
               <Crosshair />
-              {selectedThing ? `Track the ${selectedThing.name} through the clip` : 'Select what to track'}
+              {!selectedThing ? 'Select an item to track' : trackSeconds === null ? `Track the ${selectedThing.name} through the clip` : `Track the ${selectedThing.name}`}
             </Button>
             <Button size='sm' variant='outline' onClick={onCancel}>
               <X />

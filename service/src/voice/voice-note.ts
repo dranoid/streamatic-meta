@@ -81,7 +81,11 @@ export class VoiceNotes {
       if (size > MAX_BYTES) return { status: 413, body: { error: 'That voice note is too large. Please choose one under 8 MB.' } };
       chunks.push(chunk);
     }
-    const wav = await toWav(Buffer.concat(chunks));
+    return this.readAudio(Buffer.concat(chunks), keywords, beforeAsking);
+  }
+
+  async readAudio(audio: Uint8Array, keywords: string[], beforeAsking?: () => Promise<void>): Promise<VoiceNoteReply> {
+    const wav = await toWav(audio);
     if (!wav) return { status: 400, body: { error: 'That file could not be read as a voice note. Please record again or choose an audio file.' } };
     await beforeAsking?.();
     const text = (await this.transcriber.transcribe(wav, keywords)).trim();

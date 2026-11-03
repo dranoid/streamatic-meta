@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { ArrowRight, Compass, Crosshair, ImageUp, Search } from 'lucide-react';
+import { ArrowRight, Compass, ImageUp, Search, Wand2 } from 'lucide-react';
 import { PageHeader } from '@/components/layout/page-header';
 import { PictureFrame } from '@/components/picture-frame';
 import { Badge } from '@/components/ui/badge';
@@ -12,9 +12,10 @@ import { api, clipPictureUrl, type AppInfo, type Clip, type DemoClipSummary } fr
 const length = (seconds: number) => (seconds < 90 ? `${Math.round(seconds)} seconds` : `${Math.round(seconds / 60)} minutes`);
 
 const WHAT_TO_TRY = [
-  { icon: Compass, title: 'Say what to watch', text: 'Open a clip and write a rule in a sentence. The guide plans it on the zones found in the picture, and you confirm each step.' },
-  { icon: Search, title: 'Search past words', text: 'Pause a clip and search for anything: type it, or select it on the picture. Streamatic outlines its exact shape, tracks it through the clip and shows when it was in view.' },
-  { icon: ImageUp, title: 'Try your own picture', text: 'Upload a picture from a camera. Streamatic lists what matters in it, outlines each thing and suggests rules.', href: '/try' },
+  { icon: Compass, title: 'Describe a rule', text: 'Open a clip and write a rule in a sentence. The guide plans it on the zones found in the picture, and you confirm each step.' },
+  { icon: Search, title: 'Search past words', text: 'Pause a clip and search for any item: enter its name, or select it on the picture. Streamatic outlines its exact shape, tracks it for the minute around that frame and shows when it was in view.' },
+  { icon: Wand2, title: 'See how a camera is set up', text: 'Go through setup step by step, on a picture from each camera.', href: '/setup' },
+  { icon: ImageUp, title: 'Set up your own picture', text: 'Upload a picture from a camera. Streamatic lists what matters in it, outlines each item and suggests rules.', href: '/try' },
 ];
 
 export function ClipsPage({ isPublic = false, app }: { isPublic?: boolean; app?: AppInfo }) {
@@ -28,14 +29,14 @@ export function ClipsPage({ isPublic = false, app }: { isPublic?: boolean; app?:
         description={
           isPublic
             ? 'Rules and alerts in plain English, on the cameras a business already has. These recorded clips have been through Streamatic’s rules, and every alert shown is the one those rules really raised.'
-            : 'Pause a clip and search for anything: type it, or select it on the picture. Streamatic outlines its exact shape, tracks it through the clip and shows when it was in view.'
+            : 'Pause a clip and search for any item: enter its name, or select it on the picture. Streamatic outlines its exact shape, tracks it through the clip and shows when it was in view.'
         }
       />
       {app?.models === false && (
-        <Notice className='mb-6'>This copy runs without model keys. The clips, rules, alerts and kept searches all work. To search for something new or use the guide, add the keys described in the README.</Notice>
+        <Notice className='mb-6'>Provide your keys for the full experience. The README says which to add. The clips, rules, alerts and kept searches work without them.</Notice>
       )}
       {isPublic && (
-        <div className='mb-6 grid gap-4 md:grid-cols-3'>
+        <div className='mb-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4'>
           {WHAT_TO_TRY.map(({ icon: Icon, title, text, href }) => {
             const body = (
               <Card className='h-full'>

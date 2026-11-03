@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
-import { Loader2, Mic, Square, Upload } from 'lucide-react';
+import { Loader2, Mic, Square } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Notice } from '@/components/ui/notice';
 
@@ -9,12 +9,11 @@ const MAX_SECONDS = 60;
 
 const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 
-// A sentence by voice: recorded here or uploaded from a phone. The words go into the box for the person to read before anything is planned.
-export function VoiceNote({ read, onText }: { read: (audio: Blob) => Promise<{ text: string }>; onText: (text: string) => void }) {
+// A sentence by voice, recorded here. The words go into the box for the person to read before anything is planned.
+export function VoiceNote({ read, onText, disabled = false }: { read: (audio: Blob) => Promise<{ text: string }>; onText: (text: string) => void; disabled?: boolean }) {
   const [seconds, setSeconds] = useState<number | null>(null);
   const [micProblem, setMicProblem] = useState(false);
   const recorder = useRef<MediaRecorder | null>(null);
-  const file = useRef<HTMLInputElement>(null);
   const reading = useMutation({ mutationFn: read, onSuccess: ({ text }) => onText(text.slice(0, 300)) });
   const canRecord = typeof MediaRecorder !== 'undefined' && Boolean(navigator.mediaDevices?.getUserMedia);
 
@@ -63,27 +62,11 @@ export function VoiceNote({ read, onText }: { read: (audio: Blob) => Promise<{ t
               <span className='tabular-nums'>{clock(seconds)}</span>
             </Button>
           ) : (
-            <Button type='button' variant='outline' size='sm' disabled={reading.isPending} onClick={() => void start()}>
+            <Button type='button' variant='outline' size='sm' disabled={disabled || reading.isPending} onClick={() => void start()}>
               <Mic />
               Record a voice note
             </Button>
           ))}
-        <Button type='button' variant='outline' size='sm' disabled={recording || reading.isPending} onClick={() => file.current?.click()}>
-          <Upload />
-          Upload a voice note
-        </Button>
-        <input
-          ref={file}
-          type='file'
-          accept='audio/*,.ogg,.opus,.m4a,.mp3,.wav,.webm'
-          aria-label='Upload a voice note'
-          className='hidden'
-          onChange={(e) => {
-            const chosen = e.target.files?.[0];
-            e.target.value = '';
-            if (chosen) reading.mutate(chosen);
-          }}
-        />
         {reading.isPending && (
           <span className='text-muted-foreground flex items-center gap-1.5 text-xs'>
             <Loader2 className='size-3.5 animate-spin' />
@@ -91,9 +74,11 @@ export function VoiceNote({ read, onText }: { read: (audio: Blob) => Promise<{ t
           </span>
         )}
       </div>
-      {reading.isSuccess && <p className='text-muted-foreground text-xs'>Written out above. Please read it and correct any words before planning.</p>}
+      {!canRecord && <p className='text-muted-foreground text-xs'>This browser cannot record a voice note here. Please write the rule instead.</p>}
+      {canRecord && !reading.isSuccess && <p className='text-muted-foreground text-xs'>Voice notes are read in English.</p>}
+      {reading.isSuccess && <p className='text-muted-foreground text-xs'>The voice note is written out above. Please read it and correct any errors before adding the rule.</p>}
       {reading.isError && <Notice tone='error'>{reading.error.message}</Notice>}
-      {micProblem && <Notice tone='error'>The microphone could not be used. Please allow it in the browser, or upload a voice note instead.</Notice>}
+      {micProblem && <Notice tone='error'>The microphone could not be used. Please allow it in the browser, or write the rule instead.</Notice>}
     </div>
   );
 }
