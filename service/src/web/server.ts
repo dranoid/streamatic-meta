@@ -1,15 +1,21 @@
-import { readFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { readFile, stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { basename, extname, join } from 'node:path';
 import { z } from 'zod';
 import type { Camera, CameraFolder } from '../cameras/camera-folder.js';
 import { zoneAt, type CameraZone } from '../cameras/camera-zones.js';
 import type { EventStore } from '../events/store.js';
+import type { ClipFolder } from '../follow/clips.js';
+import type { Follows } from '../follow/follows.js';
+import type { ClipThings } from '../follow/things.js';
 import { planRule, type GuidePlanner } from '../guide/plan.js';
 import { answerQuestion, type QuestionPlanner } from '../questions/answer.js';
 import type { BacktestRunner } from '../rules/backtests.js';
 import { SETTLED_BY, type NewRule, type RuleStore } from '../rules/rule-store.js';
-import type { Zone } from '../rules/zone-rule.js';
+import { boxOverlap, type Zone } from '../rules/zone-rule.js';
+import type { MediaSize, Picture } from '../sam/client.js';
+import type { Box, Outline } from '../sam/outlines.js';
 import type { CameraSetup, LabelledPicture } from '../setup/camera-setup.js';
 import type { RuleReader } from '../spark/rule-reader.js';
 
@@ -23,6 +29,7 @@ const ASSET_TYPES: Record<string, string> = {
 };
 const MAX_BODY_BYTES = 4_000;
 const MAX_ZONES_PER_RULE = 4;
+const CLICKED_NAME = 'selected item';
 
 const hour = z.number().int().min(0).max(23);
 const text = (max: number) => z.string().trim().min(1).max(max);
@@ -47,6 +54,12 @@ const ruleInput = z.object({
 });
 const guideInput = z.object({ camera: text(80), sentence: text(300) });
 const zoneNameInput = z.object({ word: text(60), label: text(30), objectId: text(10), name: text(60) });
+const thingsInput = z.union([
+  z.object({ word: text(60) }),
+  z.object({ point: z.object({ x: z.number().int().min(0), y: z.number().int().min(0) }) }),
+  z.object({}),
+]);
+const followInput = z.object({ frame: z.number().int().min(0), thing: text(10) });
 
 class RequestError extends Error {
   constructor(
@@ -68,6 +81,7 @@ export function appHandler({
   ruleReader,
   guidePlanner,
   backtests,
+  following,
   timeZone,
   now = Date.now,
   playing = () => null,
@@ -82,12 +96,23 @@ export function appHandler({
   ruleReader: RuleReader;
   guidePlanner: GuidePlanner;
   backtests: BacktestRunner;
+  following: {
+    clips: ClipFolder;
+    things: ClipThings;
+    follows: Follows;
+    listThings: (picture: Picture) => Promise<string[]>;
+    nameThing: (picture: Picture, box: Box) => Promise<string>;
+    outlineAll: (picture: Picture, words: string[]) => Promise<Record<string, Outline[]>>;
+    outlineAt: (picture: Picture, size: MediaSize, point: { x: number; y: number }, name: string) => Promise<Outline | null>;
+  };
   timeZone: string;
   now?: () => number;
   // For a camera playing its recording on a loop, the picture playing and its recorded time (null before the first).
   playing?: (camera: string) => { at: number | null; picture: Uint8Array | null } | null;
 }): (request: IncomingMessage, response: ServerResponse) => void {
   const settingUp = new Set<string>();
+  // Naming a frame spends a list and an outline per word, so it is done once for each frame, even if asked twice at once.
+  const naming = new Map<string, Promise<void>>();
 
   return (request, response) => {
     route(request, response).catch((error: unknown) => {
@@ -162,6 +187,37 @@ export function appHandler({
       return send(response, 200, await renameZone(decodeURIComponent(match[1]!), parsed.data));
     }
 
+    if (method === 'GET' && path === '/api/clips') {
+      return send(response, 200, (await following.clips.list()).map(({ video: _file, ...clip }) => clip));
+    }
+    if (method === 'GET' && (match = /^\/clip-videos\/([^/]+)$/.exec(path))) {
+      const clip = await following.clips.get(decodeURIComponent(match[1]!));
+      if (!clip) return send(response, 404, { error: 'No such clip.' });
+      return sendVideo(request, response, clip.video);
+    }
+    if (method === 'GET' && (match = /^\/clip-pictures\/([^/]+)\/(\d+)$/.exec(path))) {
+      const picture = await following.clips.picture(decodeURIComponent(match[1]!), Number(match[2]));
+      if (!picture) return send(response, 404, { error: 'No such frame.' });
+      response.writeHead(200, { 'Content-Type': 'image/jpeg' });
+      response.end(picture);
+      return;
+    }
+    if ((match = /^\/api\/clips\/([^/]+)\/frames\/(\d+)\/things$/.exec(path))) {
+      const id = decodeURIComponent(match[1]!);
+      const frame = Number(match[2]);
+      if (method === 'GET') return send(response, 200, { things: await following.things.list(id, frame) });
+      if (method === 'POST') return send(response, 200, await outlineOnFrame(id, frame, await readJson(request)));
+    }
+    if ((match = /^\/api\/clips\/([^/]+)\/follows$/.exec(path))) {
+      const id = decodeURIComponent(match[1]!);
+      if (method === 'GET') return send(response, 200, await following.follows.list(id));
+      if (method === 'POST') return send(response, 202, { id: await startFollow(id, await readJson(request)) });
+    }
+    if (method === 'GET' && (match = /^\/api\/clips\/([^/]+)\/follows\/([^/]+)$/.exec(path))) {
+      const job = await following.follows.get(decodeURIComponent(match[1]!), decodeURIComponent(match[2]!));
+      return job ? send(response, 200, job) : send(response, 404, { error: 'Nothing is being followed under that name.' });
+    }
+
     if (method === 'GET' && path === '/api/rules') return send(response, 200, rules.list(url.searchParams.get('camera') ?? undefined));
     if (method === 'POST' && path === '/api/rules') {
       const parsed = ruleInput.safeParse(await readJson(request));
@@ -199,6 +255,61 @@ export function appHandler({
       return;
     }
     send(response, 404, { error: 'Not found.' });
+  }
+
+  // With nothing asked, lists what is on the frame; a word adds what it finds, and a click adds what was clicked.
+  async function outlineOnFrame(id: string, frame: number, body: Record<string, unknown>) {
+    const parsed = thingsInput.safeParse(body);
+    if (!parsed.success) throw new RequestError(400, 'Type what to look for, or select it on the picture.');
+    const clip = await following.clips.get(id);
+    const bytes = await following.clips.picture(id, frame);
+    if (!clip || !bytes) throw new RequestError(404, 'No such frame.');
+    const picture: Picture = { bytes, mimeType: 'image/jpeg' };
+
+    if ('word' in parsed.data) {
+      const { word } = parsed.data;
+      const found = (await following.outlineAll(picture, [word]))[word] ?? [];
+      return { things: await following.things.add(id, frame, found), found: found.length };
+    }
+    if ('point' in parsed.data) {
+      const { point } = parsed.data;
+      if (point.x >= clip.width || point.y >= clip.height) throw new RequestError(400, 'Select a place on the picture.');
+      const outline = await following.outlineAt(picture, { width: clip.width, height: clip.height }, point, CLICKED_NAME);
+      if (!outline) return { things: await following.things.list(id, frame), found: 0 };
+      const things = await following.things.add(id, frame, [outline]);
+      const selected = things.reduce((best, t) => (boxOverlap(t.box, outline.box) > boxOverlap(best.box, outline.box) ? t : best));
+      if (selected.name !== CLICKED_NAME) return { things, found: 1, selected: selected.id };
+      // The outline is already right if the name fails, so a failed name leaves it under the plain one.
+      const name = await following.nameThing(picture, selected.box).catch(() => CLICKED_NAME);
+      return { things: await following.things.rename(id, frame, selected.id, name), found: 1, selected: selected.id };
+    }
+    const key = `${id}/${frame}`;
+    if (!naming.has(key)) {
+      naming.set(
+        key,
+        (async () => {
+          if ((await following.things.list(id, frame)).length > 0) return;
+          const words = await following.listThings(picture);
+          const outlined = await following.outlineAll(picture, words);
+          await following.things.add(id, frame, Object.values(outlined).flat());
+        })().catch((error: unknown) => {
+          naming.delete(key);
+          throw error;
+        }),
+      );
+    }
+    await naming.get(key);
+    return { things: await following.things.list(id, frame) };
+  }
+
+  // The box is read from what was outlined on the frame, never taken from the request.
+  async function startFollow(id: string, body: Record<string, unknown>): Promise<string> {
+    const parsed = followInput.safeParse(body);
+    if (!parsed.success) throw new RequestError(400, 'Select what to follow.');
+    if (!(await following.clips.get(id))) throw new RequestError(404, 'No such clip.');
+    const thing = (await following.things.list(id, parsed.data.frame)).find((t) => t.id === parsed.data.thing);
+    if (!thing) throw new RequestError(400, 'That outline is not on this frame. Select another.');
+    return following.follows.start(id, parsed.data.frame, thing);
   }
 
   // Each zone with the rules that watch it, found by place, so the camera page can tell active zones from the rest.
@@ -302,6 +413,26 @@ function sendFile(response: ServerResponse, name: string, bytes: Uint8Array | nu
   if (!type || !bytes) return send(response, 404, { error: 'Not found.' });
   response.writeHead(200, { 'Content-Type': type });
   response.end(bytes);
+}
+
+// The browser seeks by asking for byte ranges, so a clip can be scrubbed without fetching all of it.
+async function sendVideo(request: IncomingMessage, response: ServerResponse, file: string): Promise<void> {
+  const { size } = await stat(file);
+  const asked = /^bytes=(\d*)-(\d*)$/.exec(request.headers.range ?? '');
+  if (!asked || (!asked[1] && !asked[2])) {
+    response.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': size, 'Accept-Ranges': 'bytes' });
+    createReadStream(file).pipe(response);
+    return;
+  }
+  const start = asked[1] ? Number(asked[1]) : Math.max(0, size - Number(asked[2]));
+  const end = asked[1] && asked[2] ? Math.min(Number(asked[2]), size - 1) : size - 1;
+  if (start > end) {
+    response.writeHead(416, { 'Content-Range': `bytes */${size}` });
+    response.end();
+    return;
+  }
+  response.writeHead(206, { 'Content-Type': 'video/mp4', 'Content-Length': end - start + 1, 'Content-Range': `bytes ${start}-${end}/${size}`, 'Accept-Ranges': 'bytes' });
+  createReadStream(file, { start, end }).pipe(response);
 }
 
 async function readJson(request: IncomingMessage): Promise<Record<string, unknown>> {

@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -5,6 +6,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { CameraFolder } from '../src/cameras/camera-folder.js';
+import { ClipFolder } from '../src/follow/clips.js';
+import { Follows } from '../src/follow/follows.js';
+import { ClipThings } from '../src/follow/things.js';
 import { EventStore } from '../src/events/store.js';
 import type { Plan } from '../src/questions/answer.js';
 import { RuleStore, type NewRule } from '../src/rules/rule-store.js';
@@ -42,12 +46,14 @@ async function start({
   playing,
   reading,
   stored,
+  clip,
 }: {
   plan?: Plan;
   setUp?: () => Promise<CameraSetup>;
   playing?: { at: number | null; picture: Uint8Array | null };
   reading?: RuleReading;
   stored?: boolean;
+  clip?: boolean;
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'app-'));
   const web = join(root, 'web');
@@ -56,6 +62,11 @@ async function start({
   await Promise.all([mkdir(web), mkdir(media), mkdir(camera, { recursive: true })]);
   if (playing) await mkdir(join(camera, 'episode'));
   if (stored) await mkdir(join(camera, 'stored'));
+  if (clip) {
+    await mkdir(join(root, 'clips', 'yard'), { recursive: true });
+    execFileSync('ffmpeg', ['-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc=size=64x36:rate=10:duration=2', '-pix_fmt', 'yuv420p', join(root, 'clips', 'yard', 'clip.mp4')]);
+    await writeFile(join(root, 'clips', 'yard', 'clip.json'), JSON.stringify({ name: 'Yard', video: 'clip.mp4' }));
+  }
   await Promise.all([
     writeFile(join(web, 'index.html'), '<title>Streamatic</title>'),
     mkdir(join(web, 'assets')).then(() => writeFile(join(web, 'assets', 'app.js'), 'console.log(1)')),
@@ -91,6 +102,9 @@ async function start({
   const setUpCalls: string[][] = [];
   const ruleReads: Array<{ sentence: string; questions: string[] }> = [];
   const tried: Array<{ camera: string; rule: NewRule }> = [];
+  const followCalls = { lists: 0, tracks: [] as Array<{ frame: number; target: unknown }> };
+  const carBox = { left: 5, top: 5, right: 20, bottom: 20 };
+  const clips = new ClipFolder(root);
   server = createServer(
     appHandler({
       events,
@@ -115,6 +129,21 @@ async function start({
         setUpCalls.push(pictures.map((p) => `${p.label}:${new TextDecoder().decode(p.picture.bytes)}`));
         return setUp ? setUp() : setupResult;
       },
+      following: {
+        clips,
+        things: new ClipThings(root),
+        follows: new Follows(root, clips, {
+          upload: async () => 'file-1',
+          track: async (_file, _size, frame, target) => {
+            followCalls.tracks.push({ frame, target });
+            return [{ frame, box: carBox, path: 'M5 5Z' }];
+          },
+        }),
+        listThings: async () => (followCalls.lists++, ['car']),
+        nameThing: async () => 'bag',
+        outlineAll: async (_picture, words) => Object.fromEntries(words.map((w) => [w, w === 'nothing' ? [] : [{ word: w, objectId: '0', box: w === 'car' ? carBox : { left: 40, top: 5, right: 60, bottom: 30 }, path: 'M1 1Z' }]])),
+        outlineAt: async (_picture, _size, point, name) => ({ word: name, objectId: '1', box: { left: point.x, top: point.y, right: point.x + 5, bottom: point.y + 5 }, path: 'M2 2Z' }),
+      },
       timeZone: 'Africa/Lagos',
       now: () => AT + 60_000,
       playing: (id) => (playing && id === 'table-parlour' ? playing : null),
@@ -130,7 +159,7 @@ async function start({
     json(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const patch = (path: string, body: unknown) =>
     json(path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  return { base, eventId, questions, setUpCalls, ruleReads, tried, json, post, patch };
+  return { base, eventId, questions, setUpCalls, ruleReads, tried, followCalls, json, post, patch };
 }
 
 describe('pages', () => {
@@ -409,5 +438,69 @@ describe('zone names', () => {
     expect(taken.body.error).toContain('door 1');
     expect((await patch('/api/cameras/table-parlour/zones', { ...frontDoor, objectId: '7', name: 'front door' })).status).toBe(400);
     expect((await json('/api/cameras')).body[0].zones.map((z: any) => z.name)).toEqual(['door 1', 'door 2']);
+  });
+});
+
+describe('following a thing in a clip', () => {
+  const post = (base: string, path: string, body: unknown) =>
+    fetch(`${base}${path}`, { method: 'POST', body: JSON.stringify(body) });
+
+  it('lists the clip without its place on disk, and serves frames and byte ranges of the video', async () => {
+    const { base } = await start({ clip: true });
+    const clips = (await (await fetch(`${base}/api/clips`)).json()) as Array<Record<string, unknown>>;
+    expect(clips[0]).toMatchObject({ id: 'yard', name: 'Yard', frames: 20, fps: 10 });
+    expect(clips[0]).not.toHaveProperty('video');
+    expect((await fetch(`${base}/clip-pictures/yard/3`)).headers.get('content-type')).toBe('image/jpeg');
+    expect((await fetch(`${base}/clip-pictures/yard/500`)).status).toBe(404);
+    const part = await fetch(`${base}/clip-videos/yard`, { headers: { range: 'bytes=0-9' } });
+    expect(part.status).toBe(206);
+    expect((await part.arrayBuffer()).byteLength).toBe(10);
+  });
+
+  it('names a frame once, and adds each search and click to what is on it', async () => {
+    const { base, followCalls } = await start({ clip: true });
+    const named = (await (await post(base, '/api/clips/yard/frames/3/things', {})).json()) as { things: Array<{ name: string }> };
+    expect(named.things.map((t) => t.name)).toEqual(['car']);
+    await post(base, '/api/clips/yard/frames/3/things', {});
+    expect(followCalls.lists).toBe(1);
+
+    const searched = (await (await post(base, '/api/clips/yard/frames/3/things', { word: 'bag' })).json()) as { things: unknown[]; found: number };
+    expect(searched).toMatchObject({ found: 1 });
+    expect(searched.things).toHaveLength(2);
+    const none = (await (await post(base, '/api/clips/yard/frames/3/things', { word: 'nothing' })).json()) as { found: number };
+    expect(none.found).toBe(0);
+
+    const clicked = (await (await post(base, '/api/clips/yard/frames/3/things', { point: { x: 30, y: 30 } })).json()) as { things: Array<{ id: string; name: string }>; selected: string };
+    expect(clicked.things.find((t) => t.id === clicked.selected)!.name).toBe('bag');
+    expect((await post(base, '/api/clips/yard/frames/3/things', { point: { x: 500, y: 30 } })).status).toBe(400);
+  });
+
+  it('follows from the box outlined on the frame, and refuses an outline that is not there', async () => {
+    const { base, followCalls } = await start({ clip: true });
+    const { things } = (await (await post(base, '/api/clips/yard/frames/3/things', {})).json()) as { things: Array<{ id: string }> };
+    expect((await post(base, '/api/clips/yard/follows', { frame: 4, thing: things[0]!.id })).status).toBe(400);
+
+    const started = await post(base, '/api/clips/yard/follows', { frame: 3, thing: things[0]!.id });
+    expect(started.status).toBe(202);
+    const { id } = (await started.json()) as { id: string };
+    let job: any;
+    for (let i = 0; i < 50 && job?.state !== 'done'; i++) {
+      job = await (await fetch(`${base}/api/clips/yard/follows/${id}`)).json();
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(job).toMatchObject({ state: 'done', follow: { name: 'car', spans: [{ from: 3, to: 3 }] } });
+    expect(followCalls.tracks).toEqual([{ frame: 3, target: { box: { left: 5, top: 5, right: 20, bottom: 20 } } }]);
+    expect(((await (await fetch(`${base}/api/clips/yard/follows`)).json()) as unknown[]).length).toBe(1);
+  });
+
+  it('follows the thing selected, not another on the same frame', async () => {
+    const { base, followCalls } = await start({ clip: true });
+    await post(base, '/api/clips/yard/frames/3/things', {});
+    const { things } = (await (await post(base, '/api/clips/yard/frames/3/things', { word: 'bag' })).json()) as { things: Array<{ id: string; name: string }> };
+    const bag = things.find((t) => t.name === 'bag')!;
+    expect((await post(base, '/api/clips/yard/follows', { frame: 3, thing: 'no-such' })).status).toBe(400);
+    expect((await post(base, '/api/clips/yard/follows', { frame: 3, thing: bag.id })).status).toBe(202);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(followCalls.tracks).toEqual([{ frame: 3, target: { box: { left: 40, top: 5, right: 60, bottom: 30 } } }]);
   });
 });

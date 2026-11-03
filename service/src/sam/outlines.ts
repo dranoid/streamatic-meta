@@ -1,4 +1,4 @@
-import { decodeMaskToSVGPath, parseImageStream, recordsOfKind, type ResponsesEvent } from '@meta-sam/parser';
+import { decodeMaskToSVGPath, frameIndexOf, parseImageStream, parseVideoStream, recordsOfKind, type ResponsesEvent } from '@meta-sam/parser';
 
 export interface Box {
   left: number;
@@ -36,6 +36,24 @@ export async function outlinesFromText(
   }));
   const diagnostics = result.diagnostics.map(({ severity, code, message }) => ({ severity, code, message }));
   return { outlines, diagnostics };
+}
+
+export interface FollowedFrame {
+  frame: number;
+  box: Box;
+  path: string;
+}
+
+// SAM tracks forward from the prompted frame and then backward, so the reply is not in frame order.
+export async function framesFromText(text: string): Promise<FollowedFrame[]> {
+  const result = await parseVideoStream(completedResponse(text)).finalResult;
+  return recordsOfKind(result.records, 'mask')
+    .map((record) => ({
+      frame: frameIndexOf(record) ?? 0,
+      box: { ...record.bounds },
+      path: translatePath(decodeMaskToSVGPath(record.mask), record.bounds.left, record.bounds.top),
+    }))
+    .sort((a, b) => a.frame - b.frame);
 }
 
 // The parser reads a stream of events; a non-streaming reply is the same text as one finished lane.

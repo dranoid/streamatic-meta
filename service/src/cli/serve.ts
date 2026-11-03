@@ -9,11 +9,14 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CameraFolder, type Camera } from '../cameras/camera-folder.js';
 import { keepAlert } from '../events/keep-alert.js';
+import { ClipFolder } from '../follow/clips.js';
+import { Follows } from '../follow/follows.js';
+import { ClipThings } from '../follow/things.js';
 import { EventStore } from '../events/store.js';
 import { keepAnswers } from '../live/answers-kept.js';
 import { EpisodeLoop, readEpisode } from '../live/episode.js';
 import { LiveCamera } from '../live/live-camera.js';
-import { cropPicture } from '../rules/frame.js';
+import { cropAround, cropPicture } from '../rules/frame.js';
 import { Backtests } from '../rules/backtests.js';
 import { RuleStore } from '../rules/rule-store.js';
 import { zoneOutline } from '../rules/zone-rule.js';
@@ -21,6 +24,7 @@ import { SamClient } from '../sam/client.js';
 import { setUpCamera } from '../setup/camera-setup.js';
 import { SparkBoxJudge } from '../spark/box-judge.js';
 import { SparkClient } from '../spark/client.js';
+import { SparkFollowPlanner } from '../spark/follow-planner.js';
 import { SparkGuidePlanner } from '../spark/guide-planner.js';
 import { SparkQuestionPlanner } from '../spark/question-planner.js';
 import { SparkRuleReader } from '../spark/rule-reader.js';
@@ -49,6 +53,8 @@ const database = join(folder, 'events.db');
 const events = new EventStore(database, timeZone);
 const rules = new RuleStore(database);
 const cameras = new CameraFolder(folder);
+const clips = new ClipFolder(folder);
+const followPlanner = new SparkFollowPlanner(spark);
 const mediaDir = join(folder, 'media');
 await mkdir(mediaDir, { recursive: true });
 
@@ -104,6 +110,15 @@ const handler = appHandler({
   ruleReader: new SparkRuleReader(spark),
   guidePlanner: new SparkGuidePlanner(spark),
   backtests: new Backtests({ ...keepAnswers({ sam, judge: new SparkBoxJudge(spark), crop: cropPicture }), timeZone, parts: BACKTEST_PARTS, atOnce: BACKTEST_AT_ONCE }),
+  following: {
+    clips,
+    things: new ClipThings(folder),
+    follows: new Follows(folder, clips, sam),
+    listThings: (picture) => followPlanner.listThings(picture),
+    nameThing: async (picture, box) => followPlanner.nameThing(await cropAround(picture, box)),
+    outlineAll: (picture, words) => sam.outlineAll(picture, words),
+    outlineAt: (picture, size, point, name) => sam.outlineAt(picture, size, point, name),
+  },
   timeZone,
   playing: (id) => {
     const now = playing.get(id)?.playing;

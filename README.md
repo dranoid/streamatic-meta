@@ -39,6 +39,11 @@ open), from a change between pictures 10 s apart (a belt running), or from a bri
   the gate, not the gate's outline. A refused plan goes back to Muse Spark Open with what was wrong, up to
   three times, and then to you. Before you confirm, the page states in plain words what will set the rule
   off. The model never marks a step done.
+- **Follow anything in a clip.** Pause a clip and select any person, vehicle or object. Muse Spark Open lists
+  what is on the frame and SAM 3.1 outlines each; what is not outlined can be searched for or selected with a
+  click, and every result stays on the one frame. SAM 3.1 then follows the selected outline through the whole
+  clip, both ways from that frame, from its box alone: no word, and no limit on how many similar things are in
+  view. The outline follows it in the player, and a bar shows when it was in view.
 - **Questions about the week.** "How many times was the gate open after 10 pm?" Muse Spark picks the query,
   the events table does the counting, and every answer opens the moment it refers to.
 
@@ -46,8 +51,8 @@ open), from a change between pictures 10 s apart (a belt running), or from a bri
 
 | Model | Where | Used for |
 |---|---|---|
-| SAM 3.1 | Meta Model API | Outlining the scene at setup and on each event |
-| Muse Spark Open | Baseten | Listing what a camera sees, suggesting rules, judging drawn zones and naming the picture that shows the change, answering questions |
+| SAM 3.1 | Meta Model API | Outlining the scene at setup and on each event, following a selected object through video |
+| Muse Spark Open | Baseten | Listing what a camera sees, suggesting rules, judging drawn zones and naming the picture that shows the change, naming what can be followed in a clip, answering questions |
 
 ## Running it
 

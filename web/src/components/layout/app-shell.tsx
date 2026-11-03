@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { BellRing, Cctv, Info, Menu, Moon, Sun, X } from 'lucide-react';
+import { BellRing, Cctv, Crosshair, Info, Menu, Moon, Sun, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Link } from '@/components/ui/link';
 import { cn } from '@/lib/cn';
@@ -8,6 +8,7 @@ import type { Route } from '@/lib/router';
 const NAV = [
   { href: '/cameras', label: 'Cameras', icon: Cctv, pages: ['cameras', 'camera'] },
   { href: '/events', label: 'Events', icon: BellRing, pages: ['events', 'event'] },
+  { href: '/clips', label: 'Follow', icon: Crosshair, pages: ['clips', 'clip'] },
   { href: '/about', label: 'About', icon: Info, pages: ['about'] },
 ] as const;
 

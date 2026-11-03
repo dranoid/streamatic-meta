@@ -128,6 +128,49 @@ export interface Answer {
   eventIds: number[];
 }
 
+export interface Clip {
+  id: string;
+  name: string;
+  width: number;
+  height: number;
+  fps: number;
+  frames: number;
+}
+
+// Something outlined on a frame of a clip, which can be selected to follow.
+export interface Thing {
+  id: string;
+  name: string;
+  box: Box;
+  path: string;
+}
+
+export interface Span {
+  from: number;
+  to: number;
+}
+
+export interface Follow {
+  id: string;
+  name: string;
+  frame: number;
+  box: Box;
+  // The stretches of frames the thing was in view.
+  spans: Span[];
+  frames: Array<{ frame: number; box: Box; path: string }>;
+}
+
+export type FollowJob =
+  | { state: 'running'; name: string; framesSeen: number }
+  | { state: 'done'; name: string; framesSeen: number; follow: Follow }
+  | { state: 'failed'; name: string; framesSeen: number };
+
+export interface ThingsFound {
+  things: Thing[];
+  found?: number;
+  selected?: string;
+}
+
 export class ApiError extends Error {}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -159,6 +202,14 @@ export const api = {
   events: () => request<StoredEvent[]>('/api/events'),
   event: (id: number) => request<StoredEvent>(`/api/events/${id}`),
   frames: (id: number) => request<EventFrame[]>(`/api/events/${id}/frames`),
+  clips: () => request<Clip[]>('/api/clips'),
+  things: (clip: string, frame: number) => request<ThingsFound>(`/api/clips/${encodeURIComponent(clip)}/frames/${frame}/things`),
+  outline: (clip: string, frame: number, what: { word: string } | { point: { x: number; y: number } } | Record<string, never>) =>
+    request<ThingsFound>(`/api/clips/${encodeURIComponent(clip)}/frames/${frame}/things`, { method: 'POST', body: JSON.stringify(what) }),
+  follows: (clip: string) => request<Follow[]>(`/api/clips/${encodeURIComponent(clip)}/follows`),
+  startFollow: (clip: string, frame: number, thing: string) =>
+    request<{ id: string }>(`/api/clips/${encodeURIComponent(clip)}/follows`, { method: 'POST', body: JSON.stringify({ frame, thing }) }),
+  followJob: (clip: string, id: string) => request<FollowJob>(`/api/clips/${encodeURIComponent(clip)}/follows/${encodeURIComponent(id)}`),
   ask: (question: string) => request<Answer>('/api/questions', { method: 'POST', body: JSON.stringify({ question }) }),
 };
 
@@ -167,3 +218,5 @@ export const pictureUrl = (camera: string, file: string) =>
 export const nowUrl = (camera: string, at: number) => `/api/cameras/${encodeURIComponent(camera)}/now?at=${at}`;
 export const mediaUrl = (file: string) => `/media/${encodeURIComponent(file)}`;
 export const storedUrl = (camera: string, at: number) => `/api/cameras/${encodeURIComponent(camera)}/stored/${at}`;
+export const clipVideoUrl = (clip: string) => `/clip-videos/${encodeURIComponent(clip)}`;
+export const clipPictureUrl = (clip: string, frame: number) => `/clip-pictures/${encodeURIComponent(clip)}/${frame}`;

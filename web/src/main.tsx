@@ -5,6 +5,8 @@ import { AppShell } from '@/components/layout/app-shell';
 import { useRoute } from '@/lib/router';
 import { AboutPage } from '@/pages/about';
 import { CameraPage } from '@/pages/camera';
+import { ClipPage } from '@/pages/clip';
+import { ClipsPage } from '@/pages/clips';
 import { CamerasPage } from '@/pages/cameras';
 import { EventPage } from '@/pages/event';
 import { EventsPage } from '@/pages/events';
@@ -20,6 +22,8 @@ function App() {
       {route.page === 'camera' && <CameraPage id={route.id} />}
       {route.page === 'events' && <EventsPage />}
       {route.page === 'event' && <EventPage id={route.id} />}
+      {route.page === 'clips' && <ClipsPage />}
+      {route.page === 'clip' && <ClipPage id={route.id} />}
       {route.page === 'about' && <AboutPage />}
     </AppShell>
   );

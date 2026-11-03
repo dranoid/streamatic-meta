@@ -22,6 +22,12 @@ const PARTS = [
     code: 'Checks the plan against the camera’s zones and the person’s own words, and sends a refused plan back with the reason. Ticks a step only when the page shows it done and the person confirms it.',
   },
   {
+    title: 'Following something in a clip',
+    sam: 'Outlines what is on the paused frame, under each word or at a click. Then follows the selected outline through the whole clip, both ways from that frame, from its box alone.',
+    spark: 'Lists the kinds of thing on the frame that could be followed, and names something selected by a click.',
+    code: 'Accumulates what each search finds on the one frame, works out when the thing was in view, and keeps each result so asking again costs nothing.',
+  },
+  {
     title: 'Questions about events',
     sam: null,
     spark: 'Chooses what to look up for the question.',
