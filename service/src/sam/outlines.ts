@@ -65,3 +65,12 @@ async function* completedResponse(text: string): AsyncIterable<ResponsesEvent> {
 function translatePath(path: string, dx: number, dy: number): string {
   return path.replace(/([ML])(-?[\d.]+) (-?[\d.]+)/g, (_, command, x, y) => `${command}${Number(x) + dx} ${Number(y) + dy}`);
 }
+
+export function boxOverlap(a: Box, b: Box): number {
+  const w = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+  const h = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+  if (w <= 0 || h <= 0) return 0;
+  const shared = w * h;
+  const area = (r: Box) => (r.right - r.left) * (r.bottom - r.top);
+  return shared / (area(a) + area(b) - shared);
+}

@@ -16,6 +16,8 @@ function event(at: number, overrides: Partial<NewEvent> = {}): NewEvent {
     clip: null,
     outline: 'M0 0L1 1Z',
     reference: 'M0 0L2 2Z',
+    backendId: null,
+    recorded: false,
     ...overrides,
   };
 }
@@ -72,5 +74,12 @@ describe('EventStore', () => {
       { at: EVENING - 2000, file: 'a.jpg', outline: null },
       { at: EVENING + 3000, file: 'b.jpg', outline: 'M2 2Z' },
     ]);
+  });
+
+  it('remembers which backend alert an event came from', () => {
+    const events = store();
+    events.add(event(EVENING, { backendId: 'alert-1' }));
+    expect(events.hasBackendAlert('alert-1')).toBe(true);
+    expect(events.hasBackendAlert('alert-2')).toBe(false);
   });
 });

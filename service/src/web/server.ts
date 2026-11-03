@@ -1,23 +1,25 @@
+import { randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { basename, extname, join } from 'node:path';
 import { z } from 'zod';
+import { BackendError, type RuleBackend, type RuleDraft, type StoredAsk } from '../backend/client.js';
+import { sentenceWithPlaces } from '../backend/place.js';
 import type { Camera, CameraFolder } from '../cameras/camera-folder.js';
+import type { Trials } from '../backend/trials.js';
 import { zoneAt, type CameraZone } from '../cameras/camera-zones.js';
+import { keepStretch } from '../events/copy-alert.js';
 import type { EventStore } from '../events/store.js';
 import type { ClipFolder } from '../follow/clips.js';
 import type { Follows } from '../follow/follows.js';
 import type { ClipThings } from '../follow/things.js';
 import { planRule, type GuidePlanner } from '../guide/plan.js';
 import { answerQuestion, type QuestionPlanner } from '../questions/answer.js';
-import type { BacktestRunner } from '../rules/backtests.js';
-import { SETTLED_BY, type NewRule, type RuleStore } from '../rules/rule-store.js';
-import { boxOverlap, type Zone } from '../rules/zone-rule.js';
+import { zoneBox, type RuleStore, type SavedRule, type Zone } from '../rules/rule-store.js';
 import type { MediaSize, Picture } from '../sam/client.js';
-import type { Box, Outline } from '../sam/outlines.js';
+import { boxOverlap, type Box, type Outline } from '../sam/outlines.js';
 import type { CameraSetup, LabelledPicture } from '../setup/camera-setup.js';
-import type { RuleReader } from '../spark/rule-reader.js';
 
 const MEDIA_TYPES: Record<string, string> = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.mp4': 'video/mp4' };
 const ASSET_TYPES: Record<string, string> = {
@@ -50,8 +52,9 @@ const ruleInput = z.object({
     .min(1)
     .max(MAX_ZONES_PER_RULE),
   activeHours: z.object({ from: hour, to: hour }).nullable(),
-  settledBy: z.enum(SETTLED_BY).optional(),
 });
+const savedDraftInput = z.object({ draft: text(40), guidePlan: z.unknown().optional() });
+const trialInput = z.object({ draft: text(40), confirmedCostMicroUsd: z.number().int().min(0).nullable() });
 const guideInput = z.object({ camera: text(80), sentence: text(300) });
 const zoneNameInput = z.object({ word: text(60), label: text(30), objectId: text(10), name: text(60) });
 const thingsInput = z.union([
@@ -60,6 +63,32 @@ const thingsInput = z.union([
   z.object({}),
 ]);
 const followInput = z.object({ frame: z.number().int().min(0), thing: text(10) });
+
+// A draft waits here for the person's yes, so what is saved is exactly what they were shown.
+interface HeldDraft {
+  camera: Camera;
+  sentence: string;
+  request: string;
+  zones: Zone[];
+  activeHours: { from: number; to: number } | null;
+  draft: RuleDraft;
+  trial: string | null;
+}
+
+const KEPT_DRAFTS = 200;
+
+function settledBy(draft: RuleDraft): StoredAsk['settledBy'] {
+  const condition = draft.condition ?? {};
+  if (condition.framesPerAnswer !== 'several') return 'one-picture';
+  return condition.sampleGapSeconds === 3 ? 'brief-change' : 'change';
+}
+
+// The person's own hours replace any the parse read from the sentence.
+function withHours(draft: RuleDraft, hours: { from: number; to: number } | null): RuleDraft {
+  if (!hours) return draft;
+  const clock = (h: number) => `${String(h).padStart(2, '0')}:00`;
+  return { ...draft, schedule: { type: 'time_windows', windows: [{ days: [0, 1, 2, 3, 4, 5, 6], startTime: clock(hours.from), endTime: clock(hours.to) }] } };
+}
 
 class RequestError extends Error {
   constructor(
@@ -78,13 +107,15 @@ export function appHandler({
   mediaDir,
   webDir,
   planner,
-  ruleReader,
   guidePlanner,
-  backtests,
+  backend,
+  trials,
+  pictureSize,
   following,
   timeZone,
   now = Date.now,
   playing = () => null,
+  spend = async () => null,
 }: {
   events: EventStore;
   rules: RuleStore;
@@ -93,9 +124,11 @@ export function appHandler({
   mediaDir: string;
   webDir: string;
   planner: QuestionPlanner;
-  ruleReader: RuleReader;
   guidePlanner: GuidePlanner;
-  backtests: BacktestRunner;
+  // Rules live in the backend, which answers them; null when the app runs without one.
+  backend: RuleBackend | null;
+  trials: Trials;
+  pictureSize: (camera: Camera) => Promise<MediaSize>;
   following: {
     clips: ClipFolder;
     things: ClipThings;
@@ -109,8 +142,11 @@ export function appHandler({
   now?: () => number;
   // For a camera playing its recording on a loop, the picture playing and its recorded time (null before the first).
   playing?: (camera: string) => { at: number | null; picture: Uint8Array | null } | null;
+  // Asked before a Track route spends anything new; a message means it may not, and the person is told so.
+  spend?: (request: IncomingMessage, response: ServerResponse, kind: 'look' | 'track') => Promise<string | null>;
 }): (request: IncomingMessage, response: ServerResponse) => void {
   const settingUp = new Set<string>();
+  const drafts = new Map<string, HeldDraft>();
   // Naming a frame spends a list and an outline per word, so it is done once for each frame, even if asked twice at once.
   const naming = new Map<string, Promise<void>>();
 
@@ -118,6 +154,7 @@ export function appHandler({
     route(request, response).catch((error: unknown) => {
       if (response.headersSent) return;
       if (error instanceof RequestError) return send(response, error.status, { error: error.message });
+      if (error instanceof BackendError && error.status < 500) return send(response, error.status, { error: error.message });
       console.error(error);
       send(response, 502, { error: 'The request could not be completed. Please try again.' });
     });
@@ -128,7 +165,12 @@ export function appHandler({
     const path = url.pathname;
     const method = request.method;
     let match: RegExpExecArray | null;
+    const charge = async (kind: 'look' | 'track') => {
+      const reached = await spend(request, response, kind);
+      if (reached) throw new RequestError(429, reached);
+    };
 
+    if (method === 'GET' && path === '/api/app') return send(response, 200, { public: false, trackSeconds: null });
     if (method === 'GET' && path.startsWith('/assets/')) {
       const name = decodeURIComponent(path.slice('/assets/'.length));
       const type = ASSET_TYPES[extname(name).toLowerCase()];
@@ -159,14 +201,6 @@ export function appHandler({
     }
 
     if (method === 'GET' && path === '/api/cameras') return send(response, 200, await Promise.all((await cameras.list()).map(withRules)));
-    if (method === 'GET' && (match = /^\/api\/cameras\/([^/]+)\/stored\/(\d+)$/.exec(path))) {
-      const camera = await cameras.get(decodeURIComponent(match[1]!));
-      const picture = camera ? await backtests.picture(camera, Number(match[2])) : null;
-      if (!picture) return send(response, 404, { error: 'No such picture.' });
-      response.writeHead(200, { 'Content-Type': 'image/jpeg' });
-      response.end(picture);
-      return;
-    }
     if (method === 'GET' && (match = /^\/camera-pictures\/([^/]+)\/([^/]+)$/.exec(path))) {
       const file = decodeURIComponent(match[2]!);
       return sendFile(response, file, await cameras.picture(decodeURIComponent(match[1]!), file));
@@ -206,12 +240,12 @@ export function appHandler({
       const id = decodeURIComponent(match[1]!);
       const frame = Number(match[2]);
       if (method === 'GET') return send(response, 200, { things: await following.things.list(id, frame) });
-      if (method === 'POST') return send(response, 200, await outlineOnFrame(id, frame, await readJson(request)));
+      if (method === 'POST') return send(response, 200, await outlineOnFrame(id, frame, await readJson(request), charge));
     }
     if ((match = /^\/api\/clips\/([^/]+)\/follows$/.exec(path))) {
       const id = decodeURIComponent(match[1]!);
       if (method === 'GET') return send(response, 200, await following.follows.list(id));
-      if (method === 'POST') return send(response, 202, { id: await startFollow(id, await readJson(request)) });
+      if (method === 'POST') return send(response, 202, { id: await startFollow(id, await readJson(request), charge) });
     }
     if (method === 'GET' && (match = /^\/api\/clips\/([^/]+)\/follows\/([^/]+)$/.exec(path))) {
       const job = await following.follows.get(decodeURIComponent(match[1]!), decodeURIComponent(match[2]!));
@@ -219,11 +253,15 @@ export function appHandler({
     }
 
     if (method === 'GET' && path === '/api/rules') return send(response, 200, rules.list(url.searchParams.get('camera') ?? undefined));
-    if (method === 'POST' && path === '/api/rules') {
+    if (method === 'POST' && path === '/api/rule-drafts') {
       const parsed = ruleInput.safeParse(await readJson(request));
       if (!parsed.success) throw new RequestError(400, `The rule needs a sentence and 1 to ${MAX_ZONES_PER_RULE} zones; a drawn box needs a name and a question.`);
-      const rule = await resolveRule(parsed.data);
-      return send(response, 201, rules.get(rules.add(rule)));
+      return send(response, 200, await draftRule(parsed.data));
+    }
+    if (method === 'POST' && path === '/api/rules') {
+      const parsed = savedDraftInput.safeParse(await readJson(request));
+      if (!parsed.success) throw new RequestError(400, 'Read the rule before saving it.');
+      return send(response, 201, await saveRule(parsed.data.draft, parsed.data.guidePlan ?? null));
     }
     if (method === 'POST' && path === '/api/guide/plans') {
       const parsed = guideInput.safeParse(await readJson(request));
@@ -232,20 +270,38 @@ export function appHandler({
       if (!camera) throw new RequestError(404, 'No such camera.');
       return send(response, 200, await planRule({ sentence: parsed.data.sentence, site: camera.site, zones: camera.zones, planner: guidePlanner }));
     }
-    if (method === 'POST' && path === '/api/backtests') {
-      const parsed = ruleInput.safeParse(await readJson(request));
-      if (!parsed.success) throw new RequestError(400, `The rule needs a sentence and 1 to ${MAX_ZONES_PER_RULE} zones; a drawn box needs a name and a question.`);
-      const camera = await cameras.get(parsed.data.camera);
-      if (camera && !camera.stored) throw new RequestError(409, 'This camera has no stored pictures to try the rule on.');
-      const rule = await resolveRule(parsed.data);
-      return send(response, 202, { id: await backtests.start(camera!, rule), rule });
+    if (method === 'GET' && (match = /^\/api\/rule-drafts\/([^/]+)\/trial-estimate$/.exec(path))) {
+      const { held, ask } = askFor(decodeURIComponent(match[1]!));
+      return send(response, 200, { ...(await connected().estimateQuestion(ask)), from: ask.from.getTime(), to: ask.to.getTime(), rule: held.sentence });
     }
-    if (method === 'GET' && (match = /^\/api\/backtests\/(\d+)$/.exec(path))) {
-      const job = backtests.get(Number(match[1]));
-      return job ? send(response, 200, job) : send(response, 404, { error: 'No such trial.' });
+    if (method === 'POST' && path === '/api/trials') {
+      const parsed = trialInput.safeParse(await readJson(request));
+      if (!parsed.success) throw new RequestError(400, 'Confirm the cost before trying the rule.');
+      const { held, ask } = askFor(parsed.data.draft);
+      held.trial = await trials.start(ask, held.sentence, parsed.data.confirmedCostMicroUsd);
+      return send(response, 202, { id: held.trial });
+    }
+    if (method === 'GET' && (match = /^\/api\/trials\/([^/]+)$/.exec(path))) {
+      return send(response, 200, await trials.view(decodeURIComponent(match[1]!)));
+    }
+    if (method === 'GET' && (match = /^\/api\/trials\/([^/]+)\/pictures\/(\d+)$/.exec(path))) {
+      const picture = trials.picture(decodeURIComponent(match[1]!), Number(match[2]));
+      if (!picture) return send(response, 404, { error: 'No such picture.' });
+      response.writeHead(200, { 'Content-Type': 'image/jpeg' });
+      response.end(picture);
+      return;
     }
     if (method === 'DELETE' && (match = /^\/api\/rules\/(\d+)$/.exec(path))) {
-      return rules.remove(Number(match[1])) ? send(response, 200, { removed: true }) : send(response, 404, { error: 'No such rule.' });
+      const rule = rules.get(Number(match[1]));
+      if (!rule) return send(response, 404, { error: 'No such rule.' });
+      // A rule already gone from the backend still comes off the app's list.
+      await connected()
+        .deleteRule(rule.backendRuleId)
+        .catch((error: unknown) => {
+          if (!(error instanceof BackendError && error.status === 404)) throw error;
+        });
+      rules.remove(rule.id);
+      return send(response, 200, { removed: true });
     }
     if (method === 'GET' && !path.startsWith('/api/')) {
       // The app routes its own pages in the browser, so every page path gets the same document.
@@ -258,7 +314,7 @@ export function appHandler({
   }
 
   // With nothing asked, lists what is on the frame; a word adds what it finds, and a click adds what was clicked.
-  async function outlineOnFrame(id: string, frame: number, body: Record<string, unknown>) {
+  async function outlineOnFrame(id: string, frame: number, body: Record<string, unknown>, charge: (kind: 'look') => Promise<void>) {
     const parsed = thingsInput.safeParse(body);
     if (!parsed.success) throw new RequestError(400, 'Type what to look for, or select it on the picture.');
     const clip = await following.clips.get(id);
@@ -268,12 +324,14 @@ export function appHandler({
 
     if ('word' in parsed.data) {
       const { word } = parsed.data;
+      await charge('look');
       const found = (await following.outlineAll(picture, [word]))[word] ?? [];
       return { things: await following.things.add(id, frame, found), found: found.length };
     }
     if ('point' in parsed.data) {
       const { point } = parsed.data;
       if (point.x >= clip.width || point.y >= clip.height) throw new RequestError(400, 'Select a place on the picture.');
+      await charge('look');
       const outline = await following.outlineAt(picture, { width: clip.width, height: clip.height }, point, CLICKED_NAME);
       if (!outline) return { things: await following.things.list(id, frame), found: 0 };
       const things = await following.things.add(id, frame, [outline]);
@@ -285,6 +343,7 @@ export function appHandler({
     }
     const key = `${id}/${frame}`;
     if (!naming.has(key)) {
+      if ((await following.things.list(id, frame)).length === 0) await charge('look');
       naming.set(
         key,
         (async () => {
@@ -303,23 +362,25 @@ export function appHandler({
   }
 
   // The box is read from what was outlined on the frame, never taken from the request.
-  async function startFollow(id: string, body: Record<string, unknown>): Promise<string> {
+  async function startFollow(id: string, body: Record<string, unknown>, charge: (kind: 'track') => Promise<void>): Promise<string> {
     const parsed = followInput.safeParse(body);
     if (!parsed.success) throw new RequestError(400, 'Select what to track.');
     if (!(await following.clips.get(id))) throw new RequestError(404, 'No such clip.');
     const thing = (await following.things.list(id, parsed.data.frame)).find((t) => t.id === parsed.data.thing);
     if (!thing) throw new RequestError(400, 'That outline is not on this frame. Select another.');
+    if (!(await following.follows.isKept(id, parsed.data.frame, thing.box))) await charge('track');
     return following.follows.start(id, parsed.data.frame, thing);
   }
 
   // Each zone with the rules that watch it, found by place, so the camera page can tell active zones from the rest.
   async function withRules(full: Camera) {
-    const { episode, stored: _folder, ...camera } = full;
+    const { episode, backend: linked, ...camera } = full;
     const onCamera = rules.list(camera.id);
     return {
       ...camera,
       playing: episode ? { at: playing(camera.id)?.at ?? null } : null,
-      stored: await backtests.summary(full),
+      connected: backend !== null && linked !== null,
+      stored: linked?.recorded ? { from: Date.parse(linked.recorded.from), to: Date.parse(linked.recorded.to) } : null,
       zones: camera.zones.map((zone) => ({
         ...zone,
         rules: onCamera.filter((r) => r.zones.some((z) => z.kind === 'outline' && zoneAt(camera.zones, z.word, z.reference) === zone)).map((r) => r.id),
@@ -342,10 +403,13 @@ export function appHandler({
     }
   }
 
-  async function resolveRule(input: z.infer<typeof ruleInput>): Promise<NewRule> {
-    const camera = await cameras.get(input.camera);
-    if (!camera) throw new RequestError(400, 'No such camera.');
-    const zones = input.zones.map((given): Zone => {
+  function connected(): RuleBackend {
+    if (!backend) throw new RequestError(409, 'This app is not connected to Streamatic.');
+    return backend;
+  }
+
+  function resolveZones(camera: Camera, input: z.infer<typeof ruleInput>): Zone[] {
+    return input.zones.map((given): Zone => {
       if (given.kind === 'box') {
         const taken = sameName(camera.zones, given.name);
         if (taken) throw new RequestError(409, `A zone on this camera is already called “${taken.name}”. Give the box another name.`);
@@ -356,13 +420,85 @@ export function appHandler({
       const outline = zone.outlines[label]!.find((o) => o.objectId === objectId)!;
       return { name: zone.name, kind: 'outline', word, reference: outline.box, path: outline.path };
     });
-    // A rule already read, when it was tried on stored pictures, is saved as it was tried.
-    if (input.settledBy) return { camera: camera.id, sentence: input.sentence, zones, activeHours: input.activeHours, settledBy: input.settledBy };
-    // Asked only once the zones are valid, so a refused rule costs no call.
-    const reading = await ruleReader.read(input.sentence, zones.flatMap((z) => (z.kind === 'box' ? [z.question] : [])));
-    let next = 0;
-    const read = zones.map((z): Zone => (z.kind === 'box' ? { ...z, question: reading.questions[next++]! } : z));
-    return { camera: camera.id, sentence: input.sentence, zones: read, activeHours: input.activeHours, settledBy: reading.settledBy };
+  }
+
+  // The backend reads the sentence and checks the camera can answer it; nothing is saved until the person says yes.
+  async function draftRule(input: z.infer<typeof ruleInput>) {
+    const camera = await cameras.get(input.camera);
+    if (!camera) throw new RequestError(400, 'No such camera.');
+    const zones = resolveZones(camera, input);
+    const client = connected();
+    if (!camera.backend) throw new RequestError(409, 'This camera is not connected to Streamatic, so rules cannot be saved on it.');
+    const size = await pictureSize(camera);
+    const boxQuestions = zones.flatMap((z) => (z.kind === 'box' ? [z.question] : []));
+    const request = sentenceWithPlaces(
+      [input.sentence, ...boxQuestions].join(' '),
+      zones.map((z) => ({ name: z.name, box: zoneBox(z) })),
+      size,
+    );
+    const parsed = await client.parse(request);
+    if (!parsed.supported || !parsed.condition) {
+      return { id: null, supported: false, request, refusal: parsed.refusal ?? null, rewrites: parsed.rewrites ?? [] };
+    }
+    const draft = withHours(parsed, input.activeHours);
+    const probe = await client.probe(camera.backend.deviceId, request, draft);
+    const id = randomUUID();
+    drafts.set(id, { camera, sentence: input.sentence, request, zones, activeHours: input.activeHours, draft, trial: null });
+    for (const old of drafts.keys()) if (drafts.size > KEPT_DRAFTS) drafts.delete(old);
+    return {
+      id,
+      supported: true,
+      request,
+      name: draft.name ?? input.sentence,
+      readsAs: draft.readsAs ?? input.sentence,
+      question: String(draft.condition?.question ?? ''),
+      severalPictures: settledBy(draft) !== 'one-picture',
+      canAnswer: !probe.warns,
+    };
+  }
+
+  // The backend's rule comes first; the app's row only says which rule it is, so a refusal leaves nothing behind.
+  async function saveRule(id: string, guidePlan: unknown) {
+    const held = drafts.get(id);
+    if (!held) throw new RequestError(409, 'That draft has lapsed. Read the rule again before saving it.');
+    const backendRuleId = await connected().createRule(held.camera.backend!.deviceId, held.request, held.draft);
+    drafts.delete(id);
+    const ruleId = rules.add({
+      camera: held.camera.id,
+      sentence: held.sentence,
+      zones: held.zones,
+      activeHours: held.activeHours,
+      backendRuleId,
+      readsAs: held.draft.readsAs ?? held.sentence,
+      severalPictures: settledBy(held.draft) !== 'one-picture',
+      guidePlan,
+    });
+    const saved = rules.get(ruleId)!;
+    // What the trial found stays with the rule, labelled as a recorded run. The rule is saved either way.
+    if (held.trial) await keepRecordedRun(held.trial, saved, held.camera.name);
+    return saved;
+  }
+
+  async function keepRecordedRun(trial: string, rule: SavedRule, camera: string): Promise<void> {
+    for (const stretch of trials.stretches(trial)) {
+      await keepStretch(stretch, rule, camera, { store: events, mediaDir, outlineAll: following.outlineAll }).catch((error: unknown) => console.error(error));
+    }
+  }
+
+  function askFor(id: string): { held: HeldDraft; ask: StoredAsk } {
+    const held = drafts.get(id);
+    if (!held) throw new RequestError(409, 'That draft has lapsed. Read the rule again before trying it.');
+    const recorded = held.camera.backend?.recorded;
+    if (!recorded) throw new RequestError(409, 'This camera has no stored pictures to try the rule on.');
+    const ask: StoredAsk = {
+      question: String(held.draft.condition?.question ?? ''),
+      verdict: held.draft.condition?.verdict !== false,
+      settledBy: settledBy(held.draft),
+      deviceId: held.camera.backend!.deviceId,
+      from: new Date(recorded.from),
+      to: new Date(recorded.to),
+    };
+    return { held, ask };
   }
 
   // A rule keeps its zone's box, so it finds its zone again by place; the name travels to its rules and their events.

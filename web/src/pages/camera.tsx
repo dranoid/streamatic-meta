@@ -10,9 +10,9 @@ import { Input, Label, Select, Textarea } from '@/components/ui/input';
 import { Notice } from '@/components/ui/notice';
 import { Segmented } from '@/components/ui/segmented';
 import { Skeleton } from '@/components/ui/skeleton';
-import { api, nowUrl, pictureUrl, storedUrl, type Box, type Camera, type CameraZone, type GuidePlan, type NewRule, type NewZone, type PlanAttempt, type SavedRule, type Trial } from '@/lib/api';
+import { api, nowUrl, pictureUrl, type Box, type Camera, type CameraZone, type GuidePlan, type NewRule, type RuleReading, type TrialEstimate, type NewZone, type PlanAttempt, type SavedRule, type Trial } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { dateAndTime, sentence, shortDate } from '@/lib/time';
+import { clockTime, dateAndTime, sentence, shortDate } from '@/lib/time';
 
 // One SAM outline the person selected, as setup knows it: the zone is the one that holds this piece.
 type Pick = { word: string; label: string; objectId: string };
@@ -634,11 +634,17 @@ function RuleBuilder({
 }) {
   const queryClient = useQueryClient();
   const [problem, setProblem] = useState<string | null>(null);
-  // The last trial on stored pictures, with the rule as Spark Open read it and the draft it was run on.
-  const [trial, setTrial] = useState<{ id: number; rule: Omit<SavedRule, 'id'>; input: string } | null>(null);
+  // What Streamatic made of the sentence, and the trial on stored pictures, each for the rule as it stood then.
+  const [reading, setReading] = useState<{ input: string; result: RuleReading } | null>(null);
+  const [cost, setCost] = useState<{ input: string; estimate: TrialEstimate } | null>(null);
+  const [trial, setTrial] = useState<{ id: string; input: string } | null>(null);
+  const read = useMutation({
+    mutationFn: (input: NewRule) => api.readRule(input),
+    onSuccess: (result, input) => setReading({ input: JSON.stringify(input), result }),
+  });
   const save = useMutation({
-    mutationFn: (rule: NewRule) => api.addRule(rule),
-    onSuccess: async (saved, input) => {
+    mutationFn: ({ draft }: { draft: string; input: NewRule }) => api.addRule(draft, guide?.plan ?? null),
+    onSuccess: async (saved, { input }) => {
       await Promise.all(['rules', 'cameras'].map((key) => queryClient.invalidateQueries({ queryKey: [key] })));
       // The rule is read back from the server and compared with what was sent, so saving is never ticked on trust.
       const back = (await api.rules(camera.id)).find((r) => r.id === saved.id);
@@ -650,15 +656,19 @@ function RuleBuilder({
       onDone({ rule: saved, checked });
     },
   });
+  const estimate = useMutation({
+    mutationFn: ({ draft }: { draft: string; input: string }) => api.trialEstimate(draft),
+    onSuccess: (result, { input }) => setCost({ input, estimate: result }),
+  });
   const startTrial = useMutation({
-    mutationFn: (rule: NewRule) => api.startTrial(rule),
-    onSuccess: ({ id, rule }, input) => setTrial({ id, rule, input: JSON.stringify(input) }),
+    mutationFn: ({ draft, price }: { draft: string; price: number | null; input: string }) => api.startTrial(draft, price),
+    onSuccess: ({ id }, { input }) => setTrial({ id, input }),
   });
   const trialRun = useQuery({
     queryKey: ['trial', trial?.id],
     queryFn: () => api.trial(trial!.id),
     enabled: trial !== null,
-    refetchInterval: (q) => (q.state.data?.state === 'done' || q.state.data?.state === 'failed' ? false : 1_500),
+    refetchInterval: (q) => (q.state.data?.state === 'done' || q.state.data?.state === 'failed' ? false : 3_000),
   });
   const set = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
   const picked = draft.picks.flatMap((pick) => {
@@ -675,9 +685,12 @@ function RuleBuilder({
     ],
     activeHours: draft.limitHours ? { from: draft.from, to: draft.to } : null,
   };
-  const tried = trial !== null && trial.input === JSON.stringify(rule) && trialRun.data?.state === 'done' ? trial.rule : null;
-  const trialBusy =
-    startTrial.isPending || (trial !== null && trial.input === JSON.stringify(rule) && trialRun.data?.state !== 'done' && trialRun.data?.state !== 'failed');
+  const asIs = JSON.stringify(rule);
+  const readNow = reading?.input === asIs ? reading.result : null;
+  const draftId = readNow?.id ?? null;
+  const costNow = cost?.input === asIs ? cost.estimate : null;
+  const tried = trial?.input === asIs && trialRun.data?.state === 'done';
+  const trialBusy = estimate.isPending || startTrial.isPending || (trial?.input === asIs && trialRun.data?.state !== 'done' && trialRun.data?.state !== 'failed');
 
   const ready = () => {
     if (!draft.sentence.trim()) return setProblem('Write the rule.'), false;
@@ -687,14 +700,17 @@ function RuleBuilder({
     setProblem(null);
     return true;
   };
+  // Saved only once Streamatic's reading of this exact rule has been shown to the person.
   const submit = () => {
     if (!ready()) return;
-    // A rule just tried is saved as Spark Open read it for the trial, so what was shown is what runs.
-    const asTried = tried && {
-      settledBy: tried.settledBy,
-      zones: rule.zones.map((z) => (z.kind === 'box' ? { ...z, question: tried.zones.find((t) => t.kind === 'box')?.question ?? z.question } : z)),
-    };
-    save.mutate({ ...rule, ...asTried });
+    if (draftId) save.mutate({ draft: draftId, input: rule });
+    else read.mutate(rule);
+  };
+  // What a trial costs is shown first; it runs only at the price the person confirmed.
+  const tryRule = () => {
+    if (!ready()) return;
+    if (draftId) return estimate.mutate({ draft: draftId, input: asIs });
+    read.mutate(rule, { onSuccess: (result) => result.id && estimate.mutate({ draft: result.id, input: asIs }) });
   };
 
   // The guide's steps. A step is ticked only while the page still shows what the person confirmed, so changing
@@ -716,7 +732,7 @@ function RuleBuilder({
         {
           key: 'plan',
           title: 'Check the plan',
-          detail: <PlanSummary plan={plan} attempts={guide!.attempts} zones={plan.zones.flatMap((n) => named(n) ?? [])} />,
+          detail: <PlanSummary plan={plan} attempts={guide!.attempts} />,
           ready: true,
           snapshot: JSON.stringify(plan),
           confirm: 'The plan is right',
@@ -731,7 +747,6 @@ function RuleBuilder({
                   ? `Draw the box over the ${plan.box.name} on the picture.`
                   : 'Selected on the picture. Select an outline to add or remove it.'}
               </p>
-              <AlertsOn zones={picked.map(({ zone }) => zone)} question={draft.box ? draft.question : null} />
             </div>
           ),
           ready: zonesPlaced,
@@ -775,6 +790,17 @@ function RuleBuilder({
           act: () => set(plan.hours ? { limitHours: true, from: plan.hours.from, to: plan.hours.to } : { limitHours: false }),
           confirm: 'These hours are right',
         },
+        {
+          key: 'read',
+          title: 'Check how Streamatic reads it',
+          detail: readNow ? <ReadingNote reading={readNow} /> : 'Streamatic is reading the rule.',
+          ready: readNow?.supported === true,
+          waiting: readNow ? 'Change the rule, then it is read again' : 'Waiting for Streamatic',
+          snapshot: asIs,
+          actKey: asIs,
+          act: () => read.mutate(rule),
+          confirm: 'That is what I want',
+        },
         ...(camera.stored
           ? [
               {
@@ -785,13 +811,13 @@ function RuleBuilder({
                     ? 'Skipped.'
                     : tried
                       ? 'The result is below. To change the rule, change the zones or the hours, then try it again.'
-                      : 'Shows when the rule would have alerted on the pictures this camera took in the past days. Nothing is saved or sent.',
-                ready: tried !== null,
+                      : 'Shows when the rule would have alerted on the pictures this camera stored. Nothing is saved or sent.',
+                ready: tried,
                 waiting: trialBusy ? 'Waiting for the trial' : undefined,
-                snapshot: JSON.stringify(rule),
+                snapshot: asIs,
                 confirm: 'Keep this rule',
-                // A trial spends model calls, so it runs only when the person asks for it.
-                optional: { start: 'Try it on stored pictures', onStart: () => startTrial.mutate(rule), busy: trialBusy, skip: 'Skip this step' },
+                // A trial costs money, so it runs only when the person asks for it.
+                optional: { start: 'Try it on stored pictures', onStart: tryRule, busy: trialBusy, skip: 'Skip this step' },
               },
             ]
           : []),
@@ -800,7 +826,7 @@ function RuleBuilder({
           title: 'Save the rule',
           detail: 'The saved rule is read back and compared with what you confirmed.',
           ready: true,
-          snapshot: JSON.stringify(rule),
+          snapshot: asIs,
           confirm: 'Save the rule',
           onConfirm: submit,
         },
@@ -958,8 +984,7 @@ function RuleBuilder({
               </Button>
             )}
             <p className='text-muted-foreground text-xs leading-relaxed'>
-              Streamatic looks again only when something changes inside a zone. With several zones, the rule alerts only when all of them change in the
-              same check; select an outline again to remove it. A drawn box alerts when the answer to its question is yes.
+              A zone gives the rule its place on the picture, and its outline is drawn on each alert; select an outline again to remove it. Streamatic reads the sentence and answers it on every picture.
             </p>
           </div>
 
@@ -990,33 +1015,32 @@ function RuleBuilder({
             )}
           </div>
 
-          {camera.stored && trial && (
-            <TrialResult
-              camera={camera}
-              run={trialRun.data}
-              rule={trial.rule}
-              stale={trial.input !== JSON.stringify(rule)}
-              failed={trialRun.isError}
+          {!guide && readNow && <ReadingNote reading={readNow} />}
+
+          {camera.stored && costNow && trial?.input !== asIs && (
+            <TrialCost
+              estimate={costNow}
+              busy={startTrial.isPending}
+              onConfirm={() => draftId && startTrial.mutate({ draft: draftId, price: costNow.costMicroUsd, input: asIs })}
             />
           )}
 
-          {(problem || save.isError || startTrial.isError) && <Notice tone='error'>{problem ?? save.error?.message ?? startTrial.error?.message}</Notice>}
+          {camera.stored && trial && <TrialResult trialId={trial.id} run={trialRun.data} stale={trial.input !== asIs} failed={trialRun.isError} camera={camera} />}
+
+          {(problem || read.isError || save.isError || estimate.isError || startTrial.isError) && (
+            <Notice tone='error'>{problem ?? read.error?.message ?? save.error?.message ?? estimate.error?.message ?? startTrial.error?.message}</Notice>
+          )}
 
           <div className='flex flex-wrap gap-2'>
             {!guide && (
-              <Button type='submit' disabled={save.isPending}>
-                {save.isPending && <Loader2 className='animate-spin' />}
-                Save rule
+              <Button type='submit' disabled={save.isPending || read.isPending || readNow?.supported === false}>
+                {(save.isPending || read.isPending) && <Loader2 className='animate-spin' />}
+                {draftId ? 'Save rule' : 'Read the rule'}
               </Button>
             )}
             {camera.stored && (
-              <Button
-                type='button'
-                variant='outline'
-                disabled={startTrial.isPending || trialRun.data?.state === 'running'}
-                onClick={() => ready() && startTrial.mutate(rule)}
-              >
-                {startTrial.isPending || trialRun.data?.state === 'running' ? <Loader2 className='animate-spin' /> : <History />}
+              <Button type='button' variant='outline' disabled={trialBusy || read.isPending || readNow?.supported === false} onClick={tryRule}>
+                {trialBusy ? <Loader2 className='animate-spin' /> : <History />}
                 Try on stored pictures
               </Button>
             )}
@@ -1053,31 +1077,7 @@ const GUIDE_PAUSE_MS = 700;
 // What an optional step's confirmation holds once the person skips it.
 const SKIPPED = 'skipped';
 
-const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
-const end = (s: string) => (/[.?!”]$/.test(s) ? s : `${s}.`);
-
-// Written from the rule's own parts, so the person reads what will set it off before confirming it.
-function AlertsOn({ zones, question }: { zones: CameraZone[]; question: string | null }) {
-  const asked = question?.trim();
-  const parts = [
-    ...zones.map((z) => `the ${z.name} itself changes: it moves, opens or is no longer there`),
-    ...(question !== null ? [asked ? `Streamatic answers yes to “${capital(asked)}”` : 'Streamatic answers yes to the box’s question'] : []),
-  ];
-  if (parts.length === 0) return null;
-  if (parts.length === 1) return <p className='text-foreground font-medium'>Alerts when {end(parts[0]!)}</p>;
-  return (
-    <div className='text-foreground'>
-      <p className='font-medium'>Alerts only when all of these happen in the same check:</p>
-      <ul className='list-disc space-y-0.5 pl-4'>
-        {parts.map((p) => (
-          <li key={p}>{end(capital(p))}</li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function PlanSummary({ plan, attempts, zones }: { plan: GuidePlan; attempts: PlanAttempt[]; zones: CameraZone[] }) {
+function PlanSummary({ plan, attempts }: { plan: GuidePlan; attempts: PlanAttempt[] }) {
   const refused = attempts.filter((a) => a.problems.length > 0);
   return (
     <div className='space-y-1'>
@@ -1089,7 +1089,6 @@ function PlanSummary({ plan, attempts, zones }: { plan: GuidePlan; attempts: Pla
         </p>
       )}
       <p>Hours: {plan.hours ? `${pad(plan.hours.from)} to ${pad(plan.hours.to)}` : 'all day'}</p>
-      <AlertsOn zones={zones} question={plan.box ? plan.box.question : null} />
       <p>
         {refused.length === 0
           ? 'Checked against this camera’s zones: passed.'
@@ -1178,61 +1177,69 @@ function GuideCard({
 // The most alerts a trial shows as pictures; the rest are counted.
 const TRIAL_PICTURES = 9;
 
-function TrialResult({
-  camera,
-  run,
-  rule,
-  stale,
-  failed,
-}: {
-  camera: Camera;
-  run: Trial | undefined;
-  rule: Omit<SavedRule, 'id'>;
-  stale: boolean;
-  failed: boolean;
-}) {
-  const stored = camera.stored!;
-  const span = `${stored.pictures} pictures from ${shortDate(stored.from)} to ${shortDate(stored.to)}`;
+// Streamatic's reading, in its own words: this is what will run, so the person sees it before saying yes.
+function ReadingNote({ reading }: { reading: RuleReading }) {
+  if (!reading.supported) {
+    return (
+      <Notice tone='error'>
+        {reading.refusal ?? 'Streamatic cannot watch for that on a camera.'}
+        {reading.rewrites.length > 0 && ` It can watch for: ${reading.rewrites.join(' ')}`}
+      </Notice>
+    );
+  }
+  return (
+    <div className='bg-muted/40 space-y-1.5 rounded-lg border p-3 text-sm'>
+      <p className='font-medium'>{reading.readsAs}</p>
+      <p className='text-muted-foreground text-xs'>Asked of each picture: {reading.question}</p>
+      <Badge variant='muted'>{reading.severalPictures ? 'Compares pictures a few seconds apart' : 'Decided on one picture'}</Badge>
+      {!reading.canAnswer && <Notice className='mt-2'>This camera may not be able to see that. You can still save the rule.</Notice>}
+    </div>
+  );
+}
+
+function TrialCost({ estimate, busy, onConfirm }: { estimate: TrialEstimate; busy: boolean; onConfirm: () => void }) {
+  if (estimate.reason) return <Notice tone='error'>Those stored pictures cannot be asked. Please try again later.</Notice>;
+  const price = estimate.costMicroUsd === null ? 'at no recorded cost' : `for about $${(estimate.costMicroUsd / 1_000_000).toFixed(3)}`;
+  return (
+    <div className='bg-muted/40 flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3'>
+      <p className='text-sm'>
+        Streamatic can ask this over the pictures from {clockTime(estimate.from)} to {clockTime(estimate.to)} on {shortDate(estimate.from)} {price}. Nothing is saved or sent.
+      </p>
+      <Button type='button' size='sm' disabled={busy} onClick={onConfirm}>
+        {busy && <Loader2 className='animate-spin' />}
+        Try at this cost
+      </Button>
+    </div>
+  );
+}
+
+function TrialResult({ trialId, run, stale, failed, camera }: { trialId: string; run: Trial | undefined; stale: boolean; failed: boolean; camera: Camera }) {
   if (failed || run?.state === 'failed') return <Notice tone='error'>The rule could not be tried on the stored pictures. Please try again.</Notice>;
   if (!run || run.state === 'running') {
-    const share = run ? run.checked / Math.max(1, run.pictures) : 0;
+    const share = run ? run.read / Math.max(1, run.total) : 0;
     return (
       <div className='bg-muted/40 space-y-2 rounded-lg border p-3'>
-        <p className='text-sm font-medium'>Trying the rule on {span}</p>
+        <p className='text-sm font-medium'>Trying the rule on the stored pictures</p>
         <div className='bg-muted h-1.5 overflow-hidden rounded-full'>
           <div className='bg-primary h-full transition-[width]' style={{ width: `${Math.round(share * 100)}%` }} />
         </div>
         <p className='text-muted-foreground text-xs tabular-nums'>
-          {run?.checked ?? 0} of {stored.pictures} checked. Nothing is saved or sent.
+          {run?.read ?? 0} of {run?.total ?? 0} read. Nothing is saved or sent.
         </p>
       </div>
     );
   }
-  const n = run.alerts.length;
-  const box = rule.zones.find((z) => z.kind === 'box');
+  const n = run.stretches.length;
   return (
     <div className={cn('space-y-3 rounded-lg border p-3', stale && 'opacity-60')}>
-      <div className='space-y-1'>
-        <p className='text-sm font-medium'>{n === 0 ? 'Would not have alerted' : n === 1 ? 'Would have alerted once' : `Would have alerted ${n} times`}</p>
-        <p className='text-muted-foreground text-xs leading-relaxed'>
-          On the {span}; {run.checks} {run.checks === 1 ? 'change was' : 'changes were'} checked by the models.
-        </p>
-        <div className='flex flex-wrap gap-1.5 pt-1'>
-          <Badge variant='muted'>{SETTLED_BY_LABEL[rule.settledBy]}</Badge>
-          {box && <Badge variant='outline'>Asks: {box.question}</Badge>}
-        </div>
-      </div>
+      <p className='text-sm font-medium'>{n === 0 ? 'Would not have alerted' : n === 1 ? 'Would have alerted once' : `Would have alerted ${n} times`}</p>
       {stale && <Notice>The rule has changed since it was tried. Try it again to see the new result.</Notice>}
       {n > 0 && (
         <ul className='grid grid-cols-2 gap-2 sm:grid-cols-3'>
-          {run.alerts.slice(0, TRIAL_PICTURES).map((a) => (
-            <li key={a.at} className='space-y-1'>
-              <PictureFrame
-                src={a.pictureAt === null ? null : storedUrl(camera.id, a.pictureAt)}
-                alt={`${camera.name} at ${dateAndTime(a.at)}`}
-                paths={a.outlines.map((d, i) => ({ key: `${a.at}-${i}`, d, colour: ZONE_COLOURS[0]!, style: 'fill' as const }))}
-              />
-              <p className='text-muted-foreground text-xs tabular-nums'>{dateAndTime(a.at)}</p>
+          {run.stretches.slice(0, TRIAL_PICTURES).map((s) => (
+            <li key={s.from} className='space-y-1'>
+              <PictureFrame src={s.picture === null ? null : `/api/trials/${encodeURIComponent(trialId)}/pictures/${s.picture}`} alt={`${camera.name} at ${dateAndTime(s.from)}`} paths={[]} />
+              <p className='text-muted-foreground text-xs tabular-nums'>{dateAndTime(s.from)}</p>
             </li>
           ))}
         </ul>
@@ -1241,12 +1248,6 @@ function TrialResult({
     </div>
   );
 }
-
-const SETTLED_BY_LABEL: Record<SavedRule['settledBy'], string> = {
-  'one-picture': 'Decided on one picture',
-  change: 'Decided on a change',
-  'brief-change': 'Decided on a brief change',
-};
 
 function SavedRules({ camera, rules, loading }: { camera: Camera; rules: SavedRule[] | undefined; loading: boolean }) {
   const queryClient = useQueryClient();
@@ -1260,7 +1261,7 @@ function SavedRules({ camera, rules, loading }: { camera: Camera; rules: SavedRu
       <CardHeader>
         <div>
           <CardTitle>Rules on this camera</CardTitle>
-          <CardDescription>Each one watches its zones and alerts on Telegram.</CardDescription>
+          <CardDescription>Each one runs in Streamatic, which answers it and raises its alerts.</CardDescription>
         </div>
         {rules && <Badge variant='muted'>{rules.length}</Badge>}
       </CardHeader>
@@ -1274,6 +1275,7 @@ function SavedRules({ camera, rules, loading }: { camera: Camera; rules: SavedRu
               <li key={r.id} className='flex items-start justify-between gap-3 py-3 first:pt-0 last:pb-0'>
                 <div className='min-w-0 space-y-1.5'>
                   <p className='text-sm'>{r.sentence}</p>
+                  <p className='text-muted-foreground text-xs'>{r.readsAs}</p>
                   {r.zones.map(
                     (z) =>
                       z.kind === 'box' && (
@@ -1289,8 +1291,7 @@ function SavedRules({ camera, rules, loading }: { camera: Camera; rules: SavedRu
                         {z.name}
                       </Badge>
                     ))}
-                    {r.zones.length > 1 && <Badge variant='muted'>All must change</Badge>}
-                    <Badge variant='muted'>{SETTLED_BY_LABEL[r.settledBy]}</Badge>
+                    <Badge variant='muted'>{r.severalPictures ? 'Compares pictures' : 'Decided on one picture'}</Badge>
                     {r.activeHours && (
                       <Badge variant='muted'>
                         {pad(r.activeHours.from)} to {pad(r.activeHours.to)}

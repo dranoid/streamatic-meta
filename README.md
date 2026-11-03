@@ -8,42 +8,42 @@ World). It holds only the work built during the event, 26 October to 4 November 
 
 ## What existed before the event
 
-Streamatic's cameras, video storage, alerts on Telegram and WhatsApp, and search over camera footage.
-None of that code is in this repository. The new work here calls the existing product's API like any other
-client.
+Streamatic's cameras, video storage, rules, alerts on Telegram and WhatsApp, and search over camera footage. None of
+that code is in this repository. The new work here calls the existing product's API like any other client.
 
-The way a rule's answer is settled also comes from the existing product: from one picture (a door standing
-open), from a change between pictures 10 s apart (a belt running), or from a brief change between pictures
-3 s apart (someone coming through a door). It is written afresh here for Muse Spark Open.
+In particular, whether a rule holds is decided by Streamatic's existing rules, built before the event: they read the
+sentence, check the camera can answer it, and ask the vision model on the camera's pictures. The models below do not.
 
 ## What is built during the event
 
 - **A camera that sets itself up.** SAM 3.1 outlines what the camera sees under a list of everyday words
   (gate, wall, car, keke, person), by day and at night. Muse Spark picks what matters for that site and
   suggests the rules worth having, keeping SAM's own names so every rule is written in words SAM answers to.
-- **Rules on outlines.** A rule watches the outline SAM drew, not a box someone dragged by hand. SAM 3.1
-  looks again only when something changes there. A rule can watch several zones at once ("the light is off
-  while the door is open") and alerts only when all of them change together. Muse Spark Open reads from the
-  sentence whether one picture settles the rule or a change between pictures does. A box you draw yourself
-  carries a question that Muse Spark Open answers about that box.
-- **Try a rule before saving it.** A rule can be run over the pictures the camera took in the past days. It shows
-  every time the rule would have alerted, with the picture, so you can tighten the hours or change the zone
-  before anything is sent. An alert marks the answer becoming true; while it stays true, nothing more is sent.
+- **Rules that know their place.** A rule is written against an outline SAM drew, not a box someone dragged by hand. The
+  place comes from SAM's box ("the door on the right side of the picture") and goes in the sentence sent to
+  Streamatic's rules, and SAM's outline is drawn on each alert's pictures. Muse Spark Open chooses which picture goes on
+  the alert, and is not asked whether the rule holds.
+- **Read, try, then save.** Streamatic's reading of the rule is shown before anything is saved. A rule can then be asked
+  over the pictures the camera stored, at a price shown first, to see every time it would have alerted. Rules are saved
+  in Streamatic first and kept here with their zones and the guide's plan; their alerts are copied here as events.
 - **Zones named once.** Each zone is matched across the day, dusk and night pictures by its place. You name
   it once and confirm it on every picture; SAM keeps searching by its own word.
 - **A guide that does the setup with you.** Type one sentence. The guide shows its plan as a checklist,
   then works the app in front of you. A step is ticked only when the app shows it done and you confirm it.
   Muse Spark Open drafts the plan, and code checks it against the camera's zones and hours before anything
   is done. The plan also names what the alert is for, in your own words, and code refuses a zone the rule is
-  not about: a zone alerts only when its own thing changes, so "a keke parked by the gate" gets a box over
-  the gate, not the gate's outline. A refused plan goes back to Muse Spark Open with what was wrong, up to
-  three times, and then to you. Before you confirm, the page states in plain words what will set the rule
-  off. The model never marks a step done.
-- **Track anything in a clip.** Pause a clip and select any person, vehicle or object. Muse Spark Open lists
-  what is on the frame and SAM 3.1 outlines each; what is not outlined can be searched for or selected with a
-  click, and every result stays on the one frame. SAM 3.1 then tracks the selected outline through the whole
+  not about: "a keke parked by the gate" gets a box over the gate, not the gate's outline. A refused plan goes
+  back to Muse Spark Open with what was wrong, up to three times, and then to you. Before you confirm, the page
+  shows how Streamatic read the rule. The model never marks a step done.
+- **Search that goes past words.** Pause a clip and search for anything: a word, a click on the picture, or one of
+  the things already found. Muse Spark Open lists what is on the frame and SAM 3.1 outlines each, down to the
+  thing's exact shape, and every result stays on the one frame. SAM 3.1 then tracks the selected outline through the whole
   clip, both ways from that frame, from its box alone: no word, and no limit on how many similar things are in
-  view. The outline stays on it in the player, and a bar shows when it was in view.
+  view. On the public page, where SAM's charge by the frame adds up, it tracks the minute around that frame. The outline stays on it in the player, and a bar shows when it was in view.
+- **A demo engine anyone can open.** Recorded clips with the alerts Streamatic's rules raised on them, rules to tick on a
+  clock that shows each alert when it would have reached you, and the guide, whose last step adds your rule to the clip.
+  Clips and rules are kept in the page's own database and its videos are served from there, so playing a clip calls no
+  model. A picture you upload goes through the same setup, and nothing is kept. Spending is limited per visitor and per day.
 - **Questions about the week.** "How many times was the gate open after 10 pm?" Muse Spark picks the query,
   the events table does the counting, and every answer opens the moment it refers to.
 
@@ -51,25 +51,44 @@ open), from a change between pictures 10 s apart (a belt running), or from a bri
 
 | Model | Where | Used for |
 |---|---|---|
-| SAM 3.1 | Meta Model API | Outlining the scene at setup and on each event, tracking a selected object through video |
-| Muse Spark Open | Baseten | Listing what a camera sees, suggesting rules, judging drawn zones and naming the picture that shows the change, naming what can be tracked in a clip, answering questions |
+| SAM 3.1 | Meta Model API | Outlining the scene at setup and on each alert's pictures, tracking a selected object through video |
+| Muse Spark Open | Baseten | Listing what a camera sees, suggesting rules, drafting the guide's plan, choosing the picture an alert carries, naming what can be tracked in a clip, planning answers to questions |
 
 ## Running it
 
-Work in progress; the demo page address will be added when it is up. To run it on your own computer, put
-`META_MODEL_API_KEY` (Meta Model API) and `BASETEN_API_KEY` (Baseten) in `.env` at the repository root, then:
+The demo runs on your own computer from this repository alone: the clips, their setup and their alerts are in `demo-data/`.
+You need Node 22.9 or later and ffmpeg.
 
 ```
-cd service && npm install && npm test
-cd ../web && npm install && npm run build
-cd ../service && npm run serve -- <app folder>
+cd web && npm ci && npm run build
+cd ../service && npm ci && npm run demo
 ```
 
-The app folder holds `cameras/<id>/` (a `camera.json` naming the camera, its site and its day, dusk and night
-pictures), and the app keeps its rules and events there. A camera with a recording in `cameras/<id>/episode/`
-(a video with `episode.json` giving when it started, or gateway batch folders) plays it on a loop as its
-pictures, at the speed it was recorded, and its saved rules run on it as they would on the camera. `web/` is the app (React and Tailwind); `service/` is
-the API, the camera setup, the rules and the alerts.
+Then open http://127.0.0.1:8787. With nothing else set, the clips, rules, alerts and the searches already kept all work,
+and no model is called. What needs more:
+
+| To use | Add |
+|---|---|
+| Searching and tracking anything new, the guide's plan, your own picture | `META_MODEL_API_KEY` (Meta Model API) and `BASETEN_API_KEY` (Baseten) in `.env` at the repository root |
+| Reading a new rule over a clip | Streamatic's backend, which is not public; this works on the hosted page |
+
+`npm test` in `service/` runs the tests, with no keys and no network. `web/` is the app (React and Tailwind); `service/` is
+the API, the camera setup, the tracking and the copy of Streamatic's alerts.
+
+The app without the public limits runs over a folder of your own: `npm run serve -- <app folder> [port]`. The folder holds
+`cameras/<id>/` (a `camera.json` naming the camera, its site and its pictures) and the app keeps its rules and events there.
+To save rules, set `STREAMATIC_API`, `STREAMATIC_COMPANY`, `STREAMATIC_EMAIL` and `STREAMATIC_PASSWORD`, and give the camera
+a `backend` in `camera.json` with its `deviceId`. `npm run demo-prepare -- <folder>` builds a folder like `demo-data/` from a
+`demo.json` listing clips baked into Streamatic. `DEMO_CEILING_USD` sets the public page's daily ceiling on model spending
+(10 by default).
+
+Uploads on the public page are sent to Meta and to Baseten to be analysed, under the hackathon's credit terms, which allow
+Meta to use them for product improvement; the page keeps no copy.
+
+## Credits
+
+The clips and pictures in `demo-data/`: MEVA dataset by Kitware Inc. and IARPA,
+[CC BY 4.0](https://mevadata.org/resources/MEVA-data-license.txt), resized and re-encoded. Kitware and IARPA do not endorse this work.
 
 ## Licence
 

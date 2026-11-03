@@ -1,7 +1,8 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { AppShell } from '@/components/layout/app-shell';
+import { api } from '@/lib/api';
 import { useRoute } from '@/lib/router';
 import { AboutPage } from '@/pages/about';
 import { CameraPage } from '@/pages/camera';
@@ -10,20 +11,27 @@ import { ClipsPage } from '@/pages/clips';
 import { CamerasPage } from '@/pages/cameras';
 import { EventPage } from '@/pages/event';
 import { EventsPage } from '@/pages/events';
+import { TryPage } from '@/pages/try';
 import './styles.css';
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { refetchOnWindowFocus: false, staleTime: 10_000 } } });
 
 function App() {
-  const route = useRoute();
+  const parsed = useRoute();
+  const app = useQuery({ queryKey: ['app'], queryFn: api.app, staleTime: Infinity });
+  if (app.isPending) return null;
+  const isPublic = app.data?.public ?? false;
+  // The public page has no cameras or events, so every other path opens its clips.
+  const route = isPublic && ['cameras', 'camera', 'events', 'event'].includes(parsed.page) ? ({ page: 'clips' } as const) : parsed;
   return (
-    <AppShell route={route}>
+    <AppShell route={route} isPublic={isPublic}>
       {route.page === 'cameras' && <CamerasPage />}
       {route.page === 'camera' && <CameraPage id={route.id} />}
       {route.page === 'events' && <EventsPage />}
       {route.page === 'event' && <EventPage id={route.id} />}
-      {route.page === 'clips' && <ClipsPage />}
-      {route.page === 'clip' && <ClipPage id={route.id} />}
+      {route.page === 'clips' && <ClipsPage isPublic={isPublic} {...(app.data ? { app: app.data } : {})} />}
+      {route.page === 'try' && <TryPage />}
+      {route.page === 'clip' && <ClipPage id={route.id} isPublic={isPublic} trackSeconds={app.data?.trackSeconds ?? null} />}
       {route.page === 'about' && <AboutPage />}
     </AppShell>
   );

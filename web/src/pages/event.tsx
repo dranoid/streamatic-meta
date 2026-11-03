@@ -40,7 +40,7 @@ export function EventPage({ id }: { id: number }) {
                 <Fact icon={<Target />} term='Rule' value={e.rule} />
                 <Fact icon={<ScanSearch />} term='Zone' value={e.zone} />
                 <Fact icon={<Cctv />} term='Camera' value={e.camera} />
-                <Fact icon={<Clock />} term='Time' value={dateAndTime(e.at)} />
+                <Fact icon={<Clock />} term='Time' value={e.recorded ? `${dateAndTime(e.at)}, from a recorded run` : dateAndTime(e.at)} />
               </dl>
             </CardContent>
           </Card>

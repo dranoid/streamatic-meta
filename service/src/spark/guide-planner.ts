@@ -28,8 +28,8 @@ export class SparkGuidePlanner implements GuidePlanner {
 The camera's zones, each a thing SAM 3.1 outlined:
 ${listed || '- none'}
 
-A zone alerts only when that thing itself changes: it opens, moves, or is no longer there. To watch for something
-appearing in or near a place (someone on the stairs, a van in the loading bay), use a box with a question instead.
+A zone marks that thing itself, for a rule about it: it opens, moves, or is no longer there. To watch for something
+appearing in or near a place (someone on the stairs, a van in the loading bay), mark the place with a box and a question instead.
 
 Plan the rule the app will build:
 - "sentence": the rule in one plain sentence, as the person would say it.

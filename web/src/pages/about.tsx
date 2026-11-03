@@ -11,21 +11,27 @@ const PARTS = [
   },
   {
     title: 'Running a rule',
-    sam: 'Outlines the rule’s zones again on the pictures being checked.',
-    spark: 'Answers the question on each drawn box. When a rule is saved, reads from its sentence whether one picture settles it or a change across several.',
-    code: 'Compares each picture with the one before and asks for a check only when something changed inside a zone. Raises an alert when the answer becomes yes, not again while it stays yes.',
+    sam: 'Outlines the rule’s zones on the alert’s pictures, so the person sees the place the rule is about.',
+    spark: 'Chooses which picture goes on the alert. It is not asked whether the rule holds.',
+    code: 'Streamatic’s existing rules, which were built before this event, read the sentence and answer it on the camera’s pictures. This build sends them the sentence with each zone’s place, and copies their alerts into its events.',
   },
   {
     title: 'The guide',
     sam: null,
     spark: 'Drafts a plan for the rule from the person’s sentence.',
-    code: 'Checks the plan against the camera’s zones and the person’s own words, and sends a refused plan back with the reason. Ticks a step only when the page shows it done and the person confirms it.',
+    code: 'Checks the plan against the camera’s zones and the person’s own words, and sends a refused plan back with the reason. Shows how Streamatic reads the rule, and ticks a step only when the page shows it done and the person confirms it.',
   },
   {
-    title: 'Tracking something in a clip',
+    title: 'Searching a clip',
     sam: 'Outlines what is on the paused frame, under each word or at a click. Then tracks the selected outline through the whole clip, both ways from that frame, from its box alone.',
-    spark: 'Lists the kinds of thing on the frame that could be tracked, and names something selected by a click.',
+    spark: 'Lists the kinds of thing on the frame that could be searched for, and names something selected by a click.',
     code: 'Accumulates what each search finds on the one frame, works out when the thing was in view, and keeps each result so asking again costs nothing.',
+  },
+  {
+    title: 'The clips on this page',
+    sam: 'Outlines what a clip shows when the clip is set up, and on a picture you upload.',
+    spark: 'Lists what is worth outlining, suggests rules and drafts the guide’s plan.',
+    code: 'Keeps the clips and rules in this page’s own database, serves the videos, and works out from the rule’s tick what you see and when. Whether and when a rule alerts is decided by Streamatic’s existing rules, built before this event, and copied here once.',
   },
   {
     title: 'Questions about events',

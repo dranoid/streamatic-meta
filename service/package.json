@@ -10,8 +10,9 @@
     "typecheck": "tsc --noEmit",
     "outline": "tsx --env-file=../.env src/cli/outline.ts",
     "setup": "tsx --env-file=../.env src/cli/setup.ts",
-    "replay": "tsx --env-file=../.env src/cli/replay.ts",
-    "serve": "tsx --env-file=../.env src/cli/serve.ts"
+    "serve": "tsx --env-file=../.env src/cli/serve.ts",
+    "demo": "tsx --env-file-if-exists=../.env src/cli/serve.ts ../demo-data 8787 --public",
+    "demo-prepare": "tsx --env-file=../.env src/cli/demo-prepare.ts"
   },
   "dependencies": {
     "@meta-sam/parser": "0.1.0",

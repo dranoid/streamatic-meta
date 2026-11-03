@@ -1,19 +1,20 @@
 import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
-import { createServer, type Server } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CameraFolder } from '../src/cameras/camera-folder.js';
 import { ClipFolder } from '../src/follow/clips.js';
 import { Follows } from '../src/follow/follows.js';
 import { ClipThings } from '../src/follow/things.js';
 import { EventStore } from '../src/events/store.js';
 import type { Plan } from '../src/questions/answer.js';
-import { RuleStore, type NewRule } from '../src/rules/rule-store.js';
+import { Trials } from '../src/backend/trials.js';
+import { BackendError, type RuleBackend } from '../src/backend/client.js';
+import { RuleStore } from '../src/rules/rule-store.js';
 import type { CameraSetup } from '../src/setup/camera-setup.js';
-import type { RuleReading } from '../src/spark/rule-reader.js';
 import { appHandler } from '../src/web/server.js';
 
 const AT = Date.UTC(2026, 9, 28, 20, 24, 15);
@@ -44,16 +45,20 @@ async function start({
   plan,
   setUp,
   playing,
-  reading,
   stored,
   clip,
+  backendFails,
+  connected = true,
+  spend,
 }: {
   plan?: Plan;
   setUp?: () => Promise<CameraSetup>;
   playing?: { at: number | null; picture: Uint8Array | null };
-  reading?: RuleReading;
   stored?: boolean;
   clip?: boolean;
+  spend?: (request: IncomingMessage, response: ServerResponse, kind: 'look' | 'track') => Promise<string | null>;
+  backendFails?: BackendError;
+  connected?: boolean;
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'app-'));
   const web = join(root, 'web');
@@ -61,7 +66,6 @@ async function start({
   const camera = join(root, 'cameras', 'table-parlour');
   await Promise.all([mkdir(web), mkdir(media), mkdir(camera, { recursive: true })]);
   if (playing) await mkdir(join(camera, 'episode'));
-  if (stored) await mkdir(join(camera, 'stored'));
   if (clip) {
     await mkdir(join(root, 'clips', 'yard'), { recursive: true });
     execFileSync('ffmpeg', ['-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc=size=64x36:rate=10:duration=2', '-pix_fmt', 'yuv420p', join(root, 'clips', 'yard', 'clip.mp4')]);
@@ -80,6 +84,9 @@ async function start({
         site: 'a family home',
         baseWords: ['door'],
         pictures: { day: 'day.jpg', night: 'night.jpg' },
+        ...(connected
+          ? { backend: { deviceId: 'device-1', recorded: stored ? { from: new Date(AT - 2000).toISOString(), to: new Date(AT).toISOString() } : null } }
+          : {}),
       }),
     ),
   ]);
@@ -93,6 +100,8 @@ async function start({
     clip: null,
     outline: 'M1 1Z',
     reference: 'M2 2Z',
+    backendId: null,
+    recorded: false,
   });
   events.addFrames(eventId, [
     { at: AT - 1000, file: 'before.jpg', outline: null },
@@ -100,8 +109,30 @@ async function start({
   ]);
   const questions: string[] = [];
   const setUpCalls: string[][] = [];
-  const ruleReads: Array<{ sentence: string; questions: string[] }> = [];
-  const tried: Array<{ camera: string; rule: NewRule }> = [];
+  const backendCalls: Array<{ call: string; args: unknown[] }> = [];
+  let nextRule = 1;
+  const backend: RuleBackend = {
+    parse: async (request) => {
+      backendCalls.push({ call: 'parse', args: [request] });
+      if (request.includes('forbidden')) return { supported: false, refusal: 'That cannot be seen from a camera.', rewrites: ['Tell me if a door opens.'] };
+      return { supported: true, name: 'Door', readsAs: 'Tell me if the door opens.', subject: 'a door', severity: 'medium', schedule: null, condition: { question: 'Is the door opening?', verdict: true, framesPerAnswer: 'several', sampleGapSeconds: 3 } };
+    },
+    probe: async (deviceId, request) => {
+      backendCalls.push({ call: 'probe', args: [deviceId, request] });
+      return { answerableCount: 1, warns: false, cameras: [] };
+    },
+    createRule: async (deviceId, request, draft) => {
+      backendCalls.push({ call: 'createRule', args: [deviceId, request, draft] });
+      if (backendFails) throw backendFails;
+      return `backend-${nextRule++}`;
+    },
+    deleteRule: async (id) => void backendCalls.push({ call: 'deleteRule', args: [id] }),
+    alerts: async () => [],
+    pictureUrls: async () => ({}),
+    estimateQuestion: async (ask) => (backendCalls.push({ call: 'estimateQuestion', args: [ask] }), { costMicroUsd: 42, reason: null }),
+    startQuestion: async (ask, asked, cost) => (backendCalls.push({ call: 'startQuestion', args: [ask, asked, cost] }), 'replay-1'),
+    replay: async () => ({ id: 'replay-1', status: 'completed', counted: { coverage: { framesRead: 3, framesRecorded: 3 } }, stretches: [{ startIso: new Date(AT).toISOString(), endIso: new Date(AT + 5000).toISOString(), frameUrl: 'https://pictures.test/1' }] }),
+  };
   const followCalls = { lists: 0, tracks: [] as Array<{ frame: number; target: unknown }> };
   const carBox = { left: 5, top: 5, right: 20, bottom: 20 };
   const clips = new ClipFolder(root);
@@ -113,18 +144,12 @@ async function start({
       mediaDir: media,
       webDir: web,
       planner: { plan: async (q) => (questions.push(q), plan ?? { tool: 'count', camera: null, zone: 'front door', period: 'all', hours: null }) },
-      ruleReader: {
-        read: async (sentence, asked) => (ruleReads.push({ sentence, questions: asked }), reading ?? { settledBy: 'one-picture', questions: asked }),
-      },
       guidePlanner: {
         draft: async ({ sentence, zones }) => ({ sentence, about: 'front door', zones: zones.length ? [zones[zones.length - 1]!.name] : ['door'], box: null, hours: { from: 21, to: 6 } }),
       },
-      backtests: {
-        start: async (camera, rule) => (tried.push({ camera: camera.id, rule }), 7),
-        get: (id) => (id === 7 ? { id: 7, state: 'done', checked: 3, pictures: 3, checks: 0, alerts: [] } : null),
-        summary: async (camera) => (camera.stored ? { pictures: 3, from: AT - 2000, to: AT } : null),
-        picture: async () => null,
-      },
+      backend: connected ? backend : null,
+      trials: new Trials(backend, async () => new Uint8Array([1, 2, 3])),
+      pictureSize: async () => ({ width: 1200, height: 700 }),
       setUp: async (_camera, pictures) => {
         setUpCalls.push(pictures.map((p) => `${p.label}:${new TextDecoder().decode(p.picture.bytes)}`));
         return setUp ? setUp() : setupResult;
@@ -147,6 +172,7 @@ async function start({
       timeZone: 'Africa/Lagos',
       now: () => AT + 60_000,
       playing: (id) => (playing && id === 'table-parlour' ? playing : null),
+      ...(spend ? { spend } : {}),
     }),
   );
   await new Promise<void>((done) => server!.listen(0, '127.0.0.1', done));
@@ -159,7 +185,12 @@ async function start({
     json(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const patch = (path: string, body: unknown) =>
     json(path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  return { base, eventId, questions, setUpCalls, ruleReads, tried, followCalls, json, post, patch };
+  // A rule is read by the backend, and saved only when the person says yes to the draft.
+  const saveRule = async (rule: unknown) => {
+    const draft = await post('/api/rule-drafts', rule);
+    return draft.status === 200 ? post('/api/rules', { draft: draft.body.id }) : draft;
+  };
+  return { base, eventId, questions, setUpCalls, backendCalls, followCalls, json, post, patch, saveRule };
 }
 
 describe('pages', () => {
@@ -219,7 +250,7 @@ describe('cameras', () => {
   it('lists each camera with its pictures, before setup has run', async () => {
     const { json, base } = await start();
     expect((await json('/api/cameras')).body).toEqual([
-      { id: 'table-parlour', name: 'Table parlour', site: 'a family home', baseWords: ['door'], pictures: { day: 'day.jpg', night: 'night.jpg' }, setup: null, zones: [], playing: null, stored: null },
+      { connected: true, id: 'table-parlour', name: 'Table parlour', site: 'a family home', baseWords: ['door'], pictures: { day: 'day.jpg', night: 'night.jpg' }, setup: null, zones: [], playing: null, stored: null },
     ]);
     expect(await (await fetch(`${base}/camera-pictures/table-parlour/day.jpg`)).text()).toBe('day bytes');
     expect((await fetch(`${base}/camera-pictures/table-parlour/..%2Fcamera.json`)).status).toBe(404);
@@ -269,59 +300,94 @@ const outlineRule = {
 
 describe('rules', () => {
   it("saves an outline zone under its zone's name, with the box and outline SAM drew at setup, then lists and removes it", async () => {
-    const { json, post } = await start();
+    const { json, post, saveRule, backendCalls } = await start();
     await post('/api/cameras/table-parlour/setup', {});
-    const saved = await post('/api/rules', outlineRule);
+    const saved = await saveRule(outlineRule);
     expect(saved.status).toBe(201);
     expect(saved.body).toMatchObject({
       camera: 'table-parlour',
       zones: [{ name: 'door 2', kind: 'outline', word: 'door', reference: doorBox, path: 'M869 317Z' }],
       activeHours: { from: 21, to: 6 },
+      backendRuleId: 'backend-1',
     });
     expect((await json('/api/rules?camera=table-parlour')).body.map((r: any) => r.id)).toEqual([saved.body.id]);
     expect((await json('/api/cameras')).body[0].zones.map((z: any) => [z.name, z.rules])).toEqual([['door 1', []], ['door 2', [saved.body.id]]]);
     expect((await json(`/api/rules/${saved.body.id}`, { method: 'DELETE' })).status).toBe(200);
+    expect(backendCalls.at(-1)).toEqual({ call: 'deleteRule', args: ['backend-1'] });
     expect((await json('/api/rules')).body).toEqual([]);
   });
 
-  it('refuses an outline that setup did not produce, and saves nothing', async () => {
-    const { json, post } = await start();
+  it('sends the backend the sentence with each zone’s place, read from SAM’s box', async () => {
+    const { post, backendCalls } = await start();
     await post('/api/cameras/table-parlour/setup', {});
-    const refused = await post('/api/rules', { ...outlineRule, zones: [{ ...outlineRule.zones[0], objectId: '7' }] });
+    await post('/api/rule-drafts', outlineRule);
+    expect(backendCalls.find((c) => c.call === 'parse')!.args).toEqual(['Alert me if the front door opens after 9 pm. The door 2 is on the right side of the picture.']);
+  });
+
+  it('shows the draft and saves nothing until the person says yes', async () => {
+    const { json, post, backendCalls } = await start();
+    await post('/api/cameras/table-parlour/setup', {});
+    const draft = await post('/api/rule-drafts', outlineRule);
+    expect(draft.body).toMatchObject({ supported: true, readsAs: 'Tell me if the door opens.', severalPictures: true, canAnswer: true });
+    expect(backendCalls.map((c) => c.call)).toEqual(['parse', 'probe']);
+    expect((await json('/api/rules')).body).toEqual([]);
+  });
+
+  it('carries the person’s hours into the rule the backend saves', async () => {
+    const { post, saveRule, backendCalls } = await start();
+    await post('/api/cameras/table-parlour/setup', {});
+    await saveRule(outlineRule);
+    const [, , sent] = backendCalls.find((c) => c.call === 'createRule')!.args as [string, string, { schedule: unknown }];
+    expect(sent.schedule).toEqual({ type: 'time_windows', windows: [{ days: [0, 1, 2, 3, 4, 5, 6], startTime: '21:00', endTime: '06:00' }] });
+  });
+
+  it('keeps nothing in the app when the backend refuses the rule, and shows the backend’s words', async () => {
+    const { json, post, saveRule } = await start({ backendFails: new BackendError(400, 'That camera is not in this company') });
+    await post('/api/cameras/table-parlour/setup', {});
+    const refused = await saveRule(outlineRule);
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toBe('That camera is not in this company');
+    expect((await json('/api/rules')).body).toEqual([]);
+  });
+
+  it('shows the parse’s refusal and rewrites, and offers nothing to save', async () => {
+    const { post } = await start();
+    await post('/api/cameras/table-parlour/setup', {});
+    const refused = await post('/api/rule-drafts', { ...outlineRule, sentence: 'Something forbidden' });
+    expect(refused.body).toMatchObject({ id: null, supported: false, refusal: 'That cannot be seen from a camera.', rewrites: ['Tell me if a door opens.'] });
+  });
+
+  it('refuses a draft that has lapsed', async () => {
+    const { post } = await start();
+    const refused = await post('/api/rules', { draft: 'no-such-draft' });
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toMatch(/lapsed/);
+  });
+
+  it('refuses a rule on a camera that is not connected to Streamatic', async () => {
+    const { post } = await start({ connected: false });
+    await post('/api/cameras/table-parlour/setup', {});
+    const refused = await post('/api/rule-drafts', outlineRule);
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toMatch(/not connected/);
+  });
+
+  it('refuses an outline that setup did not produce, and saves nothing', async () => {
+    const { json, post, saveRule } = await start();
+    await post('/api/cameras/table-parlour/setup', {});
+    const refused = await saveRule({ ...outlineRule, zones: [{ ...outlineRule.zones[0], objectId: '7' }] });
     expect(refused.status).toBe(400);
     expect(refused.body.error).toMatch(/outline/i);
     expect((await json('/api/rules')).body).toEqual([]);
   });
 
   it('saves a drawn box with its question, and refuses one without a question', async () => {
-    const { post } = await start();
+    const { post, saveRule } = await start();
     const box = { kind: 'box', name: 'doorway', box: { left: 10, top: 20, right: 30, bottom: 40 } };
-    expect((await post('/api/rules', { ...outlineRule, zones: [box] })).status).toBe(400);
-    const saved = await post('/api/rules', { ...outlineRule, zones: [{ ...box, question: 'Is the door open?' }] });
+    expect((await post('/api/rule-drafts', { ...outlineRule, zones: [box] })).status).toBe(400);
+    const saved = await saveRule({ ...outlineRule, zones: [{ ...box, question: 'Is the door open?' }] });
     expect(saved.status).toBe(201);
     expect(saved.body).toMatchObject({ zones: [{ kind: 'box', name: 'doorway', box: box.box, question: 'Is the door open?' }] });
-  });
-
-  it('saves what settles the rule and each box question as Spark Open read them from the sentence', async () => {
-    const reading: RuleReading = { settledBy: 'brief-change', questions: ['Is someone coming in through the door?'] };
-    const { post, ruleReads } = await start({ reading });
-    const box = { kind: 'box', name: 'doorway', box: { left: 10, top: 20, right: 30, bottom: 40 }, question: 'Is someone in the doorway?' };
-    const sentence = 'Alert me when someone comes through the front door.';
-
-    const saved = await post('/api/rules', { ...outlineRule, sentence, zones: [box] });
-
-    expect(ruleReads).toEqual([{ sentence, questions: ['Is someone in the doorway?'] }]);
-    expect(saved.body).toMatchObject({ settledBy: 'brief-change', zones: [{ name: 'doorway', question: 'Is someone coming in through the door?' }] });
-  });
-
-  it('saves a rule already read, as it was read, without asking Spark Open again', async () => {
-    const { post, ruleReads } = await start();
-    const box = { kind: 'box', name: 'doorway', box: { left: 10, top: 20, right: 30, bottom: 40 }, question: 'Is someone coming through the doorway?' };
-
-    const saved = await post('/api/rules', { ...outlineRule, zones: [box], settledBy: 'brief-change' });
-
-    expect(ruleReads).toEqual([]);
-    expect(saved.body).toMatchObject({ settledBy: 'brief-change', zones: [{ question: 'Is someone coming through the doorway?' }] });
   });
 });
 
@@ -358,36 +424,57 @@ describe('the guide', () => {
 });
 
 describe('trying a rule on stored pictures', () => {
-  it('runs the rule as it would be saved on the camera’s stored pictures, returns how it went, and saves nothing', async () => {
-    const { json, post, tried } = await start({ stored: true });
+  it('asks the backend the draft’s question at the confirmed price, shows each stretch with its picture, and saves nothing', async () => {
+    const { base, json, post, backendCalls } = await start({ stored: true });
     await post('/api/cameras/table-parlour/setup', {});
+    const draft = await post('/api/rule-drafts', outlineRule);
 
-    const started = await post('/api/backtests', outlineRule);
+    const estimate = await json(`/api/rule-drafts/${draft.body.id}/trial-estimate`);
+    expect(estimate.body).toMatchObject({ costMicroUsd: 42, reason: null, from: AT - 2000, to: AT });
 
+    const started = await post('/api/trials', { draft: draft.body.id, confirmedCostMicroUsd: 42 });
     expect(started.status).toBe(202);
-    expect(tried).toEqual([
-      { camera: 'table-parlour', rule: expect.objectContaining({ settledBy: 'one-picture', zones: [expect.objectContaining({ name: 'door 2', reference: doorBox })] }) },
-    ]);
-    expect((await json(`/api/backtests/${started.body.id}`)).body).toMatchObject({ state: 'done', pictures: 3 });
+    const [ask, asked, cost] = backendCalls.find((c) => c.call === 'startQuestion')!.args;
+    expect(ask).toMatchObject({ question: 'Is the door opening?', verdict: true, settledBy: 'brief-change', deviceId: 'device-1' });
+    expect([asked, cost]).toEqual(['Alert me if the front door opens after 9 pm.', 42]);
+
+    const view = await json(`/api/trials/${started.body.id}`);
+    expect(view.body).toEqual({ state: 'done', read: 3, total: 3, stretches: [{ from: AT, to: AT + 5000, picture: 0 }] });
+    expect(JSON.stringify(view.body)).not.toContain('pictures.test');
+    const picture = await fetch(`${base}/api/trials/${started.body.id}/pictures/0`);
+    expect(new Uint8Array(await picture.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
     expect((await json('/api/rules')).body).toEqual([]);
-    expect((await json('/api/cameras')).body[0].stored).toEqual({ pictures: 3, from: AT - 2000, to: AT });
   });
 
-  it('refuses a camera with no stored pictures, and runs nothing', async () => {
-    const { post, tried } = await start();
+  it('keeps what a finished trial found as the saved rule’s events, labelled as a recorded run', async () => {
+    const { json, post } = await start({ stored: true });
     await post('/api/cameras/table-parlour/setup', {});
+    const draft = await post('/api/rule-drafts', outlineRule);
+    const started = await post('/api/trials', { draft: draft.body.id, confirmedCostMicroUsd: 42 });
+    await json(`/api/trials/${started.body.id}`);
 
-    const refused = await post('/api/backtests', outlineRule);
+    await post('/api/rules', { draft: draft.body.id });
+
+    const kept = (await json('/api/events')).body.filter((e: any) => e.recorded);
+    expect(kept).toEqual([expect.objectContaining({ camera: 'Table parlour', zone: 'door 2', at: AT, rule: outlineRule.sentence, picture: `replay-1-${AT}.jpg` })]);
+  });
+
+  it('refuses a camera with no stored pictures, and asks nothing', async () => {
+    const { json, post, backendCalls } = await start();
+    await post('/api/cameras/table-parlour/setup', {});
+    const draft = await post('/api/rule-drafts', outlineRule);
+
+    const refused = await json(`/api/rule-drafts/${draft.body.id}/trial-estimate`);
 
     expect(refused.status).toBe(409);
-    expect(tried).toEqual([]);
+    expect(backendCalls.map((c) => c.call)).toEqual(['parse', 'probe']);
   });
 
   it('saves a rule on two zones of the same picture, each under its own name', async () => {
-    const { post } = await start();
+    const { post, saveRule } = await start();
     await post('/api/cameras/table-parlour/setup', {});
     const both = [outlineRule.zones[0], { kind: 'outline', word: 'door', label: 'night', objectId: '0' }];
-    const saved = await post('/api/rules', { ...outlineRule, sentence: 'Alert me if both doors are open.', zones: both });
+    const saved = await saveRule({ ...outlineRule, sentence: 'Alert me if both doors are open.', zones: both });
     expect(saved.status).toBe(201);
     expect(saved.body.zones.map((z: any) => z.name)).toEqual(['door 2', 'door 1']);
   });
@@ -396,7 +483,7 @@ describe('trying a rule on stored pictures', () => {
     const { post } = await start();
     await post('/api/cameras/table-parlour/setup', {});
     const box = { kind: 'box', name: 'Door 1', box: { left: 10, top: 20, right: 30, bottom: 40 }, question: 'Is the door open?' };
-    const refused = await post('/api/rules', { ...outlineRule, zones: [box] });
+    const refused = await post('/api/rule-drafts', { ...outlineRule, zones: [box] });
     expect(refused.status).toBe(409);
     expect(refused.body.error).toContain('door 1');
   });
@@ -406,10 +493,10 @@ describe('zone names', () => {
   const frontDoor = { word: 'door', label: 'night', objectId: '1' };
 
   it('renames a zone, and the rules and events on it take the new name while the other door keeps its own', async () => {
-    const { json, post, patch, eventId } = await start();
+    const { json, post, patch, eventId, saveRule } = await start();
     await post('/api/cameras/table-parlour/setup', {});
-    const onFront = (await post('/api/rules', outlineRule)).body.id;
-    const onOther = (await post('/api/rules', { ...outlineRule, zones: [{ kind: 'outline', word: 'door', label: 'day', objectId: '0' }] })).body.id;
+    const onFront = (await saveRule(outlineRule)).body.id;
+    const onOther = (await saveRule({ ...outlineRule, zones: [{ kind: 'outline', word: 'door', label: 'day', objectId: '0' }] })).body.id;
 
     expect((await patch('/api/cameras/table-parlour/zones', { ...frontDoor, name: 'front door' })).body).toMatchObject({ rules: 1, events: 0 });
     const renamed = await patch('/api/cameras/table-parlour/zones', { ...frontDoor, name: 'Shop door' });
@@ -473,6 +560,28 @@ describe('following a thing in a clip', () => {
     const clicked = (await (await post(base, '/api/clips/yard/frames/3/things', { point: { x: 30, y: 30 } })).json()) as { things: Array<{ id: string; name: string }>; selected: string };
     expect(clicked.things.find((t) => t.id === clicked.selected)!.name).toBe('bag');
     expect((await post(base, '/api/clips/yard/frames/3/things', { point: { x: 500, y: 30 } })).status).toBe(400);
+  });
+
+  it('charges only for what is new on a clip, and stops when the limit is reached', async () => {
+    const charged: string[] = [];
+    let reached: string | null = null;
+    const { base } = await start({ clip: true, spend: async (_req, _res, kind) => (reached ?? (charged.push(kind), null)) });
+    const { things } = (await (await post(base, '/api/clips/yard/frames/3/things', {})).json()) as { things: Array<{ id: string }> };
+    await post(base, '/api/clips/yard/frames/3/things', {});
+    expect(charged).toEqual(['look']);
+    await post(base, '/api/clips/yard/frames/3/things', { word: 'bag' });
+    expect(charged).toEqual(['look', 'look']);
+    const started = (await (await post(base, '/api/clips/yard/follows', { frame: 3, thing: things[0]!.id })).json()) as { id: string };
+    expect(charged).toEqual(['look', 'look', 'track']);
+    await vi.waitFor(async () => expect(((await (await fetch(`${base}/api/clips/yard/follows/${started.id}`)).json()) as { state: string }).state).toBe('done'));
+    await post(base, '/api/clips/yard/follows', { frame: 3, thing: things[0]!.id });
+    expect(charged).toEqual(['look', 'look', 'track']);
+
+    reached = 'You have reached today’s limit.';
+    const refused = await post(base, '/api/clips/yard/frames/4/things', {});
+    expect(refused.status).toBe(429);
+    expect(((await refused.json()) as { error: string }).error).toBe(reached);
+    expect((await post(base, '/api/clips/yard/frames/3/things', {})).status).toBe(200);
   });
 
   it('follows from the box outlined on the frame, and refuses an outline that is not there', async () => {

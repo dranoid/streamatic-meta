@@ -5,9 +5,22 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import sharp from 'sharp';
 import { z } from 'zod';
-import { pictureFrame } from '../rules/frame.js';
-import type { Frame } from '../rules/zone-rule.js';
-import type { PictureSource } from './live-camera.js';
+import type { Picture } from '../sam/client.js';
+
+// One recorded picture and when it was taken.
+export interface Frame {
+  at: number;
+  width: number;
+  height: number;
+  picture: Picture;
+}
+
+const toFrame = ({ bytes, at, width, height }: { bytes: Uint8Array; at: number; width: number; height: number }): Frame => ({
+  at,
+  width,
+  height,
+  picture: { bytes, mimeType: 'image/jpeg' },
+});
 
 const run = promisify(execFile);
 const VIDEO = /\.(mp4|mov|m4v)$/i;
@@ -36,7 +49,7 @@ async function readBatchFolder(dir: string): Promise<Frame[]> {
   if (listed === null) return [];
   const { frames } = manifest.parse(JSON.parse(listed));
   return Promise.all(
-    frames.map(async (f) => pictureFrame({ bytes: new Uint8Array(await readFile(join(dir, f.file))), at: f.capturedAt, width: f.width, height: f.height })),
+    frames.map(async (f) => toFrame({ bytes: new Uint8Array(await readFile(join(dir, f.file))), at: f.capturedAt, width: f.width, height: f.height })),
   );
 }
 
@@ -49,7 +62,7 @@ async function readVideo(path: string, startedAt: number): Promise<Frame[]> {
       files.map(async (file, i) => {
         const bytes = new Uint8Array(await readFile(join(dir, file)));
         const { width = 0, height = 0 } = await sharp(bytes).metadata();
-        return pictureFrame({ bytes, at: startedAt + (i * 1000) / PICTURES_PER_SECOND, width, height });
+        return toFrame({ bytes, at: startedAt + (i * 1000) / PICTURES_PER_SECOND, width, height });
       }),
     );
   } finally {
@@ -58,7 +71,7 @@ async function readVideo(path: string, startedAt: number): Promise<Frame[]> {
 }
 
 // Plays a recording at the speed it was taken, then again from the start after a pause; pictures keep their recorded times.
-export class EpisodeLoop implements PictureSource {
+export class EpisodeLoop {
   readonly #frames: Frame[];
   readonly #now: () => number;
   readonly #pauseMs: number;

@@ -12,3 +12,8 @@ pictures/
 *.png
 *.mp4
 *.db
+# The demo's own clips, pictures and alerts are public (MEVA, CC BY 4.0), so a clone runs on its own.
+!demo-data/**
+demo-data/limits.json
+demo-data/clips/*/frames/
+demo-data/events.db

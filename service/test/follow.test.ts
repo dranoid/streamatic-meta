@@ -160,6 +160,42 @@ describe('Follows', () => {
     expect(sam.track.mock.calls[0]!.slice(0, 4)).toEqual(['file-1', { width: 64, height: 36 }, 3, { box }]);
   });
 
+  it('tracks a long clip only around the selection, and reports frames by their number in the clip', async () => {
+    const { root, clips } = await makeClip();
+    const uploaded: number[] = [];
+    const asked: number[] = [];
+    const follows = new Follows(
+      root,
+      clips,
+      {
+        upload: async (video) => {
+          const file = join(root, 'stretch.mp4');
+          await writeFile(file, video);
+          uploaded.push(Number(execFileSync('ffprobe', ['-v', 'error', '-count_packets', '-select_streams', 'v:0', '-show_entries', 'stream=nb_read_packets', '-of', 'csv=p=0', file]).toString().trim()));
+          return 'file-1';
+        },
+        track: async (_file, _size, frame) => (asked.push(frame), [{ frame, box, path: 'M0 0Z' }]),
+      },
+      3,
+    );
+    const id = await follows.start('yard', 10, { name: 'car', box });
+    await vi.waitFor(async () => expect((await follows.get('yard', id))?.state).toBe('done'));
+    expect(uploaded).toEqual([7]);
+    expect(asked).toEqual([3]);
+    const job = await follows.get('yard', id);
+    expect(job?.state === 'done' && job.follow.frames.map((f) => f.frame)).toEqual([10]);
+    expect(job?.state === 'done' && job.follow.spans).toEqual([{ from: 10, to: 10 }]);
+  });
+
+  it('says whether a selection is kept, so asking again need not be charged', async () => {
+    const { root, clips } = await makeClip();
+    const follows = new Follows(root, clips, { upload: async () => 'file-1', track: async (_f, _s, frame) => [{ frame, box, path: 'M0 0Z' }] });
+    expect(await follows.isKept('yard', 5, box)).toBe(false);
+    const id = await follows.start('yard', 5, { name: 'car', box });
+    await vi.waitFor(async () => expect((await follows.get('yard', id))?.state).toBe('done'));
+    expect(await follows.isKept('yard', 5, box)).toBe(true);
+  });
+
   it('does not pay twice for the same selection, and keeps the result across a restart', async () => {
     const { follows, sam, root, clips } = await run(vi.fn(async () => [{ frame: 3, box, path: 'M1 1Z' }]));
     const id = await follows.start('yard', 3, thing);

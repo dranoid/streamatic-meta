@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -43,6 +44,20 @@ export class ClipFolder {
     const clip = { id, name, width: stream.width, height: stream.height, fps: over! / (under ?? 1), frames: Number(stream.nb_read_packets), video: path };
     this.#read.set(id, clip);
     return clip;
+  }
+
+  // The frames from one number to another as a video of their own, cut by frame number so SAM's count lines up with the clip's.
+  async stretch(id: string, from: number, to: number): Promise<Uint8Array | null> {
+    const clip = await this.get(id);
+    if (!clip) return null;
+    const dir = await mkdtemp(join(tmpdir(), 'streamatic-stretch-'));
+    try {
+      const file = join(dir, 'stretch.mp4');
+      await run('ffmpeg', ['-v', 'error', '-i', clip.video, '-vf', `select=between(n\\,${from}\\,${to}),setpts=N/FRAME_RATE/TB`, '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', file]);
+      return new Uint8Array(await readFile(file));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 
   // The frame by its number in the video, which is what SAM counts, so an outline drawn on it lands where SAM saw it.

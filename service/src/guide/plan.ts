@@ -45,7 +45,7 @@ export function checkPlan(plan: GuidePlan, zones: CameraZone[], asked: string): 
     const zone = named(name);
     if (!zone) problems.push(`"${name}" is not a zone on this camera. ${known}`);
     else if (about && !within(zone.word, words(about)) && !within(zone.name, words(about))) {
-      problems.push(`The rule is about "${about}", but the ${zone.name} zone alerts only when the ${zone.word} itself changes; watch for "${about}" with a box.`);
+      problems.push(`The rule is about "${about}", but the ${zone.name} zone marks the ${zone.word} itself; mark the place where "${about}" would be with a box.`);
     }
   }
   if (new Set(plan.zones.map((n) => n.trim().toLowerCase())).size !== plan.zones.length) problems.push('A zone is named twice.');

@@ -4,6 +4,7 @@ import { ArrowRight, BellRing, Loader2, MessageSquareText, Sparkles } from 'luci
 import { PageHeader } from '@/components/layout/page-header';
 import { PictureFrame } from '@/components/picture-frame';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Link } from '@/components/ui/link';
@@ -15,7 +16,7 @@ import { clockTime, dateAndTime, sentence, shortDate } from '@/lib/time';
 const EXAMPLES = ['How many times was the front door opened after 9 pm yesterday?', 'List the events in the last 7 days.'];
 
 export function EventsPage() {
-  // Live rules add events while the page is open.
+  // Alerts copied from Streamatic add events while the page is open.
   const events = useQuery({ queryKey: ['events'], queryFn: api.events, refetchInterval: 15_000 });
 
   return (
@@ -138,6 +139,7 @@ function EventCard({ event }: { event: StoredEvent }) {
           <ArrowRight className='text-muted-foreground group-hover:text-foreground mt-0.5 size-4 shrink-0 transition-colors' />
         </div>
         <p className='text-muted-foreground line-clamp-2 text-sm'>{event.rule}</p>
+        {event.recorded && <Badge variant='muted' className='self-start'>Recorded run</Badge>}
       </div>
     </Link>
   );

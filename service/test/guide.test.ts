@@ -54,7 +54,7 @@ describe('checkPlan on what the rule is about', () => {
 
   it('refuses a zone when the rule is about something else near it', () => {
     expect(checkPlan(kekePlan, zones, kekeAsked).problems).toEqual([
-      'The rule is about "keke", but the Main gate zone alerts only when the gate itself changes; watch for "keke" with a box.',
+      'The rule is about "keke", but the Main gate zone marks the gate itself; mark the place where "keke" would be with a box.',
     ]);
   });
 

@@ -45,8 +45,10 @@ export interface Camera {
   zones: CameraZone[];
   // Set when the camera plays a recording on a loop as its pictures; at is the recorded time of the picture playing.
   playing: { at: number | null } | null;
-  // Pictures the camera took over past days, which a rule can be tried on before it is saved.
-  stored: { pictures: number; from: number; to: number } | null;
+  // Whether rules on this camera can be saved in Streamatic.
+  connected: boolean;
+  // The hours of stored pictures a rule can be tried on before it is saved.
+  stored: { from: number; to: number } | null;
 }
 
 export type Zone =
@@ -59,8 +61,9 @@ export interface SavedRule {
   sentence: string;
   zones: Zone[];
   activeHours: { from: number; to: number } | null;
-  // Read from the sentence when the rule is saved: one picture shows it, or a change between pictures does.
-  settledBy: 'one-picture' | 'change' | 'brief-change';
+  // How Streamatic read the sentence, and whether it compares pictures or decides on one.
+  readsAs: string;
+  severalPictures: boolean;
 }
 
 export type NewZone =
@@ -72,17 +75,25 @@ export interface NewRule {
   sentence: string;
   zones: NewZone[];
   activeHours: { from: number; to: number } | null;
-  // Given when the rule was already read on a trial, so it is saved as it was tried.
-  settledBy?: SavedRule['settledBy'];
+}
+
+// What Streamatic made of a sentence. Nothing is saved until the person says yes to it.
+export type RuleReading =
+  | { id: string; supported: true; request: string; name: string; readsAs: string; question: string; severalPictures: boolean; canAnswer: boolean }
+  | { id: null; supported: false; request: string; refusal: string | null; rewrites: string[] };
+
+export interface TrialEstimate {
+  costMicroUsd: number | null;
+  reason: string | null;
+  from: number;
+  to: number;
 }
 
 export interface Trial {
-  id: number;
   state: 'running' | 'done' | 'failed';
-  pictures: number;
-  checked: number;
-  checks: number;
-  alerts: Array<{ at: number; pictureAt: number | null; zones: string[]; outlines: string[] }>;
+  read: number;
+  total: number;
+  stretches: Array<{ from: number; to: number; picture: number | null }>;
 }
 
 export interface GuidePlan {
@@ -106,6 +117,8 @@ export type PlanResult =
 
 export interface StoredEvent {
   id: number;
+  // Found by running the rule over stored pictures rather than raised as they arrived.
+  recorded: boolean;
   camera: string;
   zone: string;
   rule: string;
@@ -171,6 +184,76 @@ export interface ThingsFound {
   selected?: string;
 }
 
+export interface AppInfo {
+  // The public page: only clips, a visitor's own picture and the About page.
+  public: boolean;
+  // How far a track reaches either side of the selected frame; null when it covers the whole clip.
+  trackSeconds: number | null;
+  // What this copy of the public page can spend on; the recorded clips need neither.
+  models?: boolean;
+  rules?: boolean;
+}
+
+export interface DemoClipSummary extends Clip {
+  description: string | null;
+  rules: number;
+  alerts: number;
+}
+
+export interface DemoZone {
+  name: string;
+  paths: string[];
+}
+
+export interface DemoRule {
+  id: string;
+  kind: 'offered' | 'typed';
+  text: string;
+  name: string;
+  readsAs: string | null;
+  status: string;
+  progress: { done: number; total: number | null };
+  rewrites: string[];
+  reason: string | null;
+  canAnswer: boolean;
+  zones: DemoZone[];
+}
+
+export interface DemoClip {
+  id: string;
+  description: string | null;
+  startsAt: number;
+  lengthMs: number;
+  zones: DemoZone[];
+  suggestions: string[];
+  rules: DemoRule[];
+}
+
+export interface DemoTick {
+  rule: string;
+  armedMs: number;
+}
+
+// When a rule alerts on the clip, counted from its start: atMs is the moment it is about, shownMs when it reached the person.
+export interface DemoAlert {
+  key: string;
+  rule: string;
+  atMs: number;
+  shownMs: number;
+  delayMs: number;
+  message: string;
+  severity: string;
+  picture: string | null;
+  caption: string | null;
+}
+
+export interface OwnPictureSetup {
+  picture: string;
+  width: number;
+  height: number;
+  setup: CameraSetup;
+}
+
 export class ApiError extends Error {}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -188,10 +271,13 @@ export const api = {
   cameras: () => request<Camera[]>('/api/cameras'),
   runSetup: (camera: string) => request<CameraSetup>(`/api/cameras/${encodeURIComponent(camera)}/setup`, { method: 'POST' }),
   rules: (camera?: string) => request<SavedRule[]>(`/api/rules${camera ? `?camera=${encodeURIComponent(camera)}` : ''}`),
-  addRule: (rule: NewRule) => request<SavedRule>('/api/rules', { method: 'POST', body: JSON.stringify(rule) }),
-  startTrial: (rule: NewRule) =>
-    request<{ id: number; rule: Omit<SavedRule, 'id'> }>('/api/backtests', { method: 'POST', body: JSON.stringify(rule) }),
-  trial: (id: number) => request<Trial>(`/api/backtests/${id}`),
+  readRule: (rule: NewRule) => request<RuleReading>('/api/rule-drafts', { method: 'POST', body: JSON.stringify(rule) }),
+  addRule: (draft: string, guidePlan: GuidePlan | null) =>
+    request<SavedRule>('/api/rules', { method: 'POST', body: JSON.stringify({ draft, guidePlan }) }),
+  trialEstimate: (draft: string) => request<TrialEstimate>(`/api/rule-drafts/${encodeURIComponent(draft)}/trial-estimate`),
+  startTrial: (draft: string, confirmedCostMicroUsd: number | null) =>
+    request<{ id: string }>('/api/trials', { method: 'POST', body: JSON.stringify({ draft, confirmedCostMicroUsd }) }),
+  trial: (id: string) => request<Trial>(`/api/trials/${encodeURIComponent(id)}`),
   planRule: (camera: string, sentence: string) => request<PlanResult>('/api/guide/plans', { method: 'POST', body: JSON.stringify({ camera, sentence }) }),
   renameZone: (camera: string, zone: { word: string; label: string; objectId: string; name: string }) =>
     request<{ zones: CameraZone[]; rules: number; events: number }>(`/api/cameras/${encodeURIComponent(camera)}/zones`, {
@@ -210,6 +296,21 @@ export const api = {
   startFollow: (clip: string, frame: number, thing: string) =>
     request<{ id: string }>(`/api/clips/${encodeURIComponent(clip)}/follows`, { method: 'POST', body: JSON.stringify({ frame, thing }) }),
   followJob: (clip: string, id: string) => request<FollowJob>(`/api/clips/${encodeURIComponent(clip)}/follows/${encodeURIComponent(id)}`),
+  app: () => request<AppInfo>('/api/app'),
+  demoClips: () => request<DemoClipSummary[]>('/api/demo/clips'),
+  demoClip: (clip: string) => request<DemoClip>(`/api/demo/clips/${encodeURIComponent(clip)}`),
+  demoAlerts: (clip: string, ticks: DemoTick[]) =>
+    request<{ alerts: DemoAlert[] }>(`/api/demo/clips/${encodeURIComponent(clip)}/alerts`, { method: 'POST', body: JSON.stringify({ ticks }) }),
+  planOnClip: (clip: string, sentence: string) => request<PlanResult>(`/api/demo/clips/${encodeURIComponent(clip)}/plans`, { method: 'POST', body: JSON.stringify({ sentence }) }),
+  addToClip: (clip: string, rule: { text: string } | { plan: GuidePlan }) =>
+    request<{ id: string }>(`/api/demo/clips/${encodeURIComponent(clip)}/rules`, { method: 'POST', body: JSON.stringify(rule) }),
+  clipRule: (clip: string, id: string) => request<DemoRule>(`/api/demo/clips/${encodeURIComponent(clip)}/rules/${encodeURIComponent(id)}`),
+  setUpOwnPicture: async (file: File): Promise<OwnPictureSetup> => {
+    const response = await fetch('/api/demo/uploads', { method: 'POST', headers: { 'Content-Type': file.type }, body: file });
+    const body = (await response.json().catch(() => ({}))) as OwnPictureSetup & { error?: string };
+    if (!response.ok) throw new ApiError(body.error ?? 'The picture could not be set up. Please try again.');
+    return body;
+  },
   ask: (question: string) => request<Answer>('/api/questions', { method: 'POST', body: JSON.stringify({ question }) }),
 };
 
@@ -217,6 +318,5 @@ export const pictureUrl = (camera: string, file: string) =>
   `/camera-pictures/${encodeURIComponent(camera)}/${encodeURIComponent(file)}`;
 export const nowUrl = (camera: string, at: number) => `/api/cameras/${encodeURIComponent(camera)}/now?at=${at}`;
 export const mediaUrl = (file: string) => `/media/${encodeURIComponent(file)}`;
-export const storedUrl = (camera: string, at: number) => `/api/cameras/${encodeURIComponent(camera)}/stored/${at}`;
 export const clipVideoUrl = (clip: string) => `/clip-videos/${encodeURIComponent(clip)}`;
 export const clipPictureUrl = (clip: string, frame: number) => `/clip-pictures/${encodeURIComponent(clip)}/${frame}`;

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Crosshair, LoaderCircle, Pause, Play, Search, X } from 'lucide-react';
+import { BellRing, Crosshair, LoaderCircle, Pause, Play, Search, SkipForward, X } from 'lucide-react';
+import { DemoGuide } from '@/components/demo-guide';
 import { PageHeader } from '@/components/layout/page-header';
 import { PictureFrame, ZONE_COLOURS, type DrawnPath } from '@/components/picture-frame';
 import { Timeline } from '@/components/timeline';
@@ -9,40 +10,65 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input, Label } from '@/components/ui/input';
 import { Notice } from '@/components/ui/notice';
 import { Skeleton } from '@/components/ui/skeleton';
-import { api, clipPictureUrl, clipVideoUrl, type Clip, type Follow, type FollowJob, type Thing } from '@/lib/api';
+import { api, clipPictureUrl, clipVideoUrl, type Clip, type DemoAlert, type DemoClip, type DemoRule, type DemoZone, type Follow, type FollowJob, type Thing } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { sentence } from '@/lib/time';
 
 const POLL_MS = 1_000;
 const FOLLOW_COLOUR = '#e8c547';
+const ALERT_COLOUR = '#ef4444';
+const RULE_ZONE_COLOUR = '#538ee7';
+// How long an alert stays over the picture once it has reached the person.
+const ALERT_BANNER_MS = 6_000;
+// Going to an alert starts a little before the moment it is about, so the moment itself is seen.
+const LEAD_IN_MS = 3_000;
 
 function duration(seconds: number): string {
   const whole = Math.max(0, Math.round(seconds));
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
 }
 
-export function ClipPage({ id }: { id: string }) {
+export function ClipPage({ id, isPublic = false, trackSeconds = null }: { id: string; isPublic?: boolean; trackSeconds?: number | null }) {
   const clips = useQuery({ queryKey: ['clips'], queryFn: api.clips });
   const follows = useQuery({ queryKey: ['follows', id], queryFn: () => api.follows(id) });
+  const demo = useQuery({ queryKey: ['demo-clip', id], queryFn: () => api.demoClip(id), enabled: isPublic });
   const clip = clips.data?.find((c) => c.id === id);
 
   if (clips.isPending) return <Skeleton className='h-[32rem] rounded-xl' />;
   if (!clip) return <Notice tone='error'>This clip could not be found.</Notice>;
   return (
     <>
-      <PageHeader trail={[{ href: '/clips', label: 'Track' }]} icon={<Crosshair />} title={clip.name} description='Pause on the frame you want, then select what to track.' />
-      <ClipWatch clip={clip} follows={follows.data ?? []} />
+      <PageHeader
+        trail={[{ href: '/clips', label: isPublic ? 'Clips' : 'Search' }]}
+        icon={<Search />}
+        title={clip.name}
+        description={isPublic ? 'Tick a rule, or tell the guide what to watch, and play the clip. Pause on any frame to search for what is in it.' : 'Pause on a frame where it appears, then search for it.'}
+      />
+      <ClipWatch clip={clip} follows={follows.data ?? []} demo={demo.data ?? null} trackSeconds={trackSeconds} />
     </>
   );
 }
 
-function ClipWatch({ clip, follows }: { clip: Clip; follows: Follow[] }) {
+function ClipWatch({ clip, follows, demo, trackSeconds }: { clip: Clip; follows: Follow[]; demo: DemoClip | null; trackSeconds: number | null }) {
+  const queryClient = useQueryClient();
   const video = useRef<HTMLVideoElement>(null);
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [shownId, setShownId] = useState<string | null>(null);
   const [choosingAt, setChoosingAt] = useState<number | null>(null);
   const shown = follows.find((f) => f.id === shownId) ?? null;
+  // Each ticked rule with the moment on the clip it was ticked at.
+  const [ticks, setTicks] = useState<Record<string, number>>({});
+  const [showZones, setShowZones] = useState(false);
+  const [guideZones, setGuideZones] = useState<DemoZone[] | null>(null);
+  const tickList = useMemo(() => Object.entries(ticks).map(([rule, armedMs]) => ({ rule, armedMs })), [ticks]);
+  const alertsFound = useQuery({
+    queryKey: ['demo-alerts', clip.id, tickList],
+    queryFn: () => api.demoAlerts(clip.id, tickList),
+    enabled: demo !== null && tickList.length > 0,
+    placeholderData: (previous) => previous,
+  });
+  const alerts = useMemo(() => (tickList.length > 0 ? (alertsFound.data?.alerts ?? []) : []), [tickList, alertsFound.data]);
 
   useEffect(() => {
     if (!playing) return;
@@ -71,12 +97,25 @@ function ClipWatch({ clip, follows }: { clip: Clip; follows: Follow[] }) {
     setChoosingAt(null);
     setShownId(id);
   }, []);
+  const refreshDemo = useCallback(() => void queryClient.invalidateQueries({ queryKey: ['demo-clip', clip.id] }), [queryClient, clip.id]);
+  const nowMs = time * 1000;
+  const reached = alerts.filter((a) => a.shownMs <= nowMs).sort((a, b) => b.shownMs - a.shownMs);
+  const banner = reached.find((a) => nowMs - a.shownMs < ALERT_BANNER_MS) ?? null;
+  const nextAlert = alerts.filter((a) => a.shownMs > nowMs).sort((a, b) => a.atMs - b.atMs)[0] ?? null;
+  const rulesById = new Map(demo?.rules.map((r) => [r.id, r]));
+  const goToAlert = (alert: DemoAlert) => seek(Math.max(0, alert.atMs - LEAD_IN_MS) / 1000);
+  const overlays: Array<{ key: string; d: string; colour: string; strong?: boolean }> = [
+    ...(showZones ? (demo?.zones ?? []).flatMap((z, i) => z.paths.map((d, j) => ({ key: `zone-${i}-${j}`, d, colour: ZONE_COLOURS[i % ZONE_COLOURS.length]! }))) : []),
+    ...(demo?.rules ?? []).filter((r) => ticks[r.id] !== undefined).flatMap((r) => r.zones.flatMap((z, i) => z.paths.map((d, j) => ({ key: `${r.id}-${i}-${j}`, d, colour: RULE_ZONE_COLOUR })))),
+    ...(guideZones ?? []).flatMap((z, i) => z.paths.map((d, j) => ({ key: `guide-${i}-${j}`, d, colour: FOLLOW_COLOUR, strong: true }))),
+  ];
 
   return (
     <div className='grid gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]'>
+      <div className='min-w-0 space-y-6'>
       <Card className='min-w-0'>
         <CardContent className='space-y-4'>
-          <div className={cn('relative aspect-video overflow-hidden rounded-lg bg-black', choosingAt !== null && 'hidden')}>
+          <div className={cn('relative aspect-video overflow-hidden rounded-lg bg-black', choosingAt !== null && 'hidden', banner && 'ring-destructive ring-4')}>
             <video
               ref={video}
               src={clipVideoUrl(clip.id)}
@@ -91,6 +130,19 @@ function ClipWatch({ clip, follows }: { clip: Clip; follows: Follow[] }) {
               className='absolute inset-0 h-full w-full object-contain'
               aria-label={clip.name}
             />
+            {overlays.length > 0 && (
+              <svg viewBox={`0 0 ${clip.width} ${clip.height}`} preserveAspectRatio='xMidYMid meet' className='pointer-events-none absolute inset-0 h-full w-full' aria-hidden>
+                {overlays.map((o) => (
+                  <path key={o.key} d={o.d} fillRule='evenodd' fill={o.colour} fillOpacity={o.strong ? 0.35 : 0.2} stroke={o.colour} strokeWidth={Math.max(2, clip.width / 360)} strokeLinejoin='round' />
+                ))}
+              </svg>
+            )}
+            {banner && (
+              <div role='status' className='bg-destructive absolute inset-x-3 top-3 flex items-start gap-2 rounded-md px-3 py-2 text-sm font-medium text-white shadow'>
+                <BellRing className='mt-0.5 size-4 shrink-0' />
+                <span>{ruleLabel(rulesById.get(banner.rule))}</span>
+              </div>
+            )}
             {here && (
               <svg viewBox={`0 0 ${clip.width} ${clip.height}`} preserveAspectRatio='xMidYMid meet' className='pointer-events-none absolute inset-0 h-full w-full' aria-hidden>
                 <path d={here.path} fillRule='evenodd' fill={FOLLOW_COLOUR} fillOpacity={0.3} stroke={FOLLOW_COLOUR} strokeWidth={Math.max(2, clip.width / 360)} strokeLinejoin='round' />
@@ -103,16 +155,30 @@ function ClipWatch({ clip, follows }: { clip: Clip; follows: Follow[] }) {
           ) : (
             <>
               <Timeline length={length * 1000} play={time * 1000} onSeek={(ms) => seek(ms / 1000)} label={(ms) => duration(ms / 1000)}>
-                {(at) =>
-                  shown && (
-                    <div className='bg-muted/60 relative h-2 overflow-hidden rounded-full' role='img' aria-label={`When the ${shown.name} was in view`}>
-                      {shown.spans.map((s) => {
-                        const from = at((s.from / clip.fps) * 1000);
-                        return <span key={s.from} className='absolute inset-y-0 rounded-full' style={{ left: `${from}%`, width: `${Math.max(at(((s.to + 1) / clip.fps) * 1000) - from, 0.5)}%`, background: FOLLOW_COLOUR }} />;
-                      })}
-                    </div>
-                  )
-                }
+                {(at) => (
+                  <>
+                    {alerts.length > 0 && (
+                      <div className='relative h-4' role='img' aria-label={`${alerts.length} alerts on this clip`}>
+                        {alerts.map((a) => (
+                          <span
+                            key={`${a.rule}-${a.key}`}
+                            title={`${duration(a.atMs / 1000)}: ${ruleLabel(rulesById.get(a.rule))}`}
+                            className='absolute top-1/2 size-2.5 -translate-x-1/2 -translate-y-1/2 rotate-45'
+                            style={{ left: `${at(a.atMs)}%`, background: ALERT_COLOUR, opacity: a.shownMs <= nowMs ? 1 : 0.5 }}
+                          />
+                        ))}
+                      </div>
+                    )}
+                    {shown && (
+                      <div className='bg-muted/60 relative h-2 overflow-hidden rounded-full' role='img' aria-label={`When the ${shown.name} was in view`}>
+                        {shown.spans.map((s) => {
+                          const from = at((s.from / clip.fps) * 1000);
+                          return <span key={s.from} className='absolute inset-y-0 rounded-full' style={{ left: `${from}%`, width: `${Math.max(at(((s.to + 1) / clip.fps) * 1000) - from, 0.5)}%`, background: FOLLOW_COLOUR }} />;
+                        })}
+                      </div>
+                    )}
+                  </>
+                )}
               </Timeline>
               <div className='flex flex-wrap items-center gap-2'>
                 <Button
@@ -125,26 +191,68 @@ function ClipWatch({ clip, follows }: { clip: Clip; follows: Follow[] }) {
                   {playing ? 'Pause' : 'Play'}
                 </Button>
                 <Button size='sm' onClick={startChoosing}>
-                  <Crosshair />
-                  Track something
+                  <Search />
+                  Search this frame
                 </Button>
+                {nextAlert && (
+                  <Button size='sm' variant='outline' onClick={() => goToAlert(nextAlert)}>
+                    <SkipForward />
+                    Go to the next alert
+                  </Button>
+                )}
+                {demo && demo.zones.length > 0 && (
+                  <Button size='sm' variant='outline' aria-pressed={showZones} onClick={() => setShowZones((v) => !v)}>
+                    {showZones ? 'Hide what setup outlined' : 'Show what setup outlined'}
+                  </Button>
+                )}
               </div>
+              {trackSeconds !== null && <p className='text-muted-foreground text-xs'>Pause where it appears and search for it. Streamatic then tracks it from {trackSeconds} seconds before that frame to {trackSeconds} seconds after it.</p>}
             </>
           )}
         </CardContent>
       </Card>
+      {demo && (
+          <DemoGuide
+            clip={demo}
+            added={(rule) => ticks[rule] !== undefined}
+            onShowZones={setGuideZones}
+            onTyped={refreshDemo}
+            onAdd={(rule) => {
+              setTicks((all) => ({ ...all, [rule]: 0 }));
+              seek(0);
+              void video.current?.play();
+            }}
+          />
+      )}
+      </div>
 
-      <aside className='min-w-0'>
+      <aside className='min-w-0 space-y-4'>
+        {demo && (
+          <>
+            <RulesCard
+              rules={demo.rules}
+              ticks={ticks}
+              onToggle={(rule, on) =>
+                setTicks((all) => {
+                  const { [rule.id]: _gone, ...rest } = all;
+                  // A typed rule runs from the clip's start; an offered one from the moment it is ticked, as a newly saved rule does.
+                  return on ? { ...rest, [rule.id]: rule.kind === 'typed' ? 0 : nowMs } : rest;
+                })
+              }
+            />
+            <AlertsCard alerts={reached} rules={rulesById} ticking={tickList.length > 0} next={nextAlert} onGoTo={goToAlert} />
+          </>
+        )}
         <Card>
           <CardHeader>
             <div>
-              <CardTitle>Tracked in this clip</CardTitle>
+              <CardTitle>Found in this clip</CardTitle>
               <CardDescription>Select one to see it in the clip.</CardDescription>
             </div>
           </CardHeader>
           <CardContent>
             {follows.length === 0 ? (
-              <p className='text-muted-foreground text-sm'>Nothing has been tracked in this clip yet.</p>
+              <p className='text-muted-foreground text-sm'>Nothing has been searched for in this clip yet.</p>
             ) : (
               <ul className='space-y-2'>
                 {follows.map((f) => (
@@ -174,6 +282,70 @@ function ClipWatch({ clip, follows }: { clip: Clip; follows: Follow[] }) {
         </Card>
       </aside>
     </div>
+  );
+}
+
+const ruleLabel = (rule: DemoRule | undefined) => (!rule ? 'Alert' : rule.kind === 'typed' ? rule.text : rule.name);
+
+function RulesCard({ rules, ticks, onToggle }: { rules: DemoRule[]; ticks: Record<string, number>; onToggle: (rule: DemoRule, on: boolean) => void }) {
+  const usable = rules.filter((r) => r.status === 'ready');
+  return (
+    <Card>
+      <CardHeader>
+        <div>
+          <CardTitle>Rules</CardTitle>
+          <CardDescription>Tick a rule and play. It watches from the moment it is ticked, as a newly saved rule does.</CardDescription>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <ul className='space-y-2'>
+          {usable.map((rule) => (
+            <li key={rule.id}>
+              <label className='hover:bg-accent flex cursor-pointer items-start gap-2.5 rounded-lg border p-3 text-sm transition-colors'>
+                <input type='checkbox' className='accent-primary mt-0.5 size-4' checked={ticks[rule.id] !== undefined} onChange={(e) => onToggle(rule, e.target.checked)} />
+                <span className='min-w-0'>
+                  <span className='font-medium'>{rule.kind === 'typed' ? rule.text : rule.name}</span>
+                  {rule.kind === 'typed' && <span className='text-muted-foreground block text-xs'>Your rule. It runs from the start of the clip.</span>}
+                  {rule.readsAs && <span className='text-muted-foreground mt-0.5 block text-xs'>Reads as: {rule.readsAs}</span>}
+                </span>
+              </label>
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  );
+}
+
+function AlertsCard({ alerts, rules, ticking, next, onGoTo }: { alerts: DemoAlert[]; rules: Map<string, DemoRule>; ticking: boolean; next: DemoAlert | null; onGoTo: (alert: DemoAlert) => void }) {
+  return (
+    <Card>
+      <CardHeader>
+        <div>
+          <CardTitle>Alerts</CardTitle>
+          <CardDescription>What Streamatic’s rules really raised on this clip, each when it would have reached you.</CardDescription>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {alerts.length === 0 && (
+          <p className='text-muted-foreground text-sm'>{!ticking ? 'Tick a rule to see its alerts.' : next ? `Nothing yet. The next alert reaches you at ${duration(next.shownMs / 1000)}.` : 'This rule raises nothing from here on. Tick it earlier in the clip, or try another.'}</p>
+        )}
+        <ul className='space-y-3'>
+          {alerts.map((a) => (
+            <li key={`${a.rule}-${a.key}`}>
+              <button type='button' onClick={() => onGoTo(a)} className='hover:bg-accent w-full rounded-lg border p-2 text-left transition-colors'>
+                {a.picture && <img src={a.picture} alt={a.caption ?? 'The picture this alert carries'} className='mb-2 aspect-video w-full rounded object-cover' loading='lazy' />}
+                <span className='block text-sm font-medium'>{ruleLabel(rules.get(a.rule))}</span>
+                {a.caption && <span className='text-muted-foreground mt-1 line-clamp-2 text-xs'>{a.caption}</span>}
+                <span className='text-muted-foreground mt-1 block text-xs'>
+                  Happened at {duration(a.atMs / 1000)}. It would have reached you {Math.round(a.delayMs / 1000)} seconds later.
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -299,13 +471,13 @@ function Choosing({ clip, frame, onCancel, onFollowed }: { clip: Clip; frame: nu
             </p>
           ) : (
             <p className='text-muted-foreground text-sm'>
-              {things.length === 0 ? 'Nothing was outlined on this frame.' : 'Select an outline to track.'} If what you want is not outlined, search for it or select it on the picture.
+              {things.length === 0 ? 'Nothing was outlined on this frame.' : 'This is what Streamatic found on this frame. Select an outline to track it.'} If what you want is not outlined, type it or select it on the picture.
             </p>
           )}
           <form onSubmit={onSearch} className='flex flex-wrap items-end gap-2'>
             <Label className='min-w-48 flex-1 flex-col items-start gap-1.5'>
-              Search for something else
-              <Input value={word} maxLength={60} onChange={(e) => setWord(e.target.value)} placeholder='For example, red car' />
+              Search for it
+              <Input value={word} maxLength={60} onChange={(e) => setWord(e.target.value)} placeholder='For example, red car, or a bag on someone’s back' />
             </Label>
             <Button type='submit' variant='outline' disabled={!word.trim() || search.isPending}>
               {search.isPending ? <LoaderCircle className='animate-spin' /> : <Search />}
@@ -332,7 +504,7 @@ function Choosing({ clip, frame, onCancel, onFollowed }: { clip: Clip; frame: nu
               }}
             >
               <Crosshair />
-              {selectedThing ? `Track the ${selectedThing.name}` : 'Select something to track'}
+              {selectedThing ? `Track the ${selectedThing.name} through the clip` : 'Select what to track'}
             </Button>
             <Button size='sm' variant='outline' onClick={onCancel}>
               <X />

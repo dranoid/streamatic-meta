@@ -1,7 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { boxOverlap } from '../rules/zone-rule.js';
-import type { Box, Outline } from '../sam/outlines.js';
+import { boxOverlap, type Box, type Outline } from '../sam/outlines.js';
 
 export interface Thing {
   id: string;

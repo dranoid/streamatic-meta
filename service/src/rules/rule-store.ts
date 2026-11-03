@@ -1,26 +1,29 @@
 import { DatabaseSync } from 'node:sqlite';
-import type { Zone, ZoneRule } from './zone-rule.js';
+import type { Box } from '../sam/outlines.js';
 
-// What settles a rule's answer: one picture of a state that lasts, a change between pictures 10 s apart, or a change
-// over within moments, which pictures 3 s apart catch. Carried over from Streamatic's existing rules.
-export const SETTLED_BY = ['one-picture', 'change', 'brief-change'] as const;
-export type SettledBy = (typeof SETTLED_BY)[number];
+export type Zone =
+  | { name: string; kind: 'outline'; word: string; reference: Box; path: string }
+  | { name: string; kind: 'box'; box: Box; question: string };
 
-const PICTURES: Record<SettledBy, Pick<ZoneRule, 'samples' | 'sampleGapMs'>> = {
-  'one-picture': { samples: 1, sampleGapMs: 0 },
-  change: { samples: 3, sampleGapMs: 10_000 },
-  'brief-change': { samples: 3, sampleGapMs: 3_000 },
-};
+export const zoneBox = (zone: Zone): Box => (zone.kind === 'outline' ? zone.reference : zone.box);
 
-// After an alert, a rule stays quiet for 5 minutes.
-const COOLDOWN_MS = 5 * 60_000;
+// The zone as an SVG path in picture pixels, for drawing it on an alert.
+export function zonePath(zone: Zone): string {
+  if (zone.kind === 'outline') return zone.path;
+  const { left, top, right, bottom } = zone.box;
+  return `M${left} ${top}H${right}V${bottom}H${left}Z`;
+}
 
 export interface NewRule {
   camera: string;
   sentence: string;
   zones: Zone[];
   activeHours: { from: number; to: number } | null;
-  settledBy: SettledBy;
+  // The rule itself lives in the backend, which answers it; these say which it is and how it reads.
+  backendRuleId: string;
+  readsAs: string;
+  severalPictures: boolean;
+  guidePlan: unknown;
 }
 
 export interface SavedRule extends NewRule {
@@ -34,7 +37,10 @@ interface Row {
   zones: string;
   active_from: number | null;
   active_to: number | null;
-  settled_by: SettledBy;
+  backend_rule_id: string;
+  reads_as: string;
+  several_pictures: number;
+  guide_plan: string | null;
 }
 
 export class RuleStore {
@@ -49,14 +55,30 @@ export class RuleStore {
       zones TEXT NOT NULL,
       active_from INTEGER,
       active_to INTEGER,
-      settled_by TEXT NOT NULL
+      backend_rule_id TEXT NOT NULL UNIQUE,
+      reads_as TEXT NOT NULL,
+      several_pictures INTEGER NOT NULL,
+      guide_plan TEXT
     )`);
   }
 
   add(rule: NewRule): number {
     const result = this.#db
-      .prepare('INSERT INTO rules (camera, sentence, zones, active_from, active_to, settled_by) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(rule.camera, rule.sentence, JSON.stringify(rule.zones), rule.activeHours?.from ?? null, rule.activeHours?.to ?? null, rule.settledBy);
+      .prepare(
+        `INSERT INTO rules (camera, sentence, zones, active_from, active_to, backend_rule_id, reads_as, several_pictures, guide_plan)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        rule.camera,
+        rule.sentence,
+        JSON.stringify(rule.zones),
+        rule.activeHours?.from ?? null,
+        rule.activeHours?.to ?? null,
+        rule.backendRuleId,
+        rule.readsAs,
+        rule.severalPictures ? 1 : 0,
+        rule.guidePlan === null ? null : JSON.stringify(rule.guidePlan),
+      );
     return Number(result.lastInsertRowid);
   }
 
@@ -90,16 +112,9 @@ function toRule(row: Row): SavedRule {
     sentence: row.sentence,
     zones: JSON.parse(row.zones) as Zone[],
     activeHours: row.active_from === null || row.active_to === null ? null : { from: row.active_from, to: row.active_to },
-    settledBy: row.settled_by,
-  };
-}
-
-export function zoneRule(saved: SavedRule): ZoneRule {
-  return {
-    sentence: saved.sentence,
-    zones: saved.zones,
-    ...(saved.activeHours === null ? {} : { activeHours: saved.activeHours }),
-    ...PICTURES[saved.settledBy],
-    cooldownMs: COOLDOWN_MS,
+    backendRuleId: row.backend_rule_id,
+    readsAs: row.reads_as,
+    severalPictures: row.several_pictures === 1,
+    guidePlan: row.guide_plan === null ? null : (JSON.parse(row.guide_plan) as unknown),
   };
 }

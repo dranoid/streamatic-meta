@@ -1,5 +1,4 @@
-import { boxOverlap } from '../rules/zone-rule.js';
-import type { Box, Outline } from '../sam/outlines.js';
+import { boxOverlap, type Box, type Outline } from '../sam/outlines.js';
 import type { CameraSetup } from '../setup/camera-setup.js';
 
 // A name someone gave a zone, kept by SAM's word and the zone's place, since SAM numbers its outlines afresh on every run.

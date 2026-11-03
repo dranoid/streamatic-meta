@@ -7,7 +7,7 @@ const NOW = Date.UTC(2026, 9, 29, 17, 0, 0);
 const lagos = (day: number, hour: number, minute = 0) => Date.UTC(2026, 9, day, hour - 1, minute);
 
 function event(at: number, zone = 'front door', camera = 'Table parlour'): NewEvent {
-  return { camera, zone, rule: `Alert me if the ${zone} opens.`, at, picture: null, clip: null, outline: null, reference: null };
+  return { camera, zone, rule: `Alert me if the ${zone} opens.`, at, picture: null, clip: null, outline: null, reference: null, backendId: null, recorded: false };
 }
 
 function seeded() {

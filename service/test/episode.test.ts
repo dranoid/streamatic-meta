@@ -4,8 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { describe, expect, it } from 'vitest';
-import { EpisodeLoop, readEpisode } from '../src/live/episode.js';
-import type { Frame } from '../src/rules/zone-rule.js';
+import { EpisodeLoop, readEpisode, type Frame } from '../src/live/episode.js';
 
 const jpeg = (shade: number) =>
   sharp({ create: { width: 320, height: 180, channels: 3, background: { r: shade, g: shade, b: shade } } }).jpeg().toBuffer();
@@ -23,7 +22,6 @@ describe('readEpisode', () => {
     const frames = await readEpisode(dir);
 
     expect(frames.map((f) => f.at)).toEqual([0, 1000, 15_000, 16_000]);
-    expect(frames[0]!.gray.width).toBe(160);
   });
 
   it('reads a recording kept as a video, one picture a second from the time it started', async () => {
@@ -44,7 +42,7 @@ describe('readEpisode', () => {
 
 describe('EpisodeLoop', () => {
   const recorded = (n: number): Frame[] =>
-    Array.from({ length: n }, (_, i) => ({ at: 50_000 + i * 1000, width: 1, height: 1, picture: { bytes: new Uint8Array(), mimeType: 'image/jpeg' }, gray: { width: 1, height: 1, data: new Uint8Array(1) } }));
+    Array.from({ length: n }, (_, i) => ({ at: 50_000 + i * 1000, width: 1, height: 1, picture: { bytes: new Uint8Array(), mimeType: 'image/jpeg' }, }));
 
   it('hands out the recording at the speed it was taken, then plays it again from the start', async () => {
     let now = 0;

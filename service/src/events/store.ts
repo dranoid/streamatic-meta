@@ -10,6 +10,10 @@ export interface NewEvent {
   clip: string | null;
   outline: string | null;
   reference: string | null;
+  // The backend's alert this was copied from, so one alert is kept once; null for a stretch of a recorded run.
+  backendId: string | null;
+  // Found by running the rule over stored pictures rather than raised as the pictures arrived.
+  recorded: boolean;
 }
 
 export interface StoredEvent extends NewEvent {
@@ -42,6 +46,8 @@ interface Row {
   clip: string | null;
   outline: string | null;
   reference: string | null;
+  backend_id: string | null;
+  recorded: number;
 }
 
 // The database does the counting, so an answer about events can be checked against the rows behind it.
@@ -62,7 +68,9 @@ export class EventStore {
       picture TEXT,
       clip TEXT,
       outline TEXT,
-      reference TEXT
+      reference TEXT,
+      backend_id TEXT UNIQUE,
+      recorded INTEGER NOT NULL DEFAULT 0
     )`);
     this.#db.exec(`CREATE TABLE IF NOT EXISTS event_frames (
       event_id INTEGER NOT NULL REFERENCES events (id),
@@ -75,8 +83,8 @@ export class EventStore {
   add(event: NewEvent): number {
     const result = this.#db
       .prepare(
-        `INSERT INTO events (camera, zone, rule, at, local_hour, picture, clip, outline, reference)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO events (camera, zone, rule, at, local_hour, picture, clip, outline, reference, backend_id, recorded)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         event.camera,
@@ -88,8 +96,14 @@ export class EventStore {
         event.clip,
         event.outline,
         event.reference,
+        event.backendId,
+        event.recorded ? 1 : 0,
       );
     return Number(result.lastInsertRowid);
+  }
+
+  hasBackendAlert(backendId: string): boolean {
+    return this.#db.prepare('SELECT 1 FROM events WHERE backend_id = ?').get(backendId) !== undefined;
   }
 
   get(id: number): StoredEvent | null {
@@ -159,5 +173,7 @@ function toEvent(row: Row): StoredEvent {
     clip: row.clip,
     outline: row.outline,
     reference: row.reference,
+    backendId: row.backend_id,
+    recorded: row.recorded === 1,
   };
 }

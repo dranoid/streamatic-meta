@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-// Seven pages need no router library: the path is the state, and links push to history.
+// Eight pages need no router library: the path is the state, and links push to history.
 export type Route =
   | { page: 'cameras' }
   | { page: 'camera'; id: string }
@@ -8,6 +8,7 @@ export type Route =
   | { page: 'event'; id: number }
   | { page: 'clips' }
   | { page: 'clip'; id: string }
+  | { page: 'try' }
   | { page: 'about' };
 
 export function parse(path: string): Route {
@@ -19,6 +20,7 @@ export function parse(path: string): Route {
   const clip = /^\/clips\/([^/]+)$/.exec(path);
   if (clip) return { page: 'clip', id: decodeURIComponent(clip[1]!) };
   if (path === '/clips') return { page: 'clips' };
+  if (path === '/try') return { page: 'try' };
   if (path === '/about') return { page: 'about' };
   return { page: 'cameras' };
 }

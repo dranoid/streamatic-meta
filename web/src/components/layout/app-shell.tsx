@@ -1,18 +1,24 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { BellRing, Cctv, Crosshair, Info, Menu, Moon, Sun, X } from 'lucide-react';
+import { BellRing, Cctv, Clapperboard, ImageUp, Info, Menu, Moon, Search, Sun, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Link } from '@/components/ui/link';
 import { cn } from '@/lib/cn';
 import type { Route } from '@/lib/router';
 
-const NAV = [
+const PRIVATE_NAV = [
   { href: '/cameras', label: 'Cameras', icon: Cctv, pages: ['cameras', 'camera'] },
   { href: '/events', label: 'Events', icon: BellRing, pages: ['events', 'event'] },
-  { href: '/clips', label: 'Track', icon: Crosshair, pages: ['clips', 'clip'] },
+  { href: '/clips', label: 'Search', icon: Search, pages: ['clips', 'clip'] },
   { href: '/about', label: 'About', icon: Info, pages: ['about'] },
-] as const;
+];
 
-export function AppShell({ route, children }: { route: Route; children: ReactNode }) {
+const PUBLIC_NAV = [
+  { href: '/clips', label: 'Clips', icon: Clapperboard, pages: ['clips', 'clip'] },
+  { href: '/try', label: 'Your own picture', icon: ImageUp, pages: ['try'] },
+  { href: '/about', label: 'About', icon: Info, pages: ['about'] },
+];
+
+export function AppShell({ route, isPublic = false, children }: { route: Route; isPublic?: boolean; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   useEffect(() => setOpen(false), [route]);
 
@@ -28,8 +34,8 @@ export function AppShell({ route, children }: { route: Route; children: ReactNod
       <nav aria-label='Main' className='mt-2'>
         <p className='text-muted-foreground px-2 pb-1.5 text-xs font-medium'>Camera intelligence</p>
         <ul className='space-y-1'>
-          {NAV.map(({ href, label, icon: Icon, pages }) => {
-            const active = (pages as readonly string[]).includes(route.page);
+          {(isPublic ? PUBLIC_NAV : PRIVATE_NAV).map(({ href, label, icon: Icon, pages }) => {
+            const active = pages.includes(route.page);
             return (
               <li key={href}>
                 <Link
@@ -83,8 +89,24 @@ export function AppShell({ route, children }: { route: Route; children: ReactNod
           <ThemeSwitch />
         </header>
         <main className='mx-auto w-full max-w-[90rem] flex-1 px-4 py-6 md:px-6'>{children}</main>
+        {isPublic && <SmallPrint />}
       </div>
     </div>
+  );
+}
+
+function SmallPrint() {
+  return (
+    <footer className='text-muted-foreground mx-auto w-full max-w-[90rem] space-y-1 border-t px-4 py-4 text-xs leading-relaxed md:px-6'>
+      <p>A picture you upload is sent to Meta and to Baseten to be analysed, under the hackathon’s credit terms, which allow Meta to use it for product improvement. This page keeps no copy of it. Please upload only a picture you are allowed to share.</p>
+      <p>
+        Clips: MEVA dataset by Kitware Inc. and IARPA,{' '}
+        <a className='underline underline-offset-2' href='https://mevadata.org/resources/MEVA-data-license.txt' target='_blank' rel='noreferrer'>
+          CC BY 4.0
+        </a>
+        , resized and re-encoded for this page. Kitware and IARPA do not endorse this work.
+      </p>
+    </footer>
   );
 }
 

@@ -41,6 +41,8 @@ export function spansOf(frames: Array<{ frame: number }>, fps: number): Span[] {
   return spans;
 }
 
+const followId = (frame: number, box: Box) => `${frame}-${box.left}-${box.top}-${box.right}-${box.bottom}`;
+
 // Follows one selected thing at a time per selection, in the background, and keeps each result, so asking again costs nothing.
 export class Follows {
   readonly #running = new Map<string, FollowJob>();
@@ -50,10 +52,18 @@ export class Follows {
     private readonly root: string,
     private readonly clips: ClipFolder,
     private readonly sam: FollowModel,
+    // Frames tracked either side of the selected one; SAM charges by the frame, so a long clip is tracked around the selection.
+    private readonly reachFrames: number | null = null,
   ) {}
 
+  // Whether this selection has been tracked or is being tracked, so asking again would spend nothing.
+  async isKept(clipId: string, frame: number, box: Box): Promise<boolean> {
+    const job = await this.get(clipId, followId(frame, box));
+    return job !== null && job.state !== 'failed';
+  }
+
   async start(clipId: string, frame: number, thing: { name: string; box: Box }): Promise<string> {
-    const id = `${frame}-${thing.box.left}-${thing.box.top}-${thing.box.right}-${thing.box.bottom}`;
+    const id = followId(frame, thing.box);
     const key = `${clipId}/${id}`;
     if (this.#running.get(key)?.state === 'running' || (await this.#saved(clipId, id))) return id;
     this.#running.set(key, { state: 'running', name: thing.name, framesSeen: 0 });
@@ -81,17 +91,23 @@ export class Follows {
   async #follow(clipId: string, id: string, frame: number, thing: { name: string; box: Box }): Promise<void> {
     const key = `${clipId}/${id}`;
     const clip = (await this.clips.get(clipId))!;
-    const fileId = this.#uploaded.get(clipId) ?? (await this.sam.upload(new Uint8Array(await readFile(clip.video))));
-    this.#uploaded.set(clipId, fileId);
-    const frames = await this.sam
-      .track(fileId, { width: clip.width, height: clip.height }, frame, { box: thing.box }, (framesSeen) => {
+    const from = this.reachFrames === null ? 0 : Math.max(0, frame - this.reachFrames);
+    const to = this.reachFrames === null ? clip.frames - 1 : Math.min(clip.frames - 1, frame + this.reachFrames);
+    const whole = from === 0 && to === clip.frames - 1;
+    const uploadKey = `${clipId}/${from}-${to}`;
+    const video = async () => (whole ? new Uint8Array(await readFile(clip.video)) : (await this.clips.stretch(clipId, from, to))!);
+    const fileId = this.#uploaded.get(uploadKey) ?? (await this.sam.upload(await video()));
+    this.#uploaded.set(uploadKey, fileId);
+    const tracked = await this.sam
+      .track(fileId, { width: clip.width, height: clip.height }, frame - from, { box: thing.box }, (framesSeen) => {
         this.#running.set(key, { state: 'running', name: thing.name, framesSeen });
       })
       .catch((error: unknown) => {
         // An upload the API has since dropped would fail every later try, so the next one uploads afresh.
-        this.#uploaded.delete(clipId);
+        this.#uploaded.delete(uploadKey);
         throw error;
       });
+    const frames = tracked.map((f) => ({ ...f, frame: f.frame + from }));
     const follow: Follow = { id, name: thing.name, frame, box: thing.box, spans: spansOf(frames, clip.fps), frames };
     const dir = join(this.root, 'clips', clipId, 'follows');
     await mkdir(dir, { recursive: true });

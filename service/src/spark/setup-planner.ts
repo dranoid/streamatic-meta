@@ -13,7 +13,7 @@ export class SparkSetupPlanner implements SetupPlanner {
 
   async listItems(pictures: LabelledPicture[]): Promise<string[]> {
     const { items } = await this.spark.json(
-      `These pictures come from one fixed security camera at ${this.site}, taken at different times of day.
+      `${pictures.length === 1 ? 'This picture comes' : 'These pictures come'} from one fixed security camera at ${this.site}${pictures.length === 1 ? '' : ', taken at different times of day'}.
 List the fixed things, places and regularly present objects in view that the site's manager might write an alert rule about: entrances, barriers, structures, equipment, and vehicles that are usually parked there.
 Use the most ordinary short name for each, one or two words, singular. Leave out people, the sky, plants, and text drawn on the picture by the camera.
 List at most ${MAX_ITEMS} items. Reply with JSON only: {"items": ["..."]}`,
