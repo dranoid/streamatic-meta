@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowRight, BellRing, CircleAlert, Crosshair, Eye, EyeOff, LoaderCircle, Pause, Play, Search, SkipForward, SquareDashed, X } from 'lucide-react';
+import { ArrowRight, BellRing, CircleAlert, Crosshair, Eye, EyeOff, LoaderCircle, Pause, Play, RotateCcw, Search, SkipForward, SquareDashed, X } from 'lucide-react';
 import { BoxDrawer, type DrawnBox } from '@/components/box-drawer';
 import { Outlines, PictureBusy, PictureFrame, ZONE_COLOURS, type DrawnPath } from '@/components/picture-frame';
 import { DemoGuide, type GuideFinding } from '@/components/demo-guide';
@@ -19,7 +19,7 @@ import { api, clipPictureUrl, clipVideoUrl, type Clip, type DemoAlert, type Demo
 import { useAbilities } from '@/lib/abilities';
 import { cn } from '@/lib/cn';
 import { navigate } from '@/lib/router';
-import { RULE_FINISHED, rulesChosenInSetup, useRefreshRulesBeingAdded } from '@/lib/setup-progress';
+import { RULE_FINISHED, progressOf, rulesChosenInSetup, saveProgress, useRefreshRulesBeingAdded } from '@/lib/setup-progress';
 import { sentence } from '@/lib/time';
 
 const POLL_MS = 1_000;
@@ -65,6 +65,7 @@ export function ClipPage({ id, isPublic = false, trackSeconds = null }: { id: st
   const clip = clips.data?.find((c) => c.id === id);
   // Everything on a clip waits on its camera being set up, and the person is brought back to what they were doing.
   const [cameFor] = useState(() => location.pathname + location.search);
+  const [confirmingReset, setConfirmingReset] = useState(false);
   const needsSetup = isPublic && demo.data?.setUpLive === false;
   useEffect(() => {
     if (needsSetup) navigate(`/setup/${encodeURIComponent(id)}?next=${encodeURIComponent(cameFor)}`, { replace: true });
@@ -91,9 +92,52 @@ export function ClipPage({ id, isPublic = false, trackSeconds = null }: { id: st
         icon={<Search />}
         title={clip.name}
         description={isPublic ? 'Describe a rule, or select one, and play the clip. Pause on any frame to search it.' : 'Pause on a frame where it appears, then search for it.'}
+        actions={
+          isPublic && (
+            <Button size='sm' variant='outline' onClick={() => setConfirmingReset(true)}>
+              <RotateCcw />
+              Reset this camera
+            </Button>
+          )
+        }
       />
+      {confirmingReset && <ResetThisCamera id={clip.id} onCancel={() => setConfirmingReset(false)} />}
       <ClipWatch key={clip.id} clip={clip} follows={follows.data ?? []} demo={demo.data ?? null} trackSeconds={trackSeconds} ask={ask} opened={opened} />
     </>
+  );
+}
+
+function ResetThisCamera({ id, onCancel }: { id: string; onCancel: () => void }) {
+  const queryClient = useQueryClient();
+  const added = progressOf(id).added;
+  const reset = useMutation({
+    mutationFn: async () => {
+      await Promise.all(added.map((rule) => api.removeClipRule(id, rule).catch(() => null)));
+      return api.resetDemoZones(id);
+    },
+    onSuccess: async () => {
+      saveProgress(id, null);
+      // Leaves first, so this clip does not ask for setup again on the way out.
+      navigate('/setup');
+      await queryClient.invalidateQueries();
+    },
+  });
+  return (
+    <Notice className='mb-4'>
+      <p>
+        Reset this camera? It returns to not set up, and your zone changes on it are removed.{added.length > 0 ? ` The ${added.length === 1 ? 'rule' : `${added.length} rules`} added in setup ${added.length === 1 ? 'is' : 'are'} removed.` : ''} Other cameras are not changed.
+      </p>
+      {reset.isError && <p className='text-destructive mt-1 text-xs'>{reset.error.message}</p>}
+      <div className='mt-2 flex flex-wrap gap-2'>
+        <Button size='sm' disabled={reset.isPending} onClick={() => reset.mutate()}>
+          {reset.isPending && <LoaderCircle className='animate-spin' />}
+          Reset this camera
+        </Button>
+        <Button size='sm' variant='outline' disabled={reset.isPending} onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </Notice>
   );
 }
 
