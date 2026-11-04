@@ -242,7 +242,6 @@ export class DemoBot {
     if (rule?.status !== 'ready') return this.#say(person, 'This rule could not be finished. Please try again.');
     const clip = await clips.get(row.id);
     if (!clip) return;
-    if (!rule.canAnswer) await this.#say(person, 'Streamatic may not be able to see this on this clip. The rule still ran.');
     if (alertsOf(id).length === 0) return this.#say(person, `${clip.name}\nThis rule raised nothing on this clip.`);
     // The page sends each alert as the playing clip reaches it, as a live camera would, so nothing is sent from here.
     return this.#say(person, `${clip.name}\nThis rule is ready. Select it on the page and play the clip. Each alert will arrive here as the clip reaches it.`);

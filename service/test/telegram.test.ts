@@ -302,6 +302,23 @@ describe('an alert on Telegram', () => {
     expect(width).toBe(64);
   });
 
+  it('keeps what is under a zone visible, however many outlines the zone has', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'alert-'));
+    await mkdir(join(root, 'clips', CLIP, 'evidence'), { recursive: true });
+    await writeFile(join(root, 'clips', CLIP, 'evidence', 'k1.jpg'), await picture());
+    const redInside = async (paths: string[]) => {
+      const { chat, sent } = fakeChat();
+      await sendDemoAlert({ chat, to: PERSON, folder: root, clip: { id: CLIP, name: 'Building entrance', width: 1280, height: 720 }, rule: { ...RULE, zones: [{ name: 'door', paths }] }, alert: ALERT, language: 'english' });
+      const raw = await sharp(sent[0]!.picture!).extract({ left: 12, top: 8, width: 1, height: 1 }).raw().toBuffer();
+      return raw[0]!;
+    };
+    const door = 'M0 0H640V360H0Z';
+    const once = await redInside([door]);
+    const stacked = await redInside([door, door, door]);
+    expect(once).toBeLessThan(80);
+    expect(Math.abs(stacked - once)).toBeLessThan(6);
+  });
+
   it('is sent as words when no picture was kept', async () => {
     const { chat, sent } = fakeChat();
     await sendDemoAlert({ chat, to: PERSON, folder: '/nowhere', clip: { id: CLIP, name: 'Building entrance', width: 1280, height: 720 }, rule: RULE, alert: { ...ALERT, picture: null }, language: 'english' });
@@ -349,7 +366,7 @@ describe('the demo bot', () => {
 
   const planner: GuidePlanner = { draft: async ({ sentence }) => ({ sentence, about: 'door', zones: ['door'], box: null, hours: null }) };
 
-  function bot({ abilities = { models: true, rules: true }, heard = 'Tell me when someone opens the door.', ruleEnds = 'ready', draft = planner, alerts = [ALERT] }: { abilities?: { models: boolean; rules: boolean }; heard?: string; ruleEnds?: string; draft?: GuidePlanner; alerts?: DemoAlert[] } = {}) {
+  function bot({ abilities = { models: true, rules: true }, heard = 'Tell me when someone opens the door.', ruleEnds = 'ready', draft = planner, alerts = [ALERT], canAnswer = true }: { abilities?: { models: boolean; rules: boolean }; heard?: string; ruleEnds?: string; draft?: GuidePlanner; alerts?: DemoAlert[]; canAnswer?: boolean } = {}) {
     const { chat, sent } = fakeChat();
     const links = new TelegramLinks(':memory:');
     const store = new DemoStore(':memory:');
@@ -368,7 +385,7 @@ describe('the demo bot', () => {
         polls++;
         const status = polls > 1 ? ruleEnds : 'asking';
         const rule = store.rule('typed-1')!;
-        return { ...rule, status, reason: status === 'refused' ? 'Two things in order.' : null, rewrites: status === 'refused' ? ['Tell me when someone opens a door.'] : [] };
+        return { ...rule, status, canAnswer, reason: status === 'refused' ? 'Two things in order.' : null, rewrites: status === 'refused' ? ['Tell me when someone opens a door.'] : [] };
       },
     };
     const limits = new DemoLimits({ file: join(root, 'limits.json'), ceilingMicroUsd: 5_000_000 });
@@ -602,6 +619,16 @@ describe('the demo bot', () => {
     await b.instance.handle(button(b.sent.at(-1)!.buttons![0]!.data));
     await b.instance.settled();
     expect(b.sent.at(-1)!.text).toContain('raised nothing');
+  });
+
+  it('adds no doubt to the chat when the backend is unsure a camera can see what was asked', async () => {
+    const b = bot({ canAnswer: false });
+    await linked(b);
+    await b.instance.handle(message({ text: 'Tell me when the door opens.' }));
+    await b.instance.handle(button(b.sent.at(-1)!.buttons![0]!.data));
+    await b.instance.settled();
+    expect(b.sent.at(-1)!.text).toContain('This rule is ready.');
+    expect(b.sent.map((said) => said.text).join('\n')).not.toContain('may not be able to see');
   });
 
   it('passes on a refusal with the wording Streamatic suggests', async () => {

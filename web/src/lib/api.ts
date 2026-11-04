@@ -347,7 +347,14 @@ export interface OwnPictureSetup {
   setup: CameraSetup;
 }
 
-export class ApiError extends Error {}
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status?: number,
+  ) {
+    super(message);
+  }
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -356,7 +363,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   const body = (await response.json().catch(() => ({}))) as { error?: string };
   // The server writes its errors for the person, so they are shown as they are.
-  if (!response.ok) throw new ApiError(body.error ?? 'The request could not be completed. Please try again.');
+  if (!response.ok) throw new ApiError(body.error ?? 'The request could not be completed. Please try again.', response.status);
   return body as T;
 }
 

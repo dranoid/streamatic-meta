@@ -390,10 +390,7 @@ export function DemoGuide({
                     <p>Alerts appear on the timeline as they are found, and you can keep watching the clip meanwhile.</p>
                   </>
                 ) : ready ? (
-                  <>
-                    <p>Reads as: {reading.readsAs ?? reading.name}</p>
-                    {!reading.canAnswer && <p>Streamatic may not be able to see this on this clip.</p>}
-                  </>
+                  <p>Reads as: {reading.readsAs ?? reading.name}</p>
                 ) : reading.status === 'refused' ? (
                   <div className='space-y-2'>
                     <p>{reading.reason ?? 'Streamatic cannot watch for this as written.'}</p>

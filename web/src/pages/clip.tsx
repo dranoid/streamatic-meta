@@ -15,7 +15,7 @@ import { Input, Label } from '@/components/ui/input';
 import { Link } from '@/components/ui/link';
 import { Notice } from '@/components/ui/notice';
 import { Skeleton } from '@/components/ui/skeleton';
-import { api, clipPictureUrl, clipVideoUrl, type AppInfo, type Clip, type DemoAlert, type DemoClip, type DemoRule, type DemoZone, type Follow, type FollowJob, type Thing } from '@/lib/api';
+import { api, ApiError, clipPictureUrl, clipVideoUrl, type AppInfo, type Clip, type DemoAlert, type DemoClip, type DemoRule, type DemoZone, type Follow, type FollowJob, type Thing } from '@/lib/api';
 import { useAbilities } from '@/lib/abilities';
 import { cn } from '@/lib/cn';
 import { navigate } from '@/lib/router';
@@ -741,7 +741,8 @@ function Choosing({
     if (!jobId) return;
     let stopped = false;
     const poll = async () => {
-      const latest = await api.followJob(clip.id, jobId).catch(() => null);
+      // A running track is held in memory, so a restart loses it and it will never finish; a dropped connection is only waited out.
+      const latest = await api.followJob(clip.id, jobId).catch((error: unknown): FollowJob | null => (error instanceof ApiError && error.status === 404 ? { state: 'failed', names: [], framesDone: 0, framesTotal: 0 } : null));
       if (stopped) return;
       if (latest) setJob(latest);
       if (latest?.state === 'running') latestCallbacks.current.onProgress(latest.framesDone, latest.framesTotal);
