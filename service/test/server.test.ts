@@ -55,7 +55,7 @@ async function start({
   planned,
   tracksOf,
 }: {
-  tracksOf?: { add: (request: IncomingMessage, response: ServerResponse, clip: string, ids: string[]) => void; list: (request: IncomingMessage, response: ServerResponse, clip: string) => string[] };
+  tracksOf?: { add: (request: IncomingMessage, response: ServerResponse, clip: string, ids: string[]) => void; list: (request: IncomingMessage, response: ServerResponse, clip: string) => string[]; remove: (request: IncomingMessage, response: ServerResponse, clip: string, track: string) => boolean };
   // What the guide's planner drafts, in place of its plain plan on the door.
   planned?: Partial<GuidePlan>;
   plan?: Plan;
@@ -715,7 +715,7 @@ describe('following a thing in a clip', () => {
     const who = (request: IncomingMessage) => String(request.headers['x-who']);
     const { base, followCalls } = await start({
       clip: true,
-      tracksOf: { add: (request, _response, _clip, ids) => void owned.set(who(request), [...(owned.get(who(request)) ?? []), ...ids]), list: (request) => owned.get(who(request)) ?? [] },
+      tracksOf: { add: (request, _response, _clip, ids) => void owned.set(who(request), [...(owned.get(who(request)) ?? []), ...ids]), list: (request) => owned.get(who(request)) ?? [], remove: () => false },
     });
     const { things } = (await (await post(base, '/api/clips/yard/frames/3/things', {})).json()) as { things: Array<{ id: string }> };
     const track = (person: string) => fetch(`${base}/api/clips/yard/follows`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-who': person }, body: JSON.stringify({ frame: 3, things: [things[0]!.id] }) });
@@ -727,6 +727,42 @@ describe('following a thing in a clip', () => {
     await track('two');
     expect((await listed('two')).map((f) => f.id)).toEqual([id]);
     expect(followCalls.tracks).toHaveLength(1);
+  });
+
+  it('deletes a track from this person’s list alone, and refuses one they do not have', async () => {
+    const owned = new Map<string, string[]>();
+    const who = (request: IncomingMessage) => String(request.headers['x-who']);
+    const { base } = await start({
+      clip: true,
+      tracksOf: {
+        add: (request, _response, _clip, ids) => void owned.set(who(request), [...(owned.get(who(request)) ?? []), ...ids]),
+        list: (request) => owned.get(who(request)) ?? [],
+        remove: (request, _response, _clip, track) => {
+          const mine = owned.get(who(request)) ?? [];
+          owned.set(who(request), mine.filter((id) => id !== track));
+          return mine.includes(track);
+        },
+      },
+    });
+    const { things } = (await (await post(base, '/api/clips/yard/frames/3/things', {})).json()) as { things: Array<{ id: string }> };
+    const track = (person: string) => fetch(`${base}/api/clips/yard/follows`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-who': person }, body: JSON.stringify({ frame: 3, things: [things[0]!.id] }) });
+    const listed = async (person: string) => (await (await fetch(`${base}/api/clips/yard/follows`, { headers: { 'x-who': person } })).json()) as Array<{ id: string }>;
+    const remove = (person: string, id: string) => fetch(`${base}/api/clips/yard/follows/${encodeURIComponent(id)}`, { method: 'DELETE', headers: { 'x-who': person } });
+    const { id } = (await (await track('one')).json()) as { id: string };
+    await track('two');
+    await vi.waitFor(async () => expect((await listed('one')).map((f) => f.id)).toEqual([id]));
+
+    expect((await remove('three', id)).status).toBe(404);
+    expect((await remove('one', id)).status).toBe(200);
+
+    expect(await listed('one')).toEqual([]);
+    expect((await listed('two')).map((f) => f.id)).toEqual([id]);
+    expect((await remove('one', id)).status).toBe(404);
+  });
+
+  it('refuses to delete a track where tracks are not kept per person', async () => {
+    const { base } = await start({ clip: true });
+    expect((await fetch(`${base}/api/clips/yard/follows/anything`, { method: 'DELETE' })).status).toBe(404);
   });
 
   it('follows the things selected, not another on the same frame, and charges one track for the request', async () => {

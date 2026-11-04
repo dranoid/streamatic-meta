@@ -70,8 +70,8 @@ export class Follows {
     private readonly root: string,
     private readonly clips: ClipFolder,
     private readonly sam: FollowModel,
-    // Frames tracked either side of the selected one; SAM charges by the frame, so a long clip is tracked around the selection.
-    private readonly reachFrames: number | null = null,
+    // Frames tracked before and after the selected one; SAM charges by the frame, so a long clip is tracked around the selection.
+    private readonly reachFrames: { before: number; after: number } | null = null,
   ) {}
 
   // Whether all of this selection has been tracked or is being tracked, so asking again would spend nothing.
@@ -117,7 +117,7 @@ export class Follows {
   #reach(frame: number, frames: number): { from: number; to: number } {
     return this.reachFrames === null
       ? { from: 0, to: frames - 1 }
-      : { from: Math.max(0, frame - this.reachFrames), to: Math.min(frames - 1, frame + this.reachFrames) };
+      : { from: Math.max(0, frame - this.reachFrames.before), to: Math.min(frames - 1, frame + this.reachFrames.after) };
   }
 
   async list(clipId: string): Promise<Follow[]> {

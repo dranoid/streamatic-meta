@@ -130,7 +130,7 @@ export function demoHandler({
   detection?: Pick<ClipDetection, 'state' | 'found' | 'ensure'> | null;
   voiceNotes: Pick<VoiceNotes, 'read'>;
   folder: string;
-  trackSeconds: number;
+  trackSeconds: { before: number; after: number };
   // What this copy can spend on; a judge's own copy may have neither, and the recorded clips need neither.
   abilities?: { models: boolean; rules: boolean };
   // Present when this copy has a bot of its own to send alerts with.

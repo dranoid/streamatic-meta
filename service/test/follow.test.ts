@@ -251,14 +251,14 @@ describe('Follows', () => {
         },
         track: async (_file, _size, frame) => (asked.push(frame), [[{ frame, box, path: 'M0 0Z' }]]),
       },
-      3,
+      { before: 1, after: 3 },
     );
     const id = await follows.start('yard', 10, [{ name: 'car', box }]);
     await vi.waitFor(async () => expect((await follows.get('yard', id))?.state).toBe('done'));
-    expect(uploaded).toEqual([7]);
-    expect(asked).toEqual([3]);
+    expect(uploaded).toEqual([5]);
+    expect(asked).toEqual([1]);
     const job = await follows.get('yard', id);
-    expect(job?.framesTotal).toBe(7);
+    expect(job?.framesTotal).toBe(5);
     expect(job?.state === 'done' && job.follows[0]!.frames.map((f) => f.frame)).toEqual([10]);
     expect(job?.state === 'done' && job.follows[0]!.spans).toEqual([{ from: 10, to: 10 }]);
   });

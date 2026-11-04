@@ -15,7 +15,7 @@ import { Input, Label } from '@/components/ui/input';
 import { Link } from '@/components/ui/link';
 import { Notice } from '@/components/ui/notice';
 import { Skeleton } from '@/components/ui/skeleton';
-import { api, clipPictureUrl, clipVideoUrl, type Clip, type DemoAlert, type DemoClip, type DemoRule, type DemoZone, type Follow, type FollowJob, type Thing } from '@/lib/api';
+import { api, clipPictureUrl, clipVideoUrl, type AppInfo, type Clip, type DemoAlert, type DemoClip, type DemoRule, type DemoZone, type Follow, type FollowJob, type Thing } from '@/lib/api';
 import { useAbilities } from '@/lib/abilities';
 import { cn } from '@/lib/cn';
 import { navigate } from '@/lib/router';
@@ -58,7 +58,7 @@ function duration(seconds: number): string {
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
 }
 
-export function ClipPage({ id, isPublic = false, trackSeconds = null }: { id: string; isPublic?: boolean; trackSeconds?: number | null }) {
+export function ClipPage({ id, isPublic = false, trackSeconds = null }: { id: string; isPublic?: boolean; trackSeconds?: AppInfo['trackSeconds'] }) {
   const clips = useQuery({ queryKey: ['clips'], queryFn: api.clips });
   const follows = useQuery({ queryKey: ['follows', id], queryFn: () => api.follows(id) });
   const demo = useQuery({ queryKey: ['demo-clip', id], queryFn: () => api.demoClip(id), enabled: isPublic });
@@ -141,7 +141,7 @@ function ResetThisCamera({ id, onCancel }: { id: string; onCancel: () => void })
   );
 }
 
-function ClipWatch({ clip, follows, demo, trackSeconds, ask, opened }: { clip: Clip; follows: Follow[]; demo: DemoClip | null; trackSeconds: number | null; ask: string | null; opened: { rule: string; atMs: number } | null }) {
+function ClipWatch({ clip, follows, demo, trackSeconds, ask, opened }: { clip: Clip; follows: Follow[]; demo: DemoClip | null; trackSeconds: AppInfo['trackSeconds']; ask: string | null; opened: { rule: string; atMs: number } | null }) {
   const queryClient = useQueryClient();
   const { models } = useAbilities();
   const video = useRef<HTMLVideoElement>(null);
@@ -434,7 +434,7 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask, opened }: { clip: C
                 )}
               </div>
               {!models && <NeedsKeys />}
-              {trackSeconds !== null && models && <p className='text-muted-foreground text-xs'>Pause the clip where an item appears and search this frame. Streamatic can then track the item from {trackSeconds} seconds before that frame to {trackSeconds} seconds after it.</p>}
+              {trackSeconds !== null && models && <p className='text-muted-foreground text-xs'>Pause the clip where an item appears and search this frame. Streamatic can then track the item from {trackSeconds.before} seconds before that frame to {trackSeconds.after} seconds after it, or until it leaves the picture.</p>}
             </>
           )}
         </CardContent>
@@ -551,6 +551,16 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask, opened }: { clip: C
                           : `In view ${f.spans.map((s) => `${duration(s.from / clip.fps)}–${duration((s.to + 1) / clip.fps)}`).join(', ')}`}
                       </span>
                     </button>
+                    {demo && (
+                      <ConfirmDelete
+                        question='Delete this track? Its outline and bar are removed from this clip.'
+                        remove={() => api.removeFollow(clip.id, f.id)}
+                        onDeleted={() => {
+                          setShownIds((all) => all.filter((id) => id !== f.id));
+                          void queryClient.invalidateQueries({ queryKey: ['follows', clip.id] });
+                        }}
+                      />
+                    )}
                   </li>
                 ))}
               </ul>
@@ -566,9 +576,13 @@ const ruleLabel = (rule: DemoRule | undefined) => (!rule ? 'Alert' : rule.kind =
 
 // Only a visitor's own rule can be deleted, once it has finished; the rules the clip comes with are simply left unselected.
 function DeleteRule({ clip, rule, onDeleted }: { clip: string; rule: DemoRule; onDeleted: (rule: string) => void }) {
-  const [confirming, setConfirming] = useState(false);
-  const remove = useMutation({ mutationFn: () => api.removeClipRule(clip, rule.id), onSuccess: () => onDeleted(rule.id) });
   if (rule.kind !== 'typed' || !RULE_FINISHED.has(rule.status)) return null;
+  return <ConfirmDelete question='Delete this rule? Its alerts are removed too.' remove={() => api.removeClipRule(clip, rule.id)} onDeleted={() => onDeleted(rule.id)} />;
+}
+
+function ConfirmDelete({ question, remove: removeIt, onDeleted }: { question: string; remove: () => Promise<unknown>; onDeleted: () => void }) {
+  const [confirming, setConfirming] = useState(false);
+  const remove = useMutation({ mutationFn: removeIt, onSuccess: onDeleted });
   if (!confirming) {
     return (
       <Button size='sm' variant='ghost' className='text-muted-foreground mt-1 h-7 px-2 text-xs' onClick={() => setConfirming(true)}>
@@ -579,7 +593,7 @@ function DeleteRule({ clip, rule, onDeleted }: { clip: string; rule: DemoRule; o
   }
   return (
     <div className='mt-1 space-y-1.5 px-1'>
-      <p className='text-xs'>Delete this rule? Its alerts are removed too.</p>
+      <p className='text-xs'>{question}</p>
       {remove.isError && <p className='text-destructive text-xs'>{remove.error.message}</p>}
       <div className='flex flex-wrap gap-2'>
         <Button size='sm' className='h-7 text-xs' disabled={remove.isPending} onClick={() => remove.mutate()}>
@@ -655,7 +669,7 @@ function Choosing({
 }: {
   clip: Clip;
   frame: number;
-  trackSeconds: number | null;
+  trackSeconds: AppInfo['trackSeconds'];
   guided: { item: string; found: string[]; things: Thing[] } | null;
   onCancel: () => void;
   onFollowed: (follows: Follow[]) => void;
@@ -791,7 +805,7 @@ function Choosing({
 
       {running ? (
         <p className='text-muted-foreground text-xs'>
-          {trackSeconds === null ? 'This usually takes under a minute.' : `Tracking covers ${trackSeconds} seconds either side of this frame, and usually takes about a minute.`}
+          {trackSeconds === null ? 'This usually takes under a minute.' : `Tracking covers ${trackSeconds.before} seconds before this frame and up to ${trackSeconds.after} seconds after it, and usually takes about a minute.`}
         </p>
       ) : drawing ? (
         <>

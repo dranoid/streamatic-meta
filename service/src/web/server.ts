@@ -153,6 +153,7 @@ export function appHandler({
     tracksOf?: {
       add: (request: IncomingMessage, response: ServerResponse, clip: string, ids: string[]) => void;
       list: (request: IncomingMessage, response: ServerResponse, clip: string) => string[];
+      remove: (request: IncomingMessage, response: ServerResponse, clip: string, track: string) => boolean;
     };
   };
   timeZone: string;
@@ -290,6 +291,11 @@ export function appHandler({
     if (method === 'GET' && (match = /^\/api\/clips\/([^/]+)\/follows\/([^/]+)$/.exec(path))) {
       const job = await following.follows.get(decodeURIComponent(match[1]!), decodeURIComponent(match[2]!));
       return job ? send(response, 200, job) : send(response, 404, { error: 'Nothing is being tracked under that name.' });
+    }
+    // Takes the track off this person's list only; the result stays for whoever asks for it next.
+    if (method === 'DELETE' && (match = /^\/api\/clips\/([^/]+)\/follows\/([^/]+)$/.exec(path))) {
+      const removed = following.tracksOf?.remove(request, response, decodeURIComponent(match[1]!), decodeURIComponent(match[2]!));
+      return removed ? send(response, 200, { removed: true }) : send(response, 404, { error: 'Nothing is being tracked under that name.' });
     }
 
     if (method === 'GET' && path === '/api/rules') return send(response, 200, rules.list(url.searchParams.get('camera') ?? undefined));

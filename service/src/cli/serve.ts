@@ -61,8 +61,8 @@ await requireMediaTools();
 const timeZone = 'Africa/Lagos';
 // How often the backend's alerts are read.
 const COPY_ALERTS_MS = 30_000;
-// On the public page a track reaches this far either side of the selected frame; the page's clips run at TRACK_FPS.
-const TRACK_SECONDS = 30;
+// On the public page a track reaches this far around the selected frame, and ends sooner if the item leaves the picture; the page's clips run at TRACK_FPS.
+const TRACK_SECONDS = { before: 5, after: 55 };
 const TRACK_FPS = 10;
 const sam = new SamClient({ apiKey: metaKey ?? '' });
 const spark = new SparkClient({ apiKey: basetenKey ?? '' });
@@ -165,7 +165,7 @@ const app = appHandler({
   following: {
     clips,
     things: new ClipThings(folder),
-    follows: new Follows(folder, clips, sam, isPublic ? TRACK_SECONDS * TRACK_FPS : null),
+    follows: new Follows(folder, clips, sam, isPublic ? { before: TRACK_SECONDS.before * TRACK_FPS, after: TRACK_SECONDS.after * TRACK_FPS } : null),
     listThings: (picture) => followPlanner.listThings(picture),
     nameThing: async (picture, box) => followPlanner.nameThing(await cropAround(picture, box)),
     outlineAll: (picture, words) => sam.outlineAll(picture, words),
@@ -175,6 +175,7 @@ const app = appHandler({
           tracksOf: {
             add: (request: IncomingMessage, response: ServerResponse, clip: string, ids: string[]) => ids.forEach((id) => demoStore.addTrack(visitorOf(request, response), clip, id)),
             list: (request: IncomingMessage, response: ServerResponse, clip: string) => demoStore.tracks(visitorOf(request, response), clip),
+            remove: (request: IncomingMessage, response: ServerResponse, clip: string, track: string) => demoStore.removeTrack(visitorOf(request, response), clip, track),
           },
         }
       : {}),

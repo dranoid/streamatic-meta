@@ -234,7 +234,7 @@ export interface AppInfo {
   // The public page: only clips, a visitor's own picture and the About page.
   public: boolean;
   // How far a track reaches either side of the selected frame; null when it covers the whole clip.
-  trackSeconds: number | null;
+  trackSeconds: { before: number; after: number } | null;
   // What this copy of the public page can spend on; the recorded clips need neither.
   models?: boolean;
   rules?: boolean;
@@ -400,6 +400,7 @@ export const api = {
   startFollow: (clip: string, frame: number, things: string[]) =>
     request<{ id: string }>(`/api/clips/${encodeURIComponent(clip)}/follows`, { method: 'POST', body: JSON.stringify({ frame, things }) }),
   followJob: (clip: string, id: string) => request<FollowJob>(`/api/clips/${encodeURIComponent(clip)}/follows/${encodeURIComponent(id)}`),
+  removeFollow: (clip: string, id: string) => request<{ removed: true }>(`/api/clips/${encodeURIComponent(clip)}/follows/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   app: () => request<AppInfo>('/api/app'),
   demoClips: () => request<DemoClipSummary[]>('/api/demo/clips'),
   demoEvents: () => request<{ events: DemoEvent[] }>('/api/demo/events'),

@@ -156,7 +156,7 @@ async function start({ asker, detection = null, telegram = false, ceilingMicroUs
     detection,
     voiceNotes: { read: async (request, keywords, beforeAsking) => { for await (const _ of request) void _; await beforeAsking?.(); voiceKeywordsAsked.push(keywords); return { status: 200, body: { text: heard } }; } },
     folder: root,
-    trackSeconds: 30,
+    trackSeconds: { before: 5, after: 55 },
     ...(abilities ? { abilities } : {}),
     ...(telegram
       ? {
@@ -699,6 +699,21 @@ describe('starting again', () => {
     expect((await visitor('v2')(`/api/demo/clips/${CLIP}`)).body.setUpLive).toBe(true);
     expect((await visitor('v2')(`/api/demo/clips/${CLIP}`)).body.rules.map((r: any) => r.id)).toContain(theirs.id);
     expect(store.tracks('v2', CLIP)).toEqual(['track-2']);
+  });
+
+  it('deletes one visitor’s track and says when there was none to delete', async () => {
+    const { store } = await start();
+    store.addTrack('v1', CLIP, 'track-1');
+    store.addTrack('v1', CLIP, 'track-2');
+    store.addTrack('v2', CLIP, 'track-1');
+
+    expect(store.removeTrack('v3', CLIP, 'track-1')).toBe(false);
+    expect(store.removeTrack('v1', 'another-clip', 'track-1')).toBe(false);
+    expect(store.removeTrack('v1', CLIP, 'track-1')).toBe(true);
+
+    expect(store.tracks('v1', CLIP)).toEqual(['track-2']);
+    expect(store.tracks('v2', CLIP)).toEqual(['track-1']);
+    expect(store.removeTrack('v1', CLIP, 'track-1')).toBe(false);
   });
 });
 

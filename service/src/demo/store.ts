@@ -223,6 +223,10 @@ export class DemoStore {
     return (this.#db.prepare('SELECT track FROM demo_tracks WHERE visitor = ? AND clip = ?').all(visitor, clip) as unknown as Array<{ track: string }>).map((row) => row.track);
   }
 
+  removeTrack(visitor: string, clip: string, track: string): boolean {
+    return Number(this.#db.prepare('DELETE FROM demo_tracks WHERE visitor = ? AND clip = ? AND track = ?').run(visitor, clip, track).changes) > 0;
+  }
+
   // Everything this visitor did on the page; what the clips themselves hold stays.
   forgetVisitor(visitor: string): void {
     const typed = this.#db.prepare(`SELECT id FROM demo_rules WHERE kind = 'typed' AND visitor = ?`).all(visitor) as unknown as Array<{ id: string }>;
