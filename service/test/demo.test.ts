@@ -1121,6 +1121,11 @@ describe('a question about a clip', () => {
     expect((await without.visitor('v1')(`/api/demo/clips/${CLIP}`)).body).toMatchObject({ canCount: false, detection: null });
     const withDetector = await start({ detection: detected });
     expect((await withDetector.visitor('v1')(`/api/demo/clips/${CLIP}`)).body).toMatchObject({ canCount: true, detection: 'ready' });
+    const nothingRecorded = await start({ detection: { state: () => 'none', found: () => null, ensure: () => undefined } });
+    expect((await nothingRecorded.visitor('v1')(`/api/demo/clips/${CLIP}`)).body).toMatchObject({ canCount: false, suggestedQuestions: [] });
+    const { status, body } = await zoneOf(nothingRecorded.visitor('v1'));
+    expect(status).toBe(409);
+    expect(body.error).toBe(NEEDS_KEYS);
   });
 
   it('asks for keys on a copy with no detector, whatever files its folder holds', async () => {

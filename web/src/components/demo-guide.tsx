@@ -350,7 +350,7 @@ export function DemoGuide({
         {run?.stage === 'detecting' && (
           <ol className='space-y-1.5 text-sm' aria-label='What Streamatic is doing' aria-live='polite'>
             <Stage state='now' title='Detecting people and objects on this clip'>
-              Streamatic does this once for each clip when the server starts. It usually takes about two minutes, and your answer follows.
+              Streamatic does this once for each clip and keeps the result. It usually takes about ten minutes, and your answer follows.
             </Stage>
           </ol>
         )}

@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { z } from 'zod';
 import type { ClipDetections } from './detections.js';
 
@@ -38,17 +38,20 @@ const POLL_MS = 5_000;
 // Each run is paid for on Modal, so a clip that keeps failing stops being tried.
 const MOST_RUNS_PER_CLIP = 3;
 
-// Each clip's tracks, held in memory for as long as the server runs and shared by every visitor, since a visitor's own zones
-// come in only when a question is counted. Nothing is kept on disk, so a server with no detector has nothing to answer from.
+// This stands in for a detector running live: each clip is detected once and what was found is recorded beside it, then read back
+// on every start, because a Modal GPU could not be set up in time and each CPU run costs money. The agent still asks its questions
+// live over those tracks, and a visitor's own zones come in only when a question is counted.
 export class ClipDetection {
-  readonly #client: DetectionClient;
+  readonly #client: DetectionClient | null;
   readonly #videoOf: (clip: string) => string;
+  readonly #savedOf: (clip: string) => string;
   readonly #pollMs: number;
   readonly #clips = new Map<string, { state: DetectionState; runs: number; found: ClipDetections | null }>();
 
-  constructor({ client, videoOf, pollMs = POLL_MS }: { client: DetectionClient; videoOf: (clip: string) => string; pollMs?: number }) {
+  constructor({ client, videoOf, savedOf, pollMs = POLL_MS }: { client: DetectionClient | null; videoOf: (clip: string) => string; savedOf: (clip: string) => string; pollMs?: number }) {
     this.#client = client;
     this.#videoOf = videoOf;
+    this.#savedOf = savedOf;
     this.#pollMs = pollMs;
   }
 
@@ -74,10 +77,21 @@ export class ClipDetection {
   }
 
   async #run(clip: string, held: { state: DetectionState; found: ClipDetections | null }): Promise<void> {
+    const saved = await readFile(this.#savedOf(clip), 'utf8').catch(() => null);
+    if (saved !== null) {
+      held.found = detections.parse(JSON.parse(saved));
+      held.state = 'ready';
+      return;
+    }
+    if (!this.#client) {
+      held.state = 'none';
+      return;
+    }
     const call = await this.#client.start(new Uint8Array(await readFile(this.#videoOf(clip))));
     for (;;) {
       const found = await this.#client.result(call);
       if (found) {
+        await writeFile(this.#savedOf(clip), JSON.stringify(found));
         held.found = found;
         held.state = 'ready';
         return;

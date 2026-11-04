@@ -12,8 +12,53 @@ const settled = async (check: () => boolean) => {
 async function detectionWith(client: DetectionClient) {
   const root = await mkdtemp(join(tmpdir(), 'detect-'));
   await writeFile(join(root, 'clip-1.mp4'), new Uint8Array([1, 2, 3]));
-  return new ClipDetection({ client, videoOf: (clip) => join(root, `${clip}.mp4`), pollMs: 1 });
+  return new ClipDetection({ client, videoOf: (clip) => join(root, `${clip}.mp4`), savedOf: (clip) => join(root, `${clip}.json`), pollMs: 1 });
 }
+
+describe('a detection recorded once', () => {
+  const folder = async () => {
+    const root = await mkdtemp(join(tmpdir(), 'detect-'));
+    await writeFile(join(root, 'clip-1.mp4'), new Uint8Array([1, 2, 3]));
+    return { root, videoOf: (clip: string) => join(root, `${clip}.mp4`), savedOf: (clip: string) => join(root, `${clip}.json`) };
+  };
+
+  it('answers from what was recorded and never calls the detector', async () => {
+    const { root, videoOf, savedOf } = await folder();
+    await writeFile(join(root, 'clip-1.json'), JSON.stringify(FOUND));
+    let starts = 0;
+    const detection = new ClipDetection({ client: { start: async () => (starts++, 'call'), result: async () => FOUND }, videoOf, savedOf, pollMs: 1 });
+    detection.ensure('clip-1');
+    await settled(() => detection.state('clip-1') === 'ready');
+    expect(detection.found('clip-1')).toEqual(FOUND);
+    expect(starts).toBe(0);
+  });
+
+  it('records what a run found, so the next server reads it instead of paying again', async () => {
+    const { videoOf, savedOf } = await folder();
+    let starts = 0;
+    const client = { start: async () => (starts++, 'call'), result: async () => FOUND };
+    const first = new ClipDetection({ client, videoOf, savedOf, pollMs: 1 });
+    first.ensure('clip-1');
+    await settled(() => first.state('clip-1') === 'ready');
+    const next = new ClipDetection({ client, videoOf, savedOf, pollMs: 1 });
+    next.ensure('clip-1');
+    await settled(() => next.state('clip-1') === 'ready');
+    expect(next.found('clip-1')).toEqual(FOUND);
+    expect(starts).toBe(1);
+  });
+
+  it('reads a recording with no detector set up, and has nothing to answer from without one', async () => {
+    const { root, videoOf, savedOf } = await folder();
+    await writeFile(join(root, 'clip-1.json'), JSON.stringify(FOUND));
+    const detection = new ClipDetection({ client: null, videoOf, savedOf, pollMs: 1 });
+    detection.ensure('clip-1');
+    await settled(() => detection.state('clip-1') === 'ready');
+    expect(detection.found('clip-1')).toEqual(FOUND);
+    detection.ensure('clip-2');
+    await settled(() => detection.state('clip-2') !== 'running');
+    expect(detection.state('clip-2')).toBe('none');
+  });
+});
 
 describe('detecting a clip', () => {
   it('sends the clip once, however often it is asked for, and holds what it found', async () => {

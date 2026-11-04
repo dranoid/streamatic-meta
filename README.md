@@ -52,8 +52,10 @@ sentence, check the camera can answer it, and ask the vision model on the camera
   outlined, and you read it before anything is planned.
 - **Questions about a clip.** Ask "How many people went through the front door?" in the same box. Muse Spark Open sees that this is a
   question, chooses what to count and writes the answer, and code replaces the answer if its numbers are not the counts, or declines
-  if the counts do not fit. The counts come from a detector and tracker that are not Meta's: RF-DETR and ByteTrack go over each clip
-  once, on Modal, when the server starts, and the result is held in memory. A question takes seconds and uses your own zones. Counts
+  if the counts do not fit. The counts come from a detector and tracker that are not Meta's: RF-DETR and ByteTrack went over each clip
+  once, on Modal, and the tracks are recorded in `demo-data/`. That stands in for a detector running live, since a Modal GPU could not be set up
+  in time and each run on CPUs costs money; the model still asks its questions live over those tracks. RF-DETR reads each frame in 15 enlarged sections, since a whole
+  frame shrunk to the model's size loses people far from the camera, and uses the whole frame only for what is too large for a section. A question takes seconds and uses your own zones. Counts
   are approximate, since a tracker can lose someone, mix people up or count someone twice.
 - **Alerts in the resident's language.** Muse Spark Open says what a rule's alert means in Nigerian Pidgin and in Yoruba, from
   the rule alone, with a choice of language on the alert. It is written once per rule and kept, so playing a clip calls no model.
@@ -94,7 +96,7 @@ The detector and tracker behind questions are not Meta's: RF-DETR (Apache 2.0) a
 This page uses recorded clips. The cameras Streamatic has deployed are on private property, so for reasons of permission and privacy they appear only in
 the submission video.
 
-Only the clips and their first rules are recorded. Setup, a new rule and a question run live, and detection runs when the server starts.
+Only the clips, their first rules and what the detector found are recorded. Setup, a new rule and a question run live.
 
 ## Running it
 
@@ -114,7 +116,7 @@ and no model is called. What needs more:
 | Searching and tracking anything new, planning a rule, a voice note, your own picture | `META_MODEL_API_KEY` (Meta Model API) and `BASETEN_API_KEY` (Baseten) in `.env` at the repository root |
 | Reading a new rule over a clip | Streamatic's backend, which is not public; this works on the hosted page |
 | Alerts on Telegram | `DEMO_TELEGRAM_TOKEN` in `.env`: a bot of your own, from Telegram's BotFather |
-| Questions about a clip | A detector of your own on Modal, as below, with its address and secret in `.env` as `DETECT_URL` and `DETECT_SECRET`. Each clip is then detected once each time the server starts, on your Modal account |
+| Questions about a clip | The keys above: the clips' tracks are recorded in `demo-data/`. For a clip with none, a detector of your own on Modal, as below, with its address and secret in `.env` as `DETECT_URL` and `DETECT_SECRET`; it runs once on your Modal account and the tracks are kept beside the clip |
 
 ```
 modal secret create streamatic-detect DETECT_SECRET=<a long random value>

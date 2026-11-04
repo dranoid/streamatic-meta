@@ -142,6 +142,8 @@ export function demoHandler({
     const reached = await limits.charge(visitor, kind, COST_MICRO_USD[kind]);
     if (reached) throw new Refusal(429, reached);
   };
+  // A clip with nothing recorded and no detector to run has nothing to count from.
+  const canCount = (id: string) => detection !== null && detection.state(id) !== 'none';
   const clipRow = (id: string) => {
     const row = store.clip(id);
     if (!row) throw new Refusal(404, 'No such clip.');
@@ -267,10 +269,10 @@ export function demoHandler({
         lengthMs: row.lengthMs,
         zones: (camera?.zones ?? []).map((z) => ({ name: z.name, paths: zonePaths(z) })),
         suggestions: camera ? offeredSentences(camera) : [],
-        suggestedQuestions: detection ? (camera?.questions ?? []) : [],
+        suggestedQuestions: canCount(id) ? (camera?.questions ?? []) : [],
         rules: store.rules(id, visitor).map(viewOf),
         setUpLive: store.liveSetup(visitor, id) !== null,
-        canCount: detection !== null,
+        canCount: canCount(id),
         detection: detection?.state(id) ?? null,
       });
       return true;
@@ -402,7 +404,7 @@ export function demoHandler({
       const row = clipRow(id);
       const parsed = planAsked.safeParse(await readJson(request));
       if (!parsed.success) throw new Refusal(400, 'Please ask the question in a sentence.');
-      if (!abilities.models || !detection) throw new Refusal(409, NEEDS_KEYS);
+      if (!abilities.models || !detection || !canCount(id)) throw new Refusal(409, NEEDS_KEYS);
       const detections = detection.found(id);
       if (!detections) {
         // Normally already running since the server started; this starts it if that run failed.

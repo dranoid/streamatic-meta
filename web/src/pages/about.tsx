@@ -26,7 +26,7 @@ const PARTS = [
     title: 'Questions about a clip',
     sam: null,
     spark: 'Chooses what to count for the question and writes the answer in a sentence.',
-    detector: 'RF-DETR and ByteTrack go over each clip once, when this server starts, and find the people, vehicles and bags in it and how each moves.',
+    detector: 'RF-DETR and ByteTrack went over each clip once, found the people, vehicles and bags in it and how each moves, and the tracks are recorded. This stands in for a detector running live. RF-DETR reads each frame in enlarged sections, so that people far from the camera are found.',
     built: 'Counts from those tracks within the person’s own zones, in seconds. Replaces an answer whose numbers are not the counts, declines a question the counts do not fit, and offers each moment found on the clip. Counts are approximate.',
   },
   {
@@ -45,7 +45,7 @@ const PARTS = [
     title: 'The clips on this page',
     sam: 'Outlines what a clip shows when the clip is set up, and on a picture you upload.',
     spark: 'Lists what is worth outlining, suggests rules and drafts the plan for a rule.',
-    built: 'Only the clips and their first rules are recorded. Setup, a new rule and a question run live, and detection runs when this server starts. Keeps the clips and rules in this page’s own database, serves the videos, and works out from the moment a rule is selected what you see and when.',
+    built: 'Only the clips, their first rules and what the detector found are recorded. Setup, a new rule and a question run live.Keeps the clips and rules in this page’s own database, serves the videos, and works out from the moment a rule is selected what you see and when.',
     before: 'Whether and when a rule alerts is decided by Streamatic’s rules, and copied here.',
   },
   {

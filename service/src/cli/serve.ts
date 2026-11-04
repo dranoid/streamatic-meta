@@ -232,12 +232,13 @@ async function publicHandler() {
     }
   }
   const footage = JSON.parse(await readFile(join(folder!, 'footage.json'), 'utf8').catch(() => '{}')) as { credit?: 'meva' };
-  const detection =
-    process.env.DETECT_URL && process.env.DETECT_SECRET
-      ? new ClipDetection({ client: detectionClient({ url: process.env.DETECT_URL, secret: process.env.DETECT_SECRET }), videoOf: (clip) => join(folder!, 'clips', clip, 'clip.mp4') })
-      : null;
-  // Every clip is detected as the server starts, so a visitor's question is answered in seconds.
-  if (detection) for (const clip of store.clips()) detection.ensure(clip.id);
+  const detection = new ClipDetection({
+    client: process.env.DETECT_URL && process.env.DETECT_SECRET ? detectionClient({ url: process.env.DETECT_URL, secret: process.env.DETECT_SECRET }) : null,
+    videoOf: (clip) => join(folder!, 'clips', clip, 'clip.mp4'),
+    savedOf: (clip) => join(folder!, 'clips', clip, 'detections.json'),
+  });
+  // A clip with a recorded detection reads it here, so a visitor's question is answered in seconds and a restart costs nothing.
+  for (const clip of store.clips()) detection.ensure(clip.id);
   const demo = demoHandler({
     credit: footage.credit ?? null,
     engine,
