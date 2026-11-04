@@ -5,9 +5,10 @@ import { basename, join } from 'node:path';
 import sharp from 'sharp';
 import { z } from 'zod';
 import { BackendError } from '../backend/client.js';
-import type { CameraFolder } from '../cameras/camera-folder.js';
+import type { Camera, CameraFolder } from '../cameras/camera-folder.js';
 import type { Clip, ClipFolder } from '../follow/clips.js';
 import { planRule, type GuidePlanner } from '../guide/plan.js';
+import { camerasForSentence, camerasThatOutlined, type ElsewhereCamera } from '../guide/route.js';
 import type { BotChat } from '../telegram/api.js';
 import { sendDemoAlert } from '../telegram/demo-alert.js';
 import type { TelegramLinks } from '../telegram/links.js';
@@ -103,12 +104,13 @@ export function demoHandler({
   trackSeconds,
   abilities = { models: true, rules: true },
   telegram = null,
+  credit = null,
 }: {
   engine: DemoEngine;
   store: DemoStore;
   limits: DemoLimits;
   clips: Pick<ClipFolder, 'get'>;
-  cameras: Pick<CameraFolder, 'get'>;
+  cameras: Pick<CameraFolder, 'get' | 'list'>;
   guidePlanner: GuidePlanner;
   setUp: (bytes: Uint8Array) => Promise<unknown>;
   voiceNotes: Pick<VoiceNotes, 'read'>;
@@ -118,6 +120,8 @@ export function demoHandler({
   abilities?: { models: boolean; rules: boolean };
   // Present when this copy has a bot of its own to send alerts with.
   telegram?: { links: TelegramLinks; botName: string; chat: Pick<BotChat, 'sendText' | 'sendPicture'> } | null;
+  // Whose footage this folder shows, where its licence asks to be credited on the page.
+  credit?: 'meva' | null;
 }): (request: IncomingMessage, response: ServerResponse, url: URL) => Promise<boolean> {
   const charge = async (visitor: string, kind: Spending) => {
     const reached = await limits.charge(visitor, kind, COST_MICRO_USD[kind]);
@@ -143,6 +147,14 @@ export function demoHandler({
     if (!made) throw new Refusal(400, 'That plan does not fit this clip. Please plan the rule again.');
     return made;
   };
+  const stillOf = (id: string) => `/demo-still/${encodeURIComponent(id)}`;
+  // A camera offered to the person, with the thing outlined on the picture they will be shown.
+  const offerOf = (found: ElsewhereCamera, all: Camera[]) => {
+    const camera = all.find((c) => c.id === found.camera)!;
+    const first = Object.keys(camera.pictures)[0]!;
+    const paths = camera.zones.filter((z) => found.zones.includes(z.name)).flatMap((z) => (z.outlines[first] ?? Object.values(z.outlines).flat()).map((o) => o.path));
+    return { ...found, hasClip: store.clip(found.camera) !== null, picture: stillOf(found.camera), paths };
+  };
   const needsBot = () => {
     if (!telegram) throw new Refusal(409, NEEDS_KEYS);
     return telegram;
@@ -154,7 +166,7 @@ export function demoHandler({
     let match: RegExpExecArray | null;
 
     if (method === 'GET' && path === '/api/app') {
-      send(response, 200, { public: true, trackSeconds, ...abilities, telegram: telegram !== null });
+      send(response, 200, { public: true, trackSeconds, ...abilities, telegram: telegram !== null, credit });
       return true;
     }
     if (method === 'GET' && path === '/api/demo/clips') {
@@ -179,15 +191,43 @@ export function demoHandler({
       });
       return true;
     }
+    if (method === 'GET' && path === '/api/demo/cameras') {
+      send(response, 200, (await cameras.list()).filter((c) => c.setup !== null).map((c) => ({ id: c.id, name: c.name, hasClip: store.clip(c.id) !== null, picture: stillOf(c.id) })));
+      return true;
+    }
+    if (method === 'POST' && path === '/api/demo/route') {
+      const parsed = planAsked.safeParse(await readJson(request));
+      if (!parsed.success) throw new Refusal(400, 'Please describe the rule in a sentence.');
+      const all = await cameras.list();
+      send(response, 200, { cameras: camerasForSentence(parsed.data.sentence, all).map((found) => offerOf(found, all)) });
+      return true;
+    }
+    if (method === 'POST' && (match = /^\/api\/demo\/clips\/([^/]+)\/route$/.exec(path))) {
+      const here = await cameras.get(decodeURIComponent(match[1]!));
+      if (!here) throw new Refusal(404, 'No such clip.');
+      const parsed = planAsked.safeParse(await readJson(request));
+      if (!parsed.success) throw new Refusal(400, 'Please describe the rule in a sentence.');
+      const all = await cameras.list();
+      send(response, 200, { elsewhere: camerasThatOutlined(parsed.data.sentence, here, all).map((found) => offerOf(found, all)) });
+      return true;
+    }
+    if (method === 'POST' && path === '/api/demo/voice-notes') {
+      if (!abilities.models) throw new Refusal(409, NEEDS_KEYS);
+      const visitor = visitorOf(request, response);
+      const { status, body } = await voiceNotes.read(request, voiceKeywords((await cameras.list()).flatMap((c) => c.zones)), () => charge(visitor, 'plan'));
+      send(response, status, body);
+      return true;
+    }
     if (method === 'GET' && (match = /^\/api\/demo\/clips\/([^/]+)\/setup$/.exec(path))) {
       const id = decodeURIComponent(match[1]!);
-      clipRow(id);
-      const setup = (await cameras.get(id))?.setup;
-      if (!setup) throw new Refusal(404, 'This clip has not been set up.');
+      const camera = await cameras.get(id);
+      if (!camera?.setup) throw new Refusal(404, 'This camera has not been set up.');
       send(response, 200, {
-        picture: `/demo-still/${encodeURIComponent(id)}`,
-        zones: setup.zones.map((z) => ({ name: z.name, item: z.item, paths: zonePaths(z) })),
-        rules: setup.rules.map((r) => r.sentence),
+        hasClip: store.clip(id) !== null,
+        picture: stillOf(id),
+        pictures: Object.keys(camera.pictures).map((label) => ({ label, src: `${stillOf(id)}/${encodeURIComponent(label)}` })),
+        zones: camera.setup.zones.map((z) => ({ name: z.name, item: z.item, seenAt: z.seenAt, paths: zonePaths(z), pathsBy: Object.fromEntries(Object.entries(z.outlines).map(([label, outlines]) => [label, outlines.map((o) => o.path)])) })),
+        rules: camera.setup.rules.map((r) => r.sentence),
       });
       return true;
     }
@@ -313,9 +353,12 @@ export function demoHandler({
       send(response, 200, { picture: `data:image/jpeg;base64,${data.toString('base64')}`, width: info.width, height: info.height, setup });
       return true;
     }
-    if (method === 'GET' && (match = /^\/demo-still\/([^/]+)$/.exec(path))) {
-      const clip = decodeURIComponent(match[1]!);
-      const bytes = basename(clip) === clip ? await readFile(join(folder, 'cameras', clip, 'still.jpg')).catch(() => null) : null;
+    if (method === 'GET' && (match = /^\/demo-still\/([^/]+)(?:\/([^/]+))?$/.exec(path))) {
+      const id = decodeURIComponent(match[1]!);
+      const camera = await cameras.get(id);
+      // Only a picture the camera names can be reached, by its label, so no other file of the folder can.
+      const file = camera && (match[2] ? camera.pictures[decodeURIComponent(match[2])] : Object.values(camera.pictures)[0]);
+      const bytes = file && basename(file) === file ? await readFile(join(folder, 'cameras', id, file)).catch(() => null) : null;
       if (!bytes) throw new Refusal(404, 'Not found.');
       response.writeHead(200, { 'Content-Type': 'image/jpeg' });
       response.end(bytes);

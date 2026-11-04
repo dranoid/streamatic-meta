@@ -69,7 +69,8 @@ for (const { id, scenario, site, words, stillSeconds } of list) {
 
   const cameraDir = join(folder, 'cameras', id);
   await mkdir(cameraDir, { recursive: true });
-  await writeFile(join(cameraDir, 'camera.json'), JSON.stringify({ name: found.name, site, baseWords: words, pictures: { [LABEL]: 'still.jpg' } }));
+  // A camera already described keeps its own pictures and group.
+  if (!(await exists(join(cameraDir, 'camera.json')))) await writeFile(join(cameraDir, 'camera.json'), JSON.stringify({ name: found.name, site, baseWords: words, pictures: { [LABEL]: 'still.jpg' } }));
   if (!(await exists(join(cameraDir, 'setup.json')))) {
     const still = await clips.picture(id, Math.round(stillSeconds * PAGE_FPS));
     if (!still) throw new Error(`${id}: there is no frame at ${stillSeconds} s.`);

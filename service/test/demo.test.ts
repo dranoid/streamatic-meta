@@ -184,8 +184,10 @@ describe('the demo engine', () => {
     await writeFile(join(root, 'cameras', CLIP, 'still.jpg'), new Uint8Array([0xff, 0xd8, 0xff]));
     const { body } = await visitor('v1')(`/api/demo/clips/${CLIP}/setup`);
     expect(body).toEqual({
+      hasClip: true,
       picture: `/demo-still/${CLIP}`,
-      zones: [{ name: 'door', item: 'door', paths: ['M960 100 Z'] }],
+      pictures: [{ label: 'clip', src: `/demo-still/${CLIP}/clip` }],
+      zones: [{ name: 'door', item: 'door', seenAt: ['clip'], paths: ['M960 100 Z'], pathsBy: { clip: ['M960 100 Z'] } }],
       rules: ['Tell me when the door opens.'],
     });
     const still = await fetch(`${base}/demo-still/${CLIP}`);
@@ -227,6 +229,65 @@ describe('the demo engine', () => {
   it('refuses a clip it does not hold', async () => {
     const { visitor } = await start();
     expect((await visitor('v1')('/api/demo/clips/other')).status).toBe(404);
+  });
+});
+
+describe('routing a sentence to a camera', () => {
+  const addCamera = async (root: string, id: string, group: string | null, word: string, extra: Record<string, string> = {}) => {
+    await mkdir(join(root, 'cameras', id), { recursive: true });
+    await writeFile(join(root, 'cameras', id, 'camera.json'), JSON.stringify({ name: `${id} camera`, site: 's', baseWords: [], pictures: { day: 'day.jpg', night: 'night.jpg', ...extra }, ...(group ? { group } : {}) }));
+    await writeFile(join(root, 'cameras', id, 'setup.json'), JSON.stringify({ zones: [{ name: word, item: word, seenAt: ['day'], outlines: { day: [{ word, objectId: '1', box: { left: 1, top: 1, right: 9, bottom: 9 }, path: 'M1 1Z' }] } }], notOutlined: [], rules: [{ sentence: `Tell me about the ${word}.`, zones: [word] }] }));
+  };
+
+  it('names the cameras that outlined what was asked about, says which hold a clip, and spends nothing', async () => {
+    const { visitor, root } = await start({ abilities: { models: false, rules: false } });
+    await addCamera(root, 'road', null, 'shop');
+    const { status, body } = await visitor('v1')('/api/demo/route', { sentence: 'Tell me when someone is at the shop.' });
+    expect(status).toBe(200);
+    expect(body.cameras).toEqual([{ camera: 'road', name: 'road camera', zones: ['shop'], matched: 1, hasClip: false, picture: '/demo-still/road', paths: ['M1 1Z'] }]);
+    const door = await visitor('v1')('/api/demo/route', { sentence: 'Tell me when the door opens.' });
+    expect(door.body.cameras).toMatchObject([{ camera: CLIP, hasClip: true, zones: ['door'] }]);
+    expect((await visitor('v1')('/api/demo/route', { sentence: 'Tell me when it rains.' })).body.cameras).toEqual([]);
+  });
+
+  it('offers another camera at the same place from a clip, and only when it outlined more', async () => {
+    const { visitor, root } = await start({ setup: SETUP });
+    await writeFile(join(root, 'cameras', CLIP, 'camera.json'), JSON.stringify({ name: 'Building entrance', site: 'a building', baseWords: [], pictures: { clip: 'still.jpg' }, group: 'site' }));
+    await addCamera(root, 'road', 'site', 'shop');
+    await addCamera(root, 'far', 'other', 'shop');
+    const offered = await visitor('v1')(`/api/demo/clips/${CLIP}/route`, { sentence: 'Someone is at the shop.' });
+    expect(offered.body.elsewhere).toMatchObject([{ camera: 'road', zones: ['shop'], hasClip: false, picture: '/demo-still/road' }]);
+    expect((await visitor('v1')(`/api/demo/clips/${CLIP}/route`, { sentence: 'The door opens.' })).body.elsewhere).toEqual([]);
+  });
+
+  it('lists every camera for setup, whether or not it holds a clip, and sets one up from its own pictures', async () => {
+    const { visitor, root, base } = await start();
+    await addCamera(root, 'road', null, 'shop');
+    await writeFile(join(root, 'cameras', 'road', 'night.jpg'), new Uint8Array([0xff, 0xd8, 0xfe]));
+    const { body } = await visitor('v1')('/api/demo/cameras');
+    expect(body).toEqual([
+      { id: CLIP, name: 'Building entrance', hasClip: true, picture: `/demo-still/${CLIP}` },
+      { id: 'road', name: 'road camera', hasClip: false, picture: '/demo-still/road' },
+    ]);
+    const setup = (await visitor('v1')('/api/demo/clips/road/setup')).body;
+    expect(setup).toMatchObject({
+      hasClip: false,
+      picture: '/demo-still/road',
+      pictures: [{ label: 'day', src: '/demo-still/road/day' }, { label: 'night', src: '/demo-still/road/night' }],
+      zones: [{ name: 'shop', seenAt: ['day'], pathsBy: { day: ['M1 1Z'] } }],
+    });
+    const night = await fetch(`${base}/demo-still/road/night`);
+    expect(new Uint8Array(await night.arrayBuffer())).toEqual(new Uint8Array([0xff, 0xd8, 0xfe]));
+    expect((await fetch(`${base}/demo-still/road/camera`)).status).toBe(404);
+  });
+
+  it('reads a voice note from the page with no camera chosen, listening for every camera’s zones', async () => {
+    const { base, root } = await start();
+    await addCamera(root, 'road', null, 'shop');
+    voiceKeywordsAsked.length = 0;
+    const reply = await fetch(`${base}/api/demo/voice-notes`, { method: 'POST', headers: { cookie: 'streamatic_demo=v1' }, body: new Uint8Array([1]) });
+    expect(((await reply.json()) as { text: string }).text).toBe('Tell me when someone opens the door.');
+    expect(voiceKeywordsAsked[0]).toEqual(expect.arrayContaining(['door', 'shop']));
   });
 });
 

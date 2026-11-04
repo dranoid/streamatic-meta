@@ -1,21 +1,93 @@
-import { useQuery } from '@tanstack/react-query';
-import { ArrowRight, Compass, ImageUp, Search, Wand2 } from 'lucide-react';
+import { useState } from 'react';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { ArrowRight, Compass, ImageUp, LoaderCircle, Search, Wand2 } from 'lucide-react';
+import { OfferCard } from '@/components/demo-guide';
 import { PageHeader } from '@/components/layout/page-header';
 import { PictureFrame } from '@/components/picture-frame';
+import { VoiceNote } from '@/components/voice-note';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { Input, Label } from '@/components/ui/input';
 import { Link } from '@/components/ui/link';
 import { Notice } from '@/components/ui/notice';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useAbilities } from '@/lib/abilities';
 import { api, clipPictureUrl, type AppInfo, type Clip, type DemoClipSummary } from '@/lib/api';
+import { navigate } from '@/lib/router';
 
 const length = (seconds: number) => (seconds < 90 ? `${Math.round(seconds)} seconds` : `${Math.round(seconds / 60)} minutes`);
 
 const WHAT_TO_TRY = [
   { icon: Wand2, title: 'Set up a camera', text: 'Add zones and rules.', href: '/setup' },
-  { icon: Compass, title: 'Describe a rule', text: 'Write it in a sentence.', href: null },
   { icon: Search, title: 'Search past words', text: 'Find and track an item.', href: null },
   { icon: ImageUp, title: 'Your own picture', text: 'Upload and set it up.', href: '/try' },
 ];
+
+// One sentence with no camera chosen. Code finds the camera that outlined what was asked about, and the guide carries on there by itself.
+function AskAnyCamera({ clips }: { clips: Clip[] }) {
+  const { models, rules } = useAbilities();
+  const [text, setText] = useState('');
+  const choosing = useMutation({
+    mutationFn: (sentence: string) => api.routeSentence(sentence),
+    onSuccess: ({ cameras }, sentence) => {
+      const best = cameras[0];
+      const same = cameras.filter((c) => c.matched === best?.matched);
+      if (best?.hasClip && same.length === 1) navigate(`/clips/${encodeURIComponent(best.camera)}?ask=${encodeURIComponent(sentence)}`);
+    },
+  });
+  const asked = choosing.variables ?? '';
+  const found = choosing.data?.cameras ?? null;
+  const best = found?.filter((c) => c.matched === found[0]?.matched) ?? [];
+
+  return (
+    <Card className='mb-6'>
+      <CardContent className='space-y-3'>
+        <form
+          className='space-y-2'
+          noValidate
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (text.trim()) choosing.mutate(text.trim());
+          }}
+        >
+          <Label htmlFor='ask-any-camera'>What should your cameras watch?</Label>
+          <div className='flex flex-wrap items-center gap-2'>
+            <Input id='ask-any-camera' className='min-w-48 flex-1' maxLength={300} disabled={!models} value={text} onChange={(e) => setText(e.target.value)} placeholder='Tell me when someone opens the door of the building.' />
+            <Button type='submit' disabled={!models || !rules || text.trim().length < 3 || choosing.isPending}>
+              {choosing.isPending ? <LoaderCircle className='animate-spin' /> : <Compass />}
+              Add rule
+            </Button>
+          </div>
+        </form>
+        <VoiceNote disabled={!models} read={api.voiceNoteOnPage} onText={setText} />
+        {choosing.isError && <Notice tone='error'>{choosing.error.message}</Notice>}
+        {found && found.length === 0 && (
+          <div className='space-y-2'>
+            <Notice>No camera outlined what you asked about by name. Select the camera to run this rule on.</Notice>
+            <div className='flex flex-wrap gap-2'>
+              {clips.map((clip) => (
+                <Link key={clip.id} href={`/clips/${encodeURIComponent(clip.id)}?ask=${encodeURIComponent(asked)}`} className='hover:bg-accent inline-flex h-8 items-center rounded-md border px-2.5 text-sm font-medium'>
+                  {clip.name}
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
+        {best.length > 0 && !(best.length === 1 && best[0]!.hasClip) && (
+          <div className='space-y-2'>
+            <p className='text-sm'>{best.length === 1 ? 'This camera outlined what you asked about.' : 'These cameras all outlined what you asked about. Select one.'}</p>
+            <div className='grid gap-3 sm:grid-cols-2 xl:grid-cols-4'>
+              {best.map((offer) => (
+                <OfferCard key={offer.camera} offer={offer} sentence={asked} />
+              ))}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 export function ClipsPage({ isPublic = false, app }: { isPublic?: boolean; app?: AppInfo }) {
   const clips = useQuery<Array<Clip & Partial<DemoClipSummary>>>({ queryKey: ['clips-list', isPublic], queryFn: isPublic ? api.demoClips : api.clips });
@@ -35,7 +107,10 @@ export function ClipsPage({ isPublic = false, app }: { isPublic?: boolean; app?:
         <Notice className='mb-6'>Provide your keys for the full experience. The README says which to add. The clips, rules, alerts and kept searches work without them.</Notice>
       )}
       {isPublic && (
-        <nav aria-label='What to try' className='mb-8 grid gap-2 sm:grid-cols-2 xl:grid-cols-4'>
+        <AskAnyCamera clips={clips.data ?? []} />
+      )}
+      {isPublic && (
+        <nav aria-label='What to try' className='mb-8 grid gap-2 sm:grid-cols-3'>
           {WHAT_TO_TRY.map(({ icon: Icon, title, text, href }) => (
             <Link
               key={title}

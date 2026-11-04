@@ -221,7 +221,9 @@ async function publicHandler() {
     console.log(`Telegram: @${username}`);
     }
   }
+  const footage = JSON.parse(await readFile(join(folder!, 'footage.json'), 'utf8').catch(() => '{}')) as { credit?: 'meva' };
   const demo = demoHandler({
+    credit: footage.credit ?? null,
     engine,
     store,
     limits,

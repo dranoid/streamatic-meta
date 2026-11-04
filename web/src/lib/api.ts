@@ -129,6 +129,21 @@ export interface ElsewhereCamera {
   camera: string;
   name: string;
   zones: string[];
+  matched: number;
+}
+
+// A camera on the public page a sentence could go to, with the thing outlined on its picture.
+export interface CameraOffer extends ElsewhereCamera {
+  hasClip: boolean;
+  picture: string;
+  paths: string[];
+}
+
+export interface DemoCamera {
+  id: string;
+  name: string;
+  hasClip: boolean;
+  picture: string;
 }
 
 export interface StoredEvent {
@@ -209,6 +224,8 @@ export interface AppInfo {
   models?: boolean;
   rules?: boolean;
   telegram?: boolean;
+  // Whose footage this folder shows, where its licence asks to be credited.
+  credit?: 'meva' | null;
 }
 
 export interface DemoClipSummary extends Clip {
@@ -247,8 +264,10 @@ export interface DemoClip {
 }
 
 export interface DemoSetup {
+  hasClip: boolean;
   picture: string;
-  zones: Array<DemoZone & { item: string }>;
+  pictures: Array<{ label: string; src: string }>;
+  zones: Array<DemoZone & { item: string; seenAt: string[]; pathsBy: Record<string, string[]> }>;
   rules: string[];
 }
 
@@ -333,6 +352,10 @@ export const api = {
   followJob: (clip: string, id: string) => request<FollowJob>(`/api/clips/${encodeURIComponent(clip)}/follows/${encodeURIComponent(id)}`),
   app: () => request<AppInfo>('/api/app'),
   demoClips: () => request<DemoClipSummary[]>('/api/demo/clips'),
+  demoCameras: () => request<DemoCamera[]>('/api/demo/cameras'),
+  routeSentence: (sentence: string) => request<{ cameras: CameraOffer[] }>('/api/demo/route', { method: 'POST', body: JSON.stringify({ sentence }) }),
+  routeFromClip: (clip: string, sentence: string) => request<{ elsewhere: CameraOffer[] }>(`/api/demo/clips/${encodeURIComponent(clip)}/route`, { method: 'POST', body: JSON.stringify({ sentence }) }),
+  voiceNoteOnPage: (audio: Blob) => sendVoiceNote('/api/demo/voice-notes', audio),
   demoClip: (clip: string) => request<DemoClip>(`/api/demo/clips/${encodeURIComponent(clip)}`),
   demoSetup: (clip: string) => request<DemoSetup>(`/api/demo/clips/${encodeURIComponent(clip)}/setup`),
   demoAlerts: (clip: string, ticks: DemoTick[]) =>

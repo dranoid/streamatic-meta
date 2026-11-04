@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Link } from '@/components/ui/link';
 import { Notice } from '@/components/ui/notice';
+import { Segmented } from '@/components/ui/segmented';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAbilities } from '@/lib/abilities';
 import { api, type DemoRule, type DemoSetup } from '@/lib/api';
@@ -27,7 +28,6 @@ const LAST_STEP = STEPS.length - 1;
 const READING_MS = 1_200;
 const ITEM_MS = 140;
 const ZONE_MS = 320;
-const stillOf = (id: string) => `/demo-still/${encodeURIComponent(id)}`;
 
 // Counts up to `total`, one every `everyMs`, so a saved result is shown as it was found. Nothing is sent anywhere meanwhile.
 function useReveal(total: number, everyMs: number, startKey: unknown): number {
@@ -50,25 +50,25 @@ function useReveal(total: number, everyMs: number, startKey: unknown): number {
 }
 
 export function SetupPage() {
-  const clips = useQuery({ queryKey: ['clips-list', true], queryFn: api.demoClips });
+  const cameras = useQuery({ queryKey: ['demo-cameras'], queryFn: api.demoCameras });
   return (
     <>
       <PageHeader icon={<Wand2 />} title='Setup' description='Select a camera to set it up. Streamatic finds what is in view, outlines each item as a zone and suggests rules for you to add.' />
-      {clips.isError && <Notice tone='error'>The cameras could not be loaded. Please reload the page.</Notice>}
+      {cameras.isError && <Notice tone='error'>The cameras could not be loaded. Please reload the page.</Notice>}
       <div className='grid gap-4 sm:grid-cols-2 xl:grid-cols-4'>
-        {clips.isPending && [0, 1, 2, 3].map((i) => <Skeleton key={i} className='aspect-[4/3] rounded-xl' />)}
-        {clips.data?.map((clip) => (
+        {cameras.isPending && [0, 1, 2, 3].map((i) => <Skeleton key={i} className='aspect-[4/3] rounded-xl' />)}
+        {cameras.data?.map((camera) => (
           <Link
-            key={clip.id}
-            href={`/setup/${encodeURIComponent(clip.id)}`}
+            key={camera.id}
+            href={`/setup/${encodeURIComponent(camera.id)}`}
             className='group bg-card hover:border-primary/50 focus-visible:ring-ring/50 flex flex-col overflow-hidden rounded-xl border shadow-sm transition-colors outline-none focus-visible:ring-[3px]'
           >
-            <PictureFrame src={stillOf(clip.id)} alt={clip.name} className='rounded-none' />
+            <PictureFrame src={camera.picture} alt={camera.name} className='rounded-none' />
             <div className='flex flex-1 items-center justify-between gap-2 p-4'>
               <div className='min-w-0'>
-                <p className='truncate font-semibold'>{clip.name}</p>
+                <p className='font-semibold'>{camera.name}</p>
                 <Badge variant='outline' className='mt-2'>
-                  {progressOf(clip.id).ready ? 'Ready' : 'Not set up'}
+                  {progressOf(camera.id).ready ? 'Ready' : 'Not set up'}
                 </Badge>
               </div>
               <ArrowRight className='text-muted-foreground group-hover:text-foreground size-4 shrink-0 transition-colors' />
@@ -84,10 +84,11 @@ type Stage = 'start' | number | 'ready';
 
 export function SetupCameraPage({ id }: { id: string }) {
   const queryClient = useQueryClient();
-  const clips = useQuery({ queryKey: ['clips-list', true], queryFn: api.demoClips });
+  const cameras = useQuery({ queryKey: ['demo-cameras'], queryFn: api.demoCameras });
   const setup = useQuery({ queryKey: ['demo-setup', id], queryFn: () => api.demoSetup(id), staleTime: Infinity });
-  const clip = useQuery({ queryKey: ['demo-clip', id], queryFn: () => api.demoClip(id) });
-  const name = clips.data?.find((c) => c.id === id)?.name ?? 'Camera';
+  const hasClip = cameras.data?.find((c) => c.id === id)?.hasClip ?? false;
+  const clip = useQuery({ queryKey: ['demo-clip', id], queryFn: () => api.demoClip(id), enabled: hasClip });
+  const name = cameras.data?.find((c) => c.id === id)?.name ?? 'Camera';
   const [progress, setProgress] = useState(() => progressOf(id));
   const [stage, setStage] = useState<Stage>(() => (progress.ready ? 'ready' : 'start'));
   const [problem, setProblem] = useState<string | null>(null);
@@ -199,12 +200,15 @@ function Steps({
   const itemsShown = useReveal(step === 1 ? items.length : 0, ITEM_MS, step);
   const zonesShown = useReveal(step === 2 ? setup.zones.length : 0, ZONE_MS, step);
   const stepDone = step === 0 ? readingDone : step === 1 ? itemsShown >= items.length : step === 2 ? zonesShown >= setup.zones.length : true;
+  const [label, setLabel] = useState(setup.pictures[0]!.label);
+  const manyPictures = setup.pictures.length > 1;
+  const lastLabel = setup.pictures[setup.pictures.length - 1]!.label;
   const paths = useMemo<DrawnPath[]>(
     () =>
       step !== 2
         ? []
-        : setup.zones.slice(0, zonesShown).flatMap((zone, i) => zone.paths.map((d, j) => ({ key: `${zone.name}-${j}`, d, colour: ZONE_COLOURS[i % ZONE_COLOURS.length]!, style: 'fill' as const, title: sentence(zone.name), group: zone.name }))),
-    [setup, step, zonesShown],
+        : setup.zones.slice(0, zonesShown).flatMap((zone, i) => (zone.pathsBy[label] ?? []).map((d, j) => ({ key: `${zone.name}-${j}`, d, colour: ZONE_COLOURS[i % ZONE_COLOURS.length]!, style: 'fill' as const, title: sentence(zone.name), group: zone.name }))),
+    [setup, step, zonesShown, label],
   );
 
   return (
@@ -231,12 +235,26 @@ function Steps({
         </div>
       </CardHeader>
       <CardContent className='space-y-4'>
-        {step < LAST_STEP && (
-          <PictureFrame src={setup.picture} alt={`The view from ${name}`} paths={paths}>
-            {step === 0 && !readingDone && <PictureBusy label='Reading the picture' />}
-            {step === 1 && itemsShown < items.length && <PictureBusy label='Listing what is in view' />}
-          </PictureFrame>
+        {step === 0 && manyPictures ? (
+          <div className='grid gap-2 sm:grid-cols-3'>
+            {setup.pictures.map((picture) => (
+              <figure key={picture.label} className='space-y-1'>
+                <PictureFrame src={picture.src} alt={`The view from ${name}: ${picture.label}`}>
+                  {!readingDone && <PictureBusy label='Reading' />}
+                </PictureFrame>
+                <figcaption className='text-muted-foreground text-xs'>{sentence(picture.label)}</figcaption>
+              </figure>
+            ))}
+          </div>
+        ) : (
+          step < LAST_STEP && (
+            <PictureFrame src={step === 2 ? setup.pictures.find((p) => p.label === label)!.src : setup.picture} alt={`The view from ${name}`} paths={paths}>
+              {step === 0 && !readingDone && <PictureBusy label='Reading the picture' />}
+              {step === 1 && itemsShown < items.length && <PictureBusy label='Listing what is in view' />}
+            </PictureFrame>
+          )
         )}
+        {step === 2 && manyPictures && <Segmented label='Picture' value={label} options={setup.pictures.map((p) => ({ value: p.label, label: sentence(p.label) }))} onChange={setLabel} />}
         {step === 1 && (
           <ul aria-label='What is in view' className='flex min-h-16 flex-wrap content-start gap-1.5'>
             {items.slice(0, itemsShown).map((item) => (
@@ -256,6 +274,7 @@ function Steps({
                 <li key={zone.name} className='animate-in fade-in flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs'>
                   <span className='size-2.5 rounded-full' style={{ background: ZONE_COLOURS[i % ZONE_COLOURS.length] }} />
                   {sentence(zone.name)}
+                  {manyPictures && !zone.seenAt.includes(lastLabel) && <span className='text-muted-foreground'>(uncertain at {lastLabel})</span>}
                 </li>
               ))}
             </ul>
@@ -326,13 +345,13 @@ function RulesStep({ setup, clip, clipRules, chosenBefore, onBack, onFinish }: {
       {suggested.length > 0 && (
         <fieldset className='space-y-2'>
           <legend className='text-sm font-medium'>Suggested for this camera</legend>
-          <p className='text-muted-foreground text-xs'>Streamatic runs each of these over the clip first. You can go on to the clip while it runs.</p>
+          <p className='text-muted-foreground text-xs'>{setup.hasClip ? 'Streamatic runs each of these over the clip first. You can go on to the clip while it runs.' : 'This camera has no recording here, so these rules cannot be run on this page.'}</p>
           {suggested.map((text) => (
-            <RuleChoice key={text} label={text} checked={chosen.has(text)} disabled={adding.isPending || !canRunRules} onChange={(on) => toggle(text, on)} />
+            <RuleChoice key={text} label={text} checked={chosen.has(text)} disabled={adding.isPending || !canRunRules || !setup.hasClip} onChange={(on) => toggle(text, on)} />
           ))}
         </fieldset>
       )}
-      {!canRunRules && <NeedsKeys />}
+      {!canRunRules && setup.hasClip && <NeedsKeys />}
       {adding.isError && <Notice tone='error'>{adding.error.message}</Notice>}
       <div className='flex flex-wrap items-center gap-2'>
         <Button size='sm' variant='outline' disabled={adding.isPending} onClick={onBack}>
@@ -341,7 +360,7 @@ function RulesStep({ setup, clip, clipRules, chosenBefore, onBack, onFinish }: {
         </Button>
         <Button size='sm' disabled={adding.isPending} onClick={() => adding.mutate()}>
           {adding.isPending ? <LoaderCircle className='animate-spin' /> : <Check />}
-          {chosenCount === 0 ? 'Continue without rules' : `Add ${chosenCount === 1 ? '1 rule' : `${chosenCount} rules`}`}
+          {!setup.hasClip ? 'Continue' : chosenCount === 0 ? 'Continue without rules' : `Add ${chosenCount === 1 ? '1 rule' : `${chosenCount} rules`}`}
         </Button>
       </div>
     </div>
@@ -360,7 +379,7 @@ function RuleChoice({ label, checked, disabled, onChange }: { label: string; che
 function Ready({ id, setup, rules, offered, added, problem }: { id: string; setup: DemoSetup; rules: DemoRule[]; offered: string[]; added: string[]; problem: string | null }) {
   const chosen = [...offered, ...added].flatMap((rule) => rules.filter((r) => r.id === rule));
   const paths = useMemo<DrawnPath[]>(
-    () => setup.zones.flatMap((zone, i) => zone.paths.map((d, j) => ({ key: `${zone.name}-${j}`, d, colour: ZONE_COLOURS[i % ZONE_COLOURS.length]!, style: 'fill' as const, title: sentence(zone.name), group: zone.name }))),
+    () => setup.zones.flatMap((zone, i) => (zone.pathsBy[setup.pictures[0]!.label] ?? []).map((d, j) => ({ key: `${zone.name}-${j}`, d, colour: ZONE_COLOURS[i % ZONE_COLOURS.length]!, style: 'fill' as const, title: sentence(zone.name), group: zone.name }))),
     [setup],
   );
   const hasAdded = chosen.some((r) => r.kind === 'typed');
@@ -374,7 +393,7 @@ function Ready({ id, setup, rules, offered, added, problem }: { id: string; setu
             This camera is ready
           </CardTitle>
           <CardDescription>
-            {setup.zones.length} zones are in place, and {chosen.length === 0 ? 'no rules were added' : chosen.length === 1 ? '1 rule was added' : `${chosen.length} rules were added`}.
+            {!setup.hasClip ? `${setup.zones.length} zones are in place. This camera has no recording here, so its rules cannot be run on this page.` : `${setup.zones.length} zones are in place, and ${chosen.length === 0 ? 'no rules were added' : chosen.length === 1 ? '1 rule was added' : `${chosen.length} rules were added`}.`}
           </CardDescription>
         </div>
       </CardHeader>
@@ -404,10 +423,12 @@ function Ready({ id, setup, rules, offered, added, problem }: { id: string; setu
         )}
         {hasAdded && <p className='text-muted-foreground text-xs'>A new rule waits 5 minutes after an alert before it can alert again, as it would on a live camera.</p>}
         <div className='flex flex-wrap items-center gap-2'>
+          {setup.hasClip && (
           <Link href={`/clips/${encodeURIComponent(id)}`} className='bg-primary text-primary-foreground hover:bg-primary/90 inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium [&_svg]:size-4'>
             Go to the clip
             <ArrowRight />
           </Link>
+          )}
           <Link href='/setup' className='hover:bg-accent inline-flex h-9 items-center rounded-md border px-3 text-sm font-medium'>
             All cameras
           </Link>

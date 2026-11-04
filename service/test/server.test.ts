@@ -462,7 +462,7 @@ describe('the guide on a camera that did not outline the thing', () => {
     await group(root, 'elsewhere', 'another', 'shop');
     const planned = await post('/api/guide/plans', { camera: 'table-parlour', sentence: 'Tell me when someone is at the shop.' });
     expect(planned.status).toBe(200);
-    expect(planned.body.elsewhere).toEqual([{ camera: 'foursquare', name: 'foursquare road', zones: ['shop'] }]);
+    expect(planned.body.elsewhere).toEqual([{ camera: 'foursquare', name: 'foursquare road', zones: ['shop'], matched: 1 }]);
   });
 
   it('offers nothing when this camera outlined it', async () => {

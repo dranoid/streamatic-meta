@@ -19,7 +19,7 @@ const PUBLIC_NAV = [
   { href: '/about', label: 'About', icon: Info, pages: ['about'] },
 ];
 
-export function AppShell({ route, isPublic = false, children }: { route: Route; isPublic?: boolean; children: ReactNode }) {
+export function AppShell({ route, isPublic = false, credit = null, children }: { route: Route; isPublic?: boolean; credit?: 'meva' | null; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   useEffect(() => setOpen(false), [route]);
 
@@ -90,23 +90,25 @@ export function AppShell({ route, isPublic = false, children }: { route: Route; 
           <ThemeSwitch />
         </header>
         <main className='mx-auto w-full max-w-[90rem] flex-1 px-4 py-6 md:px-6'>{children}</main>
-        {isPublic && <SmallPrint />}
+        {isPublic && <SmallPrint credit={credit} />}
       </div>
     </div>
   );
 }
 
-function SmallPrint() {
+function SmallPrint({ credit }: { credit: 'meva' | null }) {
   return (
     <footer className='text-muted-foreground mx-auto w-full max-w-[90rem] space-y-1 border-t px-4 py-4 text-xs leading-relaxed md:px-6'>
       <p>A picture you upload is sent to Meta and to Baseten to be analysed, and a voice note, on this page or in the Telegram chat you link from it, is sent to Meta to be written out, under the hackathon’s credit terms, which allow Meta to use them for product improvement. This page keeps no copy of either. Please upload only a picture you are allowed to share.</p>
-      <p>
-        Clips: MEVA dataset by Kitware Inc. and IARPA,{' '}
-        <a className='underline underline-offset-2' href='https://mevadata.org/resources/MEVA-data-license.txt' target='_blank' rel='noreferrer'>
-          CC BY 4.0
-        </a>
-        , resized and re-encoded for this page. Kitware and IARPA do not endorse this work.
-      </p>
+      {credit === 'meva' && (
+        <p>
+          Clips: MEVA dataset by Kitware Inc. and IARPA,{' '}
+          <a className='underline underline-offset-2' href='https://mevadata.org/resources/MEVA-data-license.txt' target='_blank' rel='noreferrer'>
+            CC BY 4.0
+          </a>
+          , resized and re-encoded for this page. Kitware and IARPA do not endorse this work.
+        </p>
+      )}
     </footer>
   );
 }

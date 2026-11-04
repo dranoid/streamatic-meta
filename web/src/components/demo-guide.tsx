@@ -1,22 +1,26 @@
-import { useEffect, useState } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { Check, Compass, Loader2 } from 'lucide-react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { Check, Compass, Loader2, X } from 'lucide-react';
+import { NeedsKeys } from '@/components/needs-keys';
+import { PictureFrame } from '@/components/picture-frame';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Label, Textarea } from '@/components/ui/input';
+import { Input } from '@/components/ui/input';
+import { Link } from '@/components/ui/link';
 import { Notice } from '@/components/ui/notice';
-import { NeedsKeys } from '@/components/needs-keys';
 import { VoiceNote } from '@/components/voice-note';
 import { useAbilities } from '@/lib/abilities';
-import { api, type DemoClip, type DemoRule, type DemoZone, type GuidePlan, type PlanAttempt } from '@/lib/api';
+import { api, type CameraOffer, type DemoAlert, type DemoClip, type DemoRule, type DemoZone, type GuidePlan, type PlanAttempt } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { clockTime } from '@/lib/time';
+import { RULE_FINISHED } from '@/lib/setup-progress';
+import { clockTime, sentence as asSentence } from '@/lib/time';
 
 const POLL_MS = 1_500;
-const GUIDE_PAUSE_MS = 700;
-const FINISHED = new Set(['ready', 'refused', 'failed']);
+// Long enough to see where the zones are before the guide moves on.
+const ZONES_SHOWN_MS = 1_800;
+const OFFER_COLOUR = '#e8c547';
 
-function statusLine(rule: DemoRule | undefined): string {
+function runningLine(rule: DemoRule | undefined): string {
   if (rule?.status === 'probing') return 'Checking that this clip can answer the rule';
   if (rule?.status === 'asking') {
     const { done, total } = rule.progress;
@@ -30,163 +34,133 @@ function zonesOf(clip: DemoClip, plan: GuidePlan): DemoZone[] {
   return clip.zones.filter((z) => wanted.has(z.name.toLowerCase()));
 }
 
-interface Step {
-  key: string;
-  title: string;
-  detail: React.ReactNode;
-  // The page shows what the step did, so the person can confirm it.
-  ready: boolean;
-  waiting?: string;
-  confirm: string;
-  onConfirm: () => void;
-  done: boolean;
-}
+// What is on the guide's screen: each stage appears when it starts and is ticked by code when the page shows it done.
+type Run =
+  | { stage: 'choosing'; sentence: string }
+  | { stage: 'offer'; sentence: string; elsewhere: CameraOffer[] }
+  | { stage: 'planning'; sentence: string; stayed: boolean }
+  | { stage: 'not-planned'; sentence: string; problems: string[]; attempts: number }
+  | { stage: 'zones' | 'running'; sentence: string; plan: GuidePlan | null; attempts: PlanAttempt[] };
 
-// The guide on a clip: the plan is drafted and checked, the zones it uses are shown on the player, Streamatic reads the
-// rule over the clip, and the rule joins the clip. A step is ticked only once the page shows it and the person confirms it.
+// The guide on a clip. One sentence, and it does the rest on this page: it checks this is the camera to use, plans the rule, shows the
+// zones on the player and runs the rule through Streamatic. The one thing it asks for is the confirmation to add the finished rule.
 export function DemoGuide({
   clip,
+  cameraName,
+  ask,
   added,
   onShowZones,
   onAdd,
   onTyped,
 }: {
   clip: DemoClip;
+  cameraName: string;
+  // A sentence brought from the page that chose this camera, run at once.
+  ask: string | null;
   added: (rule: string) => boolean;
   onShowZones: (zones: DemoZone[] | null) => void;
-  onAdd: (rule: string) => void;
+  onAdd: (rule: string, firstAlert: DemoAlert | null) => void;
   onTyped: () => void;
 }) {
-  const { models } = useAbilities();
-  const [text, setText] = useState('');
-  const [plan, setPlan] = useState<{ plan: GuidePlan; attempts: PlanAttempt[] } | null>(null);
-  const [planChecked, setPlanChecked] = useState(false);
-  const [zonesShown, setZonesShown] = useState(false);
-  const [zonesChecked, setZonesChecked] = useState(false);
-  const [readingChecked, setReadingChecked] = useState(false);
+  const { models, rules: canRunRules } = useAbilities();
+  const [text, setText] = useState(ask ?? '');
+  const [run, setRun] = useState<Run | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
   const [ruleId, setRuleId] = useState<string | null>(null);
+  // A newer sentence, or Stop, leaves an older run to finish with nobody listening.
+  const current = useRef(0);
 
-  const reset = () => {
-    setPlan(null);
-    setPlanChecked(false);
-    setZonesShown(false);
-    setZonesChecked(false);
-    setReadingChecked(false);
+  const stop = () => {
+    current.current += 1;
+    setRun(null);
     setRuleId(null);
+    setProblem(null);
     onShowZones(null);
   };
 
-  const planning = useMutation({
-    mutationFn: (sentence: string) => api.planOnClip(clip.id, sentence),
-    onSuccess: (result) => {
-      reset();
-      if (result.status === 'ready') setPlan({ plan: result.plan, attempts: result.attempts });
-    },
-  });
-  const refused = planning.data?.status === 'needs-person' ? planning.data : null;
-  const adding = useMutation({
-    mutationFn: (rule: { text: string } | { plan: GuidePlan }) => api.addToClip(clip.id, rule),
-    onSuccess: ({ id }) => setRuleId(id),
-  });
+  const runRule = async (me: number, sentence: string, rule: { text: string } | { plan: GuidePlan }, plan: GuidePlan | null, attempts: PlanAttempt[]) => {
+    const { id } = await api.addToClip(clip.id, rule);
+    if (current.current !== me) return;
+    setRuleId(id);
+    setRun({ stage: 'running', sentence, plan, attempts });
+  };
+
+  const start = async (sentence: string, { stay = false } = {}) => {
+    const me = (current.current += 1);
+    const alive = () => current.current === me;
+    setProblem(null);
+    setRuleId(null);
+    onShowZones(null);
+    try {
+      if (!stay) {
+        setRun({ stage: 'choosing', sentence });
+        const { elsewhere } = await api.routeFromClip(clip.id, sentence);
+        if (!alive()) return;
+        if (elsewhere.length > 0) {
+          setRun({ stage: 'offer', sentence, elsewhere });
+          return;
+        }
+      }
+      setRun({ stage: 'planning', sentence, stayed: stay });
+      const planned = await api.planOnClip(clip.id, sentence);
+      if (!alive()) return;
+      if (planned.status !== 'ready') {
+        setRun({ stage: 'not-planned', sentence, problems: planned.problems, attempts: planned.attempts.length });
+        return;
+      }
+      setRun({ stage: 'zones', sentence, plan: planned.plan, attempts: planned.attempts });
+      onShowZones(zonesOf(clip, planned.plan));
+      await new Promise((done) => setTimeout(done, ZONES_SHOWN_MS));
+      if (!alive()) return;
+      await runRule(me, sentence, { plan: planned.plan }, planned.plan, planned.attempts);
+    } catch (error) {
+      if (alive()) {
+        setProblem((error as Error).message);
+        setRun(null);
+        onShowZones(null);
+      }
+    }
+  };
+
+  // A sentence from the page that chose this camera starts here at once, and only once.
+  const askedOnce = useRef(false);
+  useEffect(() => {
+    if (!ask || askedOnce.current || !models) return;
+    askedOnce.current = true;
+    void start(ask, { stay: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ask, models]);
+
   const rule = useQuery({
     queryKey: ['clip-rule', clip.id, ruleId],
     queryFn: () => api.clipRule(clip.id, ruleId!),
     enabled: ruleId !== null,
-    refetchInterval: (query) => (query.state.data && FINISHED.has(query.state.data.status) ? false : POLL_MS),
+    refetchInterval: (query) => (query.state.data && RULE_FINISHED.has(query.state.data.status) ? false : POLL_MS),
   });
   const reading = rule.data;
+  const ready = reading?.status === 'ready';
+  const alertsFound = useQuery({
+    queryKey: ['guide-alerts', clip.id, ruleId],
+    queryFn: () => api.demoAlerts(clip.id, [{ rule: ruleId!, armedMs: 0 }]),
+    enabled: ready,
+  });
+  const alerts = [...(alertsFound.data?.alerts ?? [])].sort((a, b) => a.atMs - b.atMs);
   useEffect(() => {
-    if (reading?.status === 'ready') onTyped();
-  }, [reading?.status, onTyped]);
-
-  // The zones are drawn on the player for as long as the person is looking at them.
-  const zones = plan ? zonesOf(clip, plan.plan) : [];
+    if (ready) onTyped();
+  }, [ready, onTyped]);
+  const isAdded = ruleId !== null && added(ruleId);
   useEffect(() => {
-    if (!plan || !planChecked || zonesChecked) return;
-    onShowZones(zones);
-    const shown = setTimeout(() => setZonesShown(true), GUIDE_PAUSE_MS);
-    return () => clearTimeout(shown);
+    if (isAdded) onShowZones(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plan, planChecked, zonesChecked]);
+  }, [isAdded]);
 
-  const clockNote = plan?.plan.hours ? `This clip’s clock runs from ${clockTime(clip.startsAt)} to ${clockTime(clip.startsAt + clip.lengthMs)}, so a rule limited to other hours will not alert on it.` : null;
-  const steps: Step[] = [];
-  if (plan) {
-    const rejected = plan.attempts.filter((a) => a.problems.length > 0);
-    steps.push({
-      key: 'plan',
-      title: 'Review the plan',
-      detail: (
-        <div className='space-y-1'>
-          <p>Watches for: {plan.plan.about}</p>
-          <p>Zones: {plan.plan.zones.length ? plan.plan.zones.join(', ') : 'none'}</p>
-          {plan.plan.box && <p>A box{plan.plan.box.over ? ` over the ${plan.plan.box.over}` : ''}: {plan.plan.box.question}</p>}
-          <p>{rejected.length === 0 ? 'Checked against the zones on this clip: passed.' : `Checked against the zones on this clip: refused ${rejected.length === 1 ? 'once' : `${rejected.length} times`}, corrected, then passed.`}</p>
-          {rejected.map((a, i) => (
-            <p key={i}>Refused: {a.problems.join(' ')}</p>
-          ))}
-          {clockNote && <p>{clockNote}</p>}
-        </div>
-      ),
-      ready: true,
-      confirm: 'Confirm the plan',
-      onConfirm: () => setPlanChecked(true),
-      done: planChecked,
-    });
-    steps.push({
-      key: 'zones',
-      title: 'Review the zones',
-      detail: zones.length ? `Outlined on the player: ${zones.map((z) => z.name).join(', ')}. The sentence sent to Streamatic says where each one is in the picture.` : 'This rule watches the whole picture, so nothing is outlined.',
-      ready: zonesShown,
-      confirm: 'Run the rule on this clip',
-      onConfirm: () => {
-        setZonesChecked(true);
-        onShowZones(null);
-        adding.mutate({ plan: plan.plan });
-      },
-      done: zonesChecked,
-    });
-  }
-  if ((plan && zonesChecked) || ruleId || adding.isPending) {
-    steps.push({
-      key: 'read',
-      title: 'Review how Streamatic reads the rule',
-      detail: !reading || !FINISHED.has(reading.status) ? `${statusLine(reading)}. This usually takes under a minute.` : reading.status === 'ready' ? (
-        <div className='space-y-1'>
-          <p>Reads as: {reading.readsAs ?? reading.name}</p>
-          {!reading.canAnswer && <p>Streamatic may not be able to see this on this clip. The rule will still run.</p>}
-        </div>
-      ) : reading.status === 'refused' ? (
-        <div className='space-y-2'>
-          <p>{reading.reason ?? 'Streamatic cannot watch for this as written.'}</p>
-          {reading.rewrites.map((r) => (
-            <Button key={r} type='button' size='sm' variant='outline' className='h-auto max-w-full shrink whitespace-normal text-left' onClick={() => { setText(r); planning.mutate(r); }}>
-              {r}
-            </Button>
-          ))}
-        </div>
-      ) : (
-        'This rule could not be finished. Please try again.'
-      ),
-      ready: reading?.status === 'ready',
-      waiting: reading && FINISHED.has(reading.status) ? 'This step cannot go further' : 'Streamatic is working on this step',
-      confirm: 'Confirm the reading',
-      onConfirm: () => setReadingChecked(true),
-      done: readingChecked,
-    });
-  }
-  if (readingChecked && ruleId) {
-    steps.push({
-      key: 'add',
-      title: 'Add the rule to the clip',
-      detail: added(ruleId) ? 'Added. The rule runs from the start of the clip. A new rule waits 5 minutes after an alert before it can alert again, as it would on a live camera, so on this clip it alerts about once.' : 'The rule will be ticked and the clip will play from the start.',
-      ready: true,
-      confirm: 'Add the rule and play from the start',
-      onConfirm: () => onAdd(ruleId),
-      done: added(ruleId),
-    });
-  }
-  const current = steps.findIndex((s) => !s.done);
+  const busy = run !== null && run.stage !== 'offer' && run.stage !== 'not-planned' && !(run.stage === 'running' && reading !== undefined && RULE_FINISHED.has(reading.status));
+  const plan = run && (run.stage === 'zones' || run.stage === 'running') ? run.plan : null;
+  const attempts = run && (run.stage === 'zones' || run.stage === 'running') ? run.attempts : [];
+  const rejected = attempts.filter((a) => a.problems.length > 0);
+  const shownZones = plan ? zonesOf(clip, plan) : [];
+  const clockNote = plan?.hours ? `This clip’s clock runs from ${clockTime(clip.startsAt)} to ${clockTime(clip.startsAt + clip.lengthMs)}, so a rule limited to other hours will not alert on it.` : null;
+  const stageIndex = !run ? -1 : run.stage === 'choosing' ? 0 : run.stage === 'planning' ? 1 : run.stage === 'zones' ? 2 : run.stage === 'running' ? 3 : -1;
 
   return (
     <Card>
@@ -196,80 +170,196 @@ export function DemoGuide({
             <Compass className='text-primary size-4' />
             Guide
           </CardTitle>
-          <CardDescription>Describe what to monitor on this clip. The guide plans the rule, completes each step on this page, and asks you to confirm it.</CardDescription>
+          <CardDescription>Say what this camera should monitor. Streamatic does the rest on this page, and asks you only to confirm the finished rule.</CardDescription>
         </div>
       </CardHeader>
       <CardContent className='space-y-3'>
         <form
-          className='space-y-3'
+          className='flex flex-wrap items-center gap-2'
           noValidate
           onSubmit={(e) => {
             e.preventDefault();
-            if (text.trim()) planning.mutate(text.trim());
+            if (text.trim()) void start(text.trim());
           }}
         >
-          <Label htmlFor='clip-guide'>What should this camera monitor?</Label>
-          <Textarea id='clip-guide' rows={2} maxLength={300} disabled={!models} value={text} onChange={(e) => setText(e.target.value)} placeholder='Tell me when someone stops by the entrance.' />
-          <VoiceNote disabled={!models} read={(audio) => api.voiceNoteOnClip(clip.id, audio)} onText={setText} />
-          <Button type='submit' disabled={!models || planning.isPending || text.trim().length < 3}>
-            {planning.isPending ? <Loader2 className='animate-spin' /> : <Compass />}
-            {planning.isPending ? 'Planning the rule' : 'Add rule'}
+          <Input aria-label='What should this camera monitor?' className='min-w-48 flex-1' maxLength={300} disabled={!models} value={text} onChange={(e) => setText(e.target.value)} placeholder='Tell me when someone stops by the entrance.' />
+          <Button type='submit' disabled={!models || !canRunRules || text.trim().length < 3 || busy}>
+            {busy ? <Loader2 className='animate-spin' /> : <Compass />}
+            Add rule
           </Button>
+          {run && (
+            <Button type='button' variant='outline' onClick={stop}>
+              <X />
+              {busy ? 'Stop' : 'Clear'}
+            </Button>
+          )}
         </form>
+        <VoiceNote disabled={!models} read={(audio) => api.voiceNoteOnClip(clip.id, audio)} onText={setText} />
         {!models && <NeedsKeys />}
-        {models && clip.suggestions.length > 0 && !plan && (
-          <div className='space-y-1.5'>
-            <p className='text-muted-foreground text-xs'>Suggested when this clip was set up:</p>
-            <div className='flex flex-wrap gap-1.5'>
-              {clip.suggestions.slice(0, 4).map((s) => (
-                <Button key={s} type='button' size='sm' variant='outline' className='h-auto max-w-full shrink whitespace-normal py-1 text-left text-xs' onClick={() => setText(s)}>
-                  {s}
-                </Button>
-              ))}
-            </div>
+        {models && !run && !problem && clip.suggestions.length > 0 && (
+          <div className='flex flex-wrap items-center gap-1.5'>
+            {clip.suggestions.slice(0, 3).map((s) => (
+              <Button key={s} type='button' size='sm' variant='outline' className='h-auto max-w-full shrink whitespace-normal py-1 text-left text-xs' onClick={() => setText(s)}>
+                {s}
+              </Button>
+            ))}
           </div>
         )}
-        {planning.isError && <Notice tone='error'>{planning.error.message}</Notice>}
-        {adding.isError && <Notice tone='error'>{adding.error.message}</Notice>}
-        {refused && !ruleId && (
+        {problem && <Notice tone='error'>{problem}</Notice>}
+
+        {run?.stage === 'offer' && (
+          <div className='space-y-3'>
+            <Notice>Setup did not outline that on this camera. It did on {run.elsewhere.map((c) => c.name).join(' and ')}.</Notice>
+            <div className='grid gap-3 sm:grid-cols-2'>
+              {run.elsewhere.map((offer) => (
+                <OfferCard key={offer.camera} offer={offer} sentence={run.sentence} />
+              ))}
+            </div>
+            <Button variant='outline' size='sm' onClick={() => void start(run.sentence, { stay: true })}>
+              Stay on this camera
+            </Button>
+          </div>
+        )}
+
+        {run?.stage === 'not-planned' && (
           <div className='space-y-2'>
-            <Notice>The guide could not plan this rule on this clip’s zones after {refused.attempts.length} attempts. {refused.problems.join(' ')}</Notice>
-            <Button variant='outline' size='sm' disabled={adding.isPending} onClick={() => adding.mutate({ text: text.trim() })}>
+            <Notice>
+              The guide could not plan this rule on this camera’s zones after {run.attempts} attempts. {run.problems.join(' ')}
+            </Notice>
+            <Button
+              variant='outline'
+              size='sm'
+              onClick={() => {
+                const me = (current.current += 1);
+                void runRule(me, run.sentence, { text: run.sentence }, null, []).catch((error: Error) => setProblem(error.message));
+              }}
+            >
               Run the rule as written
             </Button>
           </div>
         )}
-        {steps.length > 0 && (
-          <ol className='space-y-2' aria-label='Guide steps'>
-            {steps.map((s, i) => {
-              const now = i === current;
-              return (
-                <li key={s.key} className={cn('rounded-lg border p-3', now && 'border-primary/50 bg-primary/5')}>
-                  <div className='flex items-center gap-2'>
-                    {s.done ? (
-                      <span className='bg-primary text-primary-foreground flex size-5 items-center justify-center rounded-full'>
-                        <Check className='size-3.5' />
-                      </span>
-                    ) : (
-                      <span className='flex size-5 items-center justify-center rounded-full border text-xs tabular-nums'>{i + 1}</span>
-                    )}
-                    <span className='text-sm font-medium'>{s.title}</span>
-                  </div>
-                  <div className='text-muted-foreground mt-1.5 pl-7 text-xs leading-relaxed'>{s.detail}</div>
-                  {now && (
-                    <div className='mt-2 flex flex-wrap items-center gap-2 pl-7'>
-                      <Button type='button' size='sm' disabled={!s.ready} onClick={s.onConfirm}>
-                        {s.confirm}
+
+        {stageIndex >= 0 && (
+          <ol className='space-y-1.5 text-sm' aria-label='What the guide is doing' aria-live='polite'>
+            <Stage state={stageIndex > 0 ? 'done' : 'now'} title='Choosing the camera'>
+              {stageIndex > 0 ? `Using ${cameraName}.` : null}
+            </Stage>
+            {stageIndex >= 1 && (
+              <Stage state={stageIndex > 1 ? 'done' : 'now'} title='Planning the rule'>
+                {plan && (
+                  <>
+                    <p>Watches for: {plan.about}</p>
+                    {plan.box && <p>A box{plan.box.over ? ` over the ${plan.box.over}` : ''}: {plan.box.question}</p>}
+                    <p>{rejected.length === 0 ? 'Checked against this camera’s zones: passed.' : `Checked against this camera’s zones: refused ${rejected.length === 1 ? 'once' : `${rejected.length} times`}, corrected, then passed.`}</p>
+                    {rejected.map((a, i) => (
+                      <p key={i}>Refused: {a.problems.join(' ')}</p>
+                    ))}
+                    {clockNote && <p>{clockNote}</p>}
+                  </>
+                )}
+              </Stage>
+            )}
+            {stageIndex >= 2 && (
+              <Stage state={stageIndex > 2 ? 'done' : 'now'} title='Placing the zones'>
+                {shownZones.length > 0 ? `Outlined on the player: ${shownZones.map((z) => asSentence(z.name)).join(', ')}.` : 'This rule watches the whole picture.'}
+              </Stage>
+            )}
+            {stageIndex >= 3 && (
+              <Stage state={reading && RULE_FINISHED.has(reading.status) ? (ready ? 'done' : 'stopped') : 'now'} title='Running the rule through Streamatic'>
+                {!reading || !RULE_FINISHED.has(reading.status) ? (
+                  `${runningLine(reading)}. You can keep watching the clip meanwhile.`
+                ) : ready ? (
+                  <>
+                    <p>Reads as: {reading.readsAs ?? reading.name}</p>
+                    {!reading.canAnswer && <p>Streamatic may not be able to see this on this clip.</p>}
+                  </>
+                ) : reading.status === 'refused' ? (
+                  <div className='space-y-2'>
+                    <p>{reading.reason ?? 'Streamatic cannot watch for this as written.'}</p>
+                    {reading.rewrites.map((r) => (
+                      <Button
+                        key={r}
+                        type='button'
+                        size='sm'
+                        variant='outline'
+                        className='h-auto max-w-full shrink whitespace-normal text-left'
+                        onClick={() => {
+                          setText(r);
+                          void start(r, { stay: true });
+                        }}
+                      >
+                        {r}
                       </Button>
-                      {!s.ready && <span className='text-muted-foreground text-xs'>{s.waiting ?? 'The guide is doing this step'}</span>}
-                    </div>
-                  )}
-                </li>
-              );
-            })}
+                    ))}
+                  </div>
+                ) : (
+                  'This rule could not be finished. Please try again.'
+                )}
+              </Stage>
+            )}
           </ol>
         )}
+
+        {ready && ruleId && !isAdded && alertsFound.data && (
+          <div className='border-primary/50 bg-primary/5 space-y-2 rounded-lg border p-3'>
+            <p className='text-sm font-medium'>
+              {alerts.length === 0 ? 'This rule is ready. It raised no alert on this clip.' : `This rule is ready. It raised ${alerts.length === 1 ? '1 alert' : `${alerts.length} alerts`} on this clip.`}
+            </p>
+            <p className='text-muted-foreground text-xs'>A new rule waits 5 minutes after an alert before it can alert again, as it would on a live camera.</p>
+            <Button size='sm' onClick={() => onAdd(ruleId, alerts[0] ?? null)}>
+              <Check />
+              {alerts.length === 0 ? 'Add the rule' : 'Add the rule and play the alert'}
+            </Button>
+          </div>
+        )}
+        {isAdded && <Notice>The rule is on this clip. {alerts.length === 0 ? 'It raised no alert here.' : 'Playing from just before its first alert.'}</Notice>}
       </CardContent>
     </Card>
+  );
+}
+
+function Stage({ state, title, children }: { state: 'now' | 'done' | 'stopped'; title: string; children?: ReactNode }) {
+  return (
+    <li className='flex items-start gap-2.5'>
+      {state === 'done' ? (
+        <span className='bg-primary text-primary-foreground mt-0.5 flex size-4.5 shrink-0 items-center justify-center rounded-full'>
+          <Check className='size-3' />
+        </span>
+      ) : state === 'stopped' ? (
+        <span className='text-muted-foreground mt-0.5 flex size-4.5 shrink-0 items-center justify-center rounded-full border'>
+          <X className='size-3' />
+        </span>
+      ) : (
+        <Loader2 className='text-primary mt-0.5 size-4.5 shrink-0 animate-spin' />
+      )}
+      <div className='min-w-0'>
+        <p className={cn(state === 'now' && 'font-medium')}>{title}</p>
+        {children && <div className='text-muted-foreground mt-0.5 space-y-0.5 text-xs leading-relaxed'>{children}</div>}
+      </div>
+    </li>
+  );
+}
+
+// A camera the sentence could go to, with the thing outlined on it. One without a recording here can show that but cannot run a rule.
+export function OfferCard({ offer, sentence }: { offer: CameraOffer; sentence: string }) {
+  const paths = offer.paths.map((d, i) => ({ key: String(i), d, colour: OFFER_COLOUR, style: 'fill' as const }));
+  return (
+    <div className='space-y-2 rounded-lg border p-2'>
+      <PictureFrame src={offer.picture} alt={offer.name} paths={paths} />
+      <div className='px-1'>
+        <p className='truncate text-sm font-medium'>{offer.name}</p>
+        <p className='text-muted-foreground text-xs'>Outlined here: {offer.zones.map(asSentence).join(', ')}.</p>
+        {!offer.hasClip && <p className='text-muted-foreground mt-0.5 text-xs'>This camera has no recording here, so a rule cannot be run on it.</p>}
+      </div>
+      {offer.hasClip ? (
+        <Link href={`/clips/${encodeURIComponent(offer.camera)}?ask=${encodeURIComponent(sentence)}`} className='bg-primary text-primary-foreground hover:bg-primary/90 mx-1 mb-1 inline-flex h-8 items-center rounded-md px-2.5 text-sm font-medium'>
+          Use this camera
+        </Link>
+      ) : (
+        <Link href={`/setup/${encodeURIComponent(offer.camera)}`} className='hover:bg-accent mx-1 mb-1 inline-flex h-8 items-center rounded-md border px-2.5 text-sm font-medium'>
+          See its setup
+        </Link>
+      )}
+    </div>
   );
 }

@@ -19,11 +19,11 @@ const PARTS = [
     title: 'The guide',
     sam: null,
     spark: 'Drafts a plan for the rule from the person’s sentence, typed or written out from a voice note by Muse Voice Transcribe.',
-    code: 'Checks the plan against the camera’s zones and the person’s own words, and sends a refused plan back with the reason. Shows how Streamatic reads the rule, and marks a step done only when the page shows it done and the person confirms it.',
+    code: 'Chooses the camera from what setup outlined, or stays on the camera the person is on. Checks the plan against the camera’s zones and the person’s own words, and sends a refused plan back with the reason. Marks each stage done when the page shows it done, and asks the person once, to add the finished rule.',
   },
   {
     title: 'Searching a clip',
-    sam: 'Outlines what is on the paused frame, under each word or inside a box the person draws. Then tracks the selected outline both ways from that frame, from its box alone: through the whole clip on a private copy, and over the minute around that frame on this public page, where each frame is charged.',
+    sam: 'Outlines what is on the paused frame, under each word or inside a box the person draws. Then tracks the selected outline both ways from that frame, from its box alone, over the minute around that frame, since each frame is charged.',
     spark: 'Lists the kinds of thing on the frame that could be searched for, and names what a drawn box holds.',
     code: 'Accumulates what each search finds on the one frame, prefers the outline found by a drawn item’s name when it is the same thing, removes stray dots, works out when the thing was in view, and keeps each result so asking again costs nothing.',
   },
@@ -44,12 +44,6 @@ const PARTS = [
     sam: null,
     spark: 'Plans a rule from a voice note or a sentence sent in the chat, as the guide does on the page.',
     code: 'Links the chat from the page by Telegram’s own number for the person, keeps the page’s daily limits, and sends each alert as the clip plays through it.',
-  },
-  {
-    title: 'Questions about events',
-    sam: null,
-    spark: 'Chooses what to look up for the question.',
-    code: 'Does the counting in the events database, so every number links to its events.',
   },
 ];
 

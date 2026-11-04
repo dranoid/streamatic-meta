@@ -43,6 +43,11 @@ export function ClipPage({ id, isPublic = false, trackSeconds = null }: { id: st
   const follows = useQuery({ queryKey: ['follows', id], queryFn: () => api.follows(id) });
   const demo = useQuery({ queryKey: ['demo-clip', id], queryFn: () => api.demoClip(id), enabled: isPublic });
   const clip = clips.data?.find((c) => c.id === id);
+  // A sentence sent here by the page that chose this camera. It leaves the address at once, so reloading does not spend on it again.
+  const [ask] = useState(() => new URLSearchParams(location.search).get('ask'));
+  useEffect(() => {
+    if (location.search) history.replaceState(null, '', location.pathname);
+  }, []);
 
   if (clips.isPending) return <Skeleton className='h-[32rem] rounded-xl' />;
   if (!clip) return <Notice tone='error'>This clip could not be found.</Notice>;
@@ -52,17 +57,18 @@ export function ClipPage({ id, isPublic = false, trackSeconds = null }: { id: st
         trail={[{ href: '/clips', label: isPublic ? 'Clips' : 'Search' }]}
         icon={<Search />}
         title={clip.name}
-        description={isPublic ? 'Select a rule, or describe a new one to the guide, and play the clip. Pause on any frame to search it.' : 'Pause on a frame where it appears, then search for it.'}
+        description={isPublic ? 'Describe a rule to the guide, or select one, and play the clip. Pause on any frame to search it.' : 'Pause on a frame where it appears, then search for it.'}
       />
-      <ClipWatch clip={clip} follows={follows.data ?? []} demo={demo.data ?? null} trackSeconds={trackSeconds} />
+      <ClipWatch key={clip.id} clip={clip} follows={follows.data ?? []} demo={demo.data ?? null} trackSeconds={trackSeconds} ask={ask} />
     </>
   );
 }
 
-function ClipWatch({ clip, follows, demo, trackSeconds }: { clip: Clip; follows: Follow[]; demo: DemoClip | null; trackSeconds: number | null }) {
+function ClipWatch({ clip, follows, demo, trackSeconds, ask }: { clip: Clip; follows: Follow[]; demo: DemoClip | null; trackSeconds: number | null; ask: string | null }) {
   const queryClient = useQueryClient();
   const { models } = useAbilities();
   const video = useRef<HTMLVideoElement>(null);
+  const playerRef = useRef<HTMLDivElement>(null);
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [shownId, setShownId] = useState<string | null>(null);
@@ -161,9 +167,28 @@ function ClipWatch({ clip, follows, demo, trackSeconds }: { clip: Clip; follows:
   return (
     <div className='grid gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]'>
       <div className='min-w-0 space-y-6'>
+      {demo && (
+        <DemoGuide
+          clip={demo}
+          cameraName={clip.name}
+          ask={ask}
+          added={(rule) => ticks[rule] !== undefined}
+          onShowZones={(zones) => {
+            setGuideZones(zones);
+            if (zones) playerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+          }}
+          onTyped={refreshDemo}
+          onAdd={(rule, firstAlert) => {
+            setTicks((all) => ({ ...all, [rule]: 0 }));
+            seek(firstAlert ? Math.max(0, firstAlert.atMs - LEAD_IN_MS) / 1000 : 0);
+            void video.current?.play();
+            playerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+          }}
+        />
+      )}
       <Card className='min-w-0'>
         <CardContent className='space-y-4'>
-          <div className={cn('relative aspect-video overflow-hidden rounded-lg bg-black', choosingAt !== null && 'hidden', banner && 'ring-destructive ring-4')}>
+          <div ref={playerRef} className={cn('relative aspect-video overflow-hidden rounded-lg bg-black', choosingAt !== null && 'hidden', banner && 'ring-destructive ring-4')}>
             <video
               ref={video}
               src={clipVideoUrl(clip.id)}
@@ -254,19 +279,6 @@ function ClipWatch({ clip, follows, demo, trackSeconds }: { clip: Clip; follows:
           )}
         </CardContent>
       </Card>
-      {demo && (
-          <DemoGuide
-            clip={demo}
-            added={(rule) => ticks[rule] !== undefined}
-            onShowZones={setGuideZones}
-            onTyped={refreshDemo}
-            onAdd={(rule) => {
-              setTicks((all) => ({ ...all, [rule]: 0 }));
-              seek(0);
-              void video.current?.play();
-            }}
-          />
-      )}
       </div>
 
       <aside className='min-w-0 space-y-4'>

@@ -27,7 +27,7 @@ function App() {
   const route = isPublic && ['cameras', 'camera', 'events', 'event'].includes(parsed.page) ? ({ page: 'clips' } as const) : !isPublic && (parsed.page === 'setup' || parsed.page === 'setup-camera') ? ({ page: 'cameras' } as const) : parsed;
   return (
     <AbilitiesProvider value={app.data ?? null}>
-    <AppShell route={route} isPublic={isPublic}>
+    <AppShell route={route} isPublic={isPublic} credit={app.data?.credit ?? null}>
       {route.page === 'cameras' && <CamerasPage />}
       {route.page === 'camera' && <CameraPage id={route.id} />}
       {route.page === 'events' && <EventsPage />}
