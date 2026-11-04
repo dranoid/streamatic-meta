@@ -85,7 +85,7 @@ export function TelegramAlerts({ telegram, problem }: { telegram: ReturnType<typ
           <CircleCheck className='size-4 shrink-0' />
           Linked to Telegram
         </p>
-        <p className='text-muted-foreground text-xs leading-relaxed'>Alerts from the rules you select on any clip go to your Telegram chat as that clip plays. You can also send a voice note in English, or a sentence, in that chat to add a rule to the clip you last opened.</p>
+        <p className='text-muted-foreground text-xs leading-relaxed'>Alerts from the rules you select on any clip go to your Telegram chat as that clip plays. You can also send a voice note in English, or a sentence, in that chat to add a rule. If you have set up more than one camera, you will be asked which one it is for.</p>
         <Button size='sm' variant='outline' onClick={turnOff}>
           Stop sending alerts to Telegram
         </Button>

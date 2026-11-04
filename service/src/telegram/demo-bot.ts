@@ -10,14 +10,12 @@ import type { ClipFolder } from '../follow/clips.js';
 import { planRule, type GuidePlan, type GuidePlanner } from '../guide/plan.js';
 import { voiceKeywords, type VoiceNotes } from '../voice/voice-note.js';
 import type { BotChat, Update } from './api.js';
-import { sendDemoAlert } from './demo-alert.js';
 import type { TelegramLink, TelegramLinks } from './links.js';
 
 const MAX_VOICE_BYTES = 8_000_000;
 const POLL_MS = 5_000;
 // A rule that has not finished by then is reported as unfinished, so the wait does not run for ever.
 const MAX_POLLS = 180;
-const MAX_ALERTS_SENT = 5;
 const FINAL = new Set(['ready', 'refused', 'failed']);
 const TRY_AGAIN = 'That could not be completed. Please try again.';
 
@@ -29,10 +27,17 @@ interface Held {
   plan: GuidePlan;
 }
 
+// A message waiting for the person to say which camera it is for.
+interface Asked {
+  id: string;
+  voice: string | null;
+  text: string;
+}
+
 export interface DemoBotOptions {
   chat: BotChat;
   links: TelegramLinks;
-  store: Pick<DemoStore, 'clip' | 'rule' | 'zoneEdits' | 'liveSetup'>;
+  store: Pick<DemoStore, 'clip' | 'clips' | 'rule' | 'zoneEdits' | 'liveSetup'>;
   engine: Pick<DemoEngine, 'type' | 'typed'>;
   limits: Pick<DemoLimits, 'charge'>;
   cameras: Pick<CameraFolder, 'get'>;
@@ -51,6 +56,7 @@ export interface DemoBotOptions {
 export class DemoBot {
   readonly #options: DemoBotOptions;
   readonly #held = new Map<number, Held>();
+  readonly #asked = new Map<number, Asked>();
   readonly #busy = new Set<number>();
   readonly #following = new Set<Promise<void>>();
 
@@ -112,19 +118,38 @@ export class DemoBot {
     if (!voice && !text) return this.#say(person, 'Please send a voice note or a sentence.');
     if (!abilities.models) return this.#say(person, NEEDS_KEYS);
     if ((voice?.file_size ?? 0) > MAX_VOICE_BYTES) return this.#say(person, 'That voice note is too large. Please choose one under 8 MB.');
+    const cameras = this.#camerasSetUp(link.visitor);
+    if (cameras.length <= 1) return this.#read(person, link, voice?.file_id ?? null, text);
+    const id = randomUUID().slice(0, 8);
+    this.#asked.set(person, { id, voice: voice?.file_id ?? null, text });
+    await this.#say(person, 'Which camera is this rule for?', cameras.map((camera) => ({ text: camera.name, data: `camera:${id}:${camera.id}` })));
+  }
+
+  #camerasSetUp(visitor: string) {
+    const { store } = this.#options;
+    return store.clips().filter((clip) => store.liveSetup(visitor, clip.id) !== null);
+  }
+
+  async #read(person: number, link: TelegramLink, voice: string | null, text: string): Promise<void> {
     if (this.#busy.has(person)) return this.#say(person, 'The previous message is still being worked on. Please wait for its reply.');
     this.#busy.add(person);
     try {
-      await this.#plan(person, link, voice ? await this.#heard(person, link, voice.file_id) : text);
+      await this.#plan(person, link, voice ? await this.#heard(person, link, voice) : text);
     } finally {
       this.#busy.delete(person);
     }
   }
 
+  async #cameraChosen(person: number, link: TelegramLink, id: string | undefined, clip: string | undefined): Promise<void> {
+    const asked = this.#asked.get(person);
+    if (!asked || asked.id !== id || !this.#camerasSetUp(link.visitor).some((camera) => camera.id === clip)) return this.#say(person, 'That message is no longer open. Please send it again.');
+    this.#asked.delete(person);
+    this.#options.links.choose(link.visitor, clip!, link.language);
+    await this.#read(person, { ...link, clip: clip! }, asked.voice, asked.text);
+  }
+
   async #greet(person: number): Promise<void> {
-    const link = this.#options.links.ofPerson(person)!;
-    const name = (await this.#options.clips.get(link.clip))?.name ?? 'the clip';
-    await this.#say(person, `This chat is now linked to Streamatic. Alerts from the rules you select on any clip will arrive here as that clip plays. You can also send a voice note in English, or a sentence, here to add a rule to the clip you last opened, which is ${name} at the moment. Send /stop to end this.`);
+    await this.#say(person, 'This chat is now linked to Streamatic. Alerts from the rules you select on any clip will arrive here as that clip plays. You can also send a voice note in English, or a sentence, here to add a rule. If you have set up more than one camera, you will be asked which one it is for. Send /stop to end this.');
   }
 
   // The camera with the zones as the person's page shows them.
@@ -179,7 +204,8 @@ export class DemoBot {
     await chat.answer(press).catch(() => undefined);
     const link = links.ofPerson(person);
     if (!link) return this.#say(person, this.#toThePage());
-    const [action, id] = data.split(':');
+    const [action, id, chosen] = data.split(':');
+    if (action === 'camera') return this.#cameraChosen(person, link, id, chosen);
     const held = this.#held.get(person);
     if (!held || held.id !== id) return this.#say(person, 'That plan is no longer open. Please send it again.');
     this.#held.delete(person);
@@ -192,7 +218,7 @@ export class DemoBot {
     if (!row || !made) throw new Refused('That plan does not fit this clip. Please send it again.');
     await this.#charge(person, 'rule');
     const rule = await engine.type(row, link.visitor, held.plan.sentence, made.sent, made.zones);
-    await this.#say(person, 'Reading the rule over the clip. This can take some minutes. Its alerts will arrive here.');
+    await this.#say(person, 'Reading the rule over the clip. This can take some minutes. You will be told here when it is ready.');
     const following = this.#follow(person, link, row, rule)
       .catch(async (error: unknown) => {
         console.error(`Telegram rule: ${error instanceof Error ? error.message : String(error)}`);
@@ -203,7 +229,7 @@ export class DemoBot {
   }
 
   async #follow(person: number, link: TelegramLink, row: NonNullable<ReturnType<DemoStore['clip']>>, id: string): Promise<void> {
-    const { engine, links, alertsOf, chat, folder, clips, wait = (ms: number) => new Promise<void>((done) => setTimeout(done, ms)) } = this.#options;
+    const { engine, alertsOf, clips, wait = (ms: number) => new Promise<void>((done) => setTimeout(done, ms)) } = this.#options;
     let rule = await engine.typed(row, link.visitor, id);
     for (let polls = 0; rule && !FINAL.has(rule.status) && polls < MAX_POLLS; polls++) {
       await wait(POLL_MS);
@@ -216,10 +242,9 @@ export class DemoBot {
     if (rule?.status !== 'ready') return this.#say(person, 'This rule could not be finished. Please try again.');
     const clip = await clips.get(row.id);
     if (!clip) return;
-    const alerts = alertsOf(id);
     if (!rule.canAnswer) await this.#say(person, 'Streamatic may not be able to see this on this clip. The rule still ran.');
-    if (alerts.length === 0) return this.#say(person, `${clip.name}\nThis rule raised nothing on this clip.`);
-    const language = links.ofPerson(person)?.language ?? link.language;
-    for (const alert of alerts.slice(0, MAX_ALERTS_SENT)) await sendDemoAlert({ chat, to: person, folder, clip, rule, alert, language });
+    if (alertsOf(id).length === 0) return this.#say(person, `${clip.name}\nThis rule raised nothing on this clip.`);
+    // The page sends each alert as the playing clip reaches it, as a live camera would, so nothing is sent from here.
+    return this.#say(person, `${clip.name}\nThis rule is ready. Select it on the page and play the clip. Each alert will arrive here as the clip reaches it.`);
   }
 }

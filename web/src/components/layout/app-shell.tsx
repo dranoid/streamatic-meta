@@ -115,24 +115,25 @@ export function AppShell({ route, isPublic = false, nothingSetUp = false, credit
             )}
             <ThemeSwitch />
           </div>
+          {/* Held in the sticky bar, so it opens wherever the page is scrolled to and moves nothing beneath it. */}
+          {confirmingReset && (
+            <div className='bg-background absolute top-full right-4 left-4 mt-2 rounded-lg shadow-lg md:right-6 md:left-auto md:w-[28rem]'>
+              <Notice>
+                <p>Reset everything? Every camera returns to not set up, and your zone changes, rules and tracks are removed.</p>
+                {reset.isError && <p className='text-destructive mt-1 text-xs'>{reset.error.message}</p>}
+                <div className='mt-2 flex flex-wrap gap-2'>
+                  <Button size='sm' disabled={reset.isPending} onClick={() => reset.mutate()}>
+                    {reset.isPending && <LoaderCircle className='animate-spin' />}
+                    Reset
+                  </Button>
+                  <Button size='sm' variant='outline' onClick={() => setConfirmingReset(false)}>
+                    Cancel
+                  </Button>
+                </div>
+              </Notice>
+            </div>
+          )}
         </header>
-        {confirmingReset && (
-          <div className='mx-auto w-full max-w-[90rem] px-4 pt-4 md:px-6'>
-            <Notice>
-              <p>Reset everything? Every camera returns to not set up, and your zone changes, rules and tracks are removed.</p>
-              {reset.isError && <p className='text-destructive mt-1 text-xs'>{reset.error.message}</p>}
-              <div className='mt-2 flex flex-wrap gap-2'>
-                <Button size='sm' disabled={reset.isPending} onClick={() => reset.mutate()}>
-                  {reset.isPending && <LoaderCircle className='animate-spin' />}
-                  Reset
-                </Button>
-                <Button size='sm' variant='outline' onClick={() => setConfirmingReset(false)}>
-                  Cancel
-                </Button>
-              </div>
-            </Notice>
-          </div>
-        )}
         <main className='mx-auto w-full max-w-[90rem] flex-1 px-4 py-6 md:px-6'>{children}</main>
         {isPublic && <SmallPrint credit={credit} />}
       </div>

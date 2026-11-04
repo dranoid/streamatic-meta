@@ -10,8 +10,8 @@ Build it again from an app folder holding those cameras' setup results, with no 
 cd service && npm run eval-setup -- <app folder> <group> ../eval/setup-coverage.json
 ```
 
-**The measure.** Across the three cameras, counting each camera on its own, SAM 3.1 outlined 33 things. 20 of them were still
-found on the night picture, and 16 were found on all three pictures.
+**The measure.** Across the three cameras, counting each camera on its own, SAM 3.1 outlined 33 kinds of thing. 20 of them were still
+found on the night picture, and 16 were found on all three pictures. A kind can hold several zones, such as seven walls. A later run of setup on the same cameras, 4 November, gave 29 kinds and 18 at night, in 127 zones, so the result differs from run to run.
 
 **What it missed.** Five were seen but not outlined, on the words tried: a drain on all three cameras, a bridge on one and a
 power line on one. On the camera where a drain is plainly visible, SAM 3.1 found nothing under drain, ditch, gutter, drainage

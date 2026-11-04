@@ -196,7 +196,7 @@ export function SetupCameraPage({ id }: { id: string }) {
               {running.isPending && <PictureBusy label='Finding what is in view' />}
             </PictureFrame>
             <div>
-              <p className='text-sm'>Setup runs now on this picture. Streamatic finds what is in view, outlines each item as a zone, and suggests rules for you to add. This usually takes about a minute, and the result can differ a little from one run to the next.</p>
+              <p className='text-sm'>Setup runs now on this picture. Streamatic finds what is in view, outlines each item as a zone, and suggests rules for you to add. This usually takes a minute or two, and the result can differ a little from one run to the next.</p>
               {!models && <p className='text-muted-foreground mt-1 text-xs'>Without keys, each step shows the result saved with this copy.</p>}
             </div>
             {running.isError && <Notice tone='error'>{running.error.message}</Notice>}

@@ -78,8 +78,8 @@ sentence, check the camera can answer it, and ask the vision model on the camera
   results are cached so that a repeat costs nothing.
 - **Alerts on Telegram.** On a clip, "Send alerts to Telegram" links a chat to the page, for every clip, and each alert of a ticked rule arrives there
   as its clip plays through it, with its picture, in the language chosen. If the picture cannot be sent, the alert still arrives as words. A voice note in English or a sentence sent in the chat becomes a rule
-  on the clip last opened: Muse Voice Transcribe writes it out, the checked plan is read back, and after Confirm the rule's alerts come
-  back to the chat. A person is told apart by Telegram's own number for them, and the page's daily limits apply to it.
+  on a camera the visitor has set up, selected with a button when there is more than one: Muse Voice Transcribe writes it out, the checked plan is read back, and after Confirm the rule's alerts come
+  to the chat as its clip plays through them. A person is told apart by Telegram's own number for them, and the page's daily limits apply to it.
 
 ## Meta models used
 

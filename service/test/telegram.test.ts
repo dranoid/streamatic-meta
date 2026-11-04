@@ -14,6 +14,7 @@ import { TelegramLinks } from '../src/telegram/links.js';
 
 const TOKEN = '123:secret-token';
 const CLIP = 'entrance';
+const OTHER_CLIP = 'car-park';
 const PERSON = 555;
 const VISITOR = 'visitor-1';
 
@@ -353,13 +354,13 @@ describe('the demo bot', () => {
     const links = new TelegramLinks(':memory:');
     const store = new DemoStore(':memory:');
     store.saveClip({ id: CLIP, scenario: 's', name: 'Building entrance', description: null, position: 0, startsAt: 0, lengthMs: 60_000 });
-    const typed: Array<{ visitor: string; text: string; sent: string }> = [];
+    const typed: Array<{ clip: string; visitor: string; text: string; sent: string }> = [];
     const charged: Array<{ who: string; kind: string }> = [];
     const heardAudio: Array<{ keywords: string[] }> = [];
     let polls = 0;
     const engine = {
-      type: async (_clip: unknown, visitor: string, text: string, sentence: string) => {
-        typed.push({ visitor, text, sent: sentence });
+      type: async (clip: { id: string }, visitor: string, text: string, sentence: string) => {
+        typed.push({ clip: clip.id, visitor, text, sent: sentence });
         store.addRule({ id: 'typed-1', clip: CLIP, kind: 'typed', visitor, text, name: text, readsAs: null, status: 'parsing', zones: [] });
         return 'typed-1';
       },
@@ -383,7 +384,7 @@ describe('the demo bot', () => {
       engine,
       limits,
       cameras: new CameraFolder(root),
-      clips: { get: async () => ({ id: CLIP, name: 'Building entrance', width: 1280, height: 720, fps: 10, frames: 600, video: 'v' }) },
+      clips: { get: async (id: string) => ({ id, name: id === OTHER_CLIP ? 'Car park' : 'Building entrance', width: 1280, height: 720, fps: 10, frames: 600, video: 'v' }) },
       planner: draft,
       voiceNotes: {
         readAudio: async (_bytes: Uint8Array, keywords: string[], beforeAsking?: () => Promise<void>) => {
@@ -412,7 +413,84 @@ describe('the demo bot', () => {
     expect(b.links.ofPerson(PERSON)?.visitor).toBe(VISITOR);
     expect(b.sent[0]!.text).toContain('any clip');
     expect(b.sent[0]!.text).not.toMatch(/^Linked to Building entrance/);
-    expect(b.sent[0]!.text).toContain('the clip you last opened, which is Building entrance at the moment');
+    expect(b.sent[0]!.text).toContain('you will be asked which one');
+  });
+
+  describe('with more than one camera set up', () => {
+    const setUpTwo = async (b: ReturnType<typeof bot>) => {
+      const setup = JSON.parse(await readFile(join(root, 'cameras', CLIP, 'setup.json'), 'utf8'));
+      const other = { ...setup, zones: [...setup.zones, { ...setup.zones[0], name: 'gate', item: 'gate' }] };
+      await mkdir(join(root, 'cameras', OTHER_CLIP), { recursive: true });
+      await writeFile(join(root, 'cameras', OTHER_CLIP, 'camera.json'), JSON.stringify({ name: 'Car park', site: 'a car park', baseWords: [], pictures: { clip: 'still.jpg' } }));
+      await writeFile(join(root, 'cameras', OTHER_CLIP, 'setup.json'), JSON.stringify(other));
+      b.store.saveClip({ id: OTHER_CLIP, scenario: 's', name: 'Car park', description: null, position: 1, startsAt: 0, lengthMs: 60_000 });
+      b.store.saveLiveSetup(VISITOR, CLIP, setup);
+      b.store.saveLiveSetup(VISITOR, OTHER_CLIP, other);
+      await linked(b);
+    };
+
+    it('asks which camera the rule is for, naming each one, before reading or spending anything', async () => {
+      const b = bot();
+      await setUpTwo(b);
+      await b.instance.handle(message({ voice: { file_id: 'f', file_size: 100 } }));
+      expect(b.sent.at(-1)!.text).toContain('Which camera');
+      expect(b.sent.at(-1)!.buttons?.map((x) => x.text)).toEqual(['Building entrance', 'Car park']);
+      expect(b.heardAudio).toEqual([]);
+      expect(b.charged).toEqual([]);
+    });
+
+    it('reads the voice note for the camera selected, and puts the rule on that camera', async () => {
+      const b = bot();
+      await setUpTwo(b);
+      await b.instance.handle(message({ voice: { file_id: 'f', file_size: 100 } }));
+      await b.instance.handle(button(b.sent.at(-1)!.buttons![1]!.data));
+      expect(b.heardAudio[0]!.keywords).toContain('gate');
+      const plan = b.sent.at(-1)!;
+      expect(plan.text).toMatch(/^Car park/);
+      expect(plan.buttons?.map((x) => x.text)).toEqual(['Confirm', 'Cancel']);
+      await b.instance.handle(button(plan.buttons![0]!.data));
+      await b.instance.settled();
+      expect(b.typed[0]).toMatchObject({ clip: OTHER_CLIP, visitor: VISITOR });
+    });
+
+    it('asks for a typed sentence too, and plans the words it was given', async () => {
+      const b = bot();
+      await setUpTwo(b);
+      await b.instance.handle(message({ text: 'Tell me when the door opens.' }));
+      expect(b.sent.at(-1)!.text).toContain('Which camera');
+      await b.instance.handle(button(b.sent.at(-1)!.buttons![0]!.data));
+      expect(b.sent.at(-1)!.text).toMatch(/^Building entrance/);
+      expect(b.sent.at(-1)!.text).toContain('Tell me when the door opens.');
+      expect(b.heardAudio).toEqual([]);
+    });
+
+    it('does not act on a camera button pressed a second time', async () => {
+      const b = bot();
+      await setUpTwo(b);
+      await b.instance.handle(message({ text: 'Tell me when the door opens.' }));
+      const pick = b.sent.at(-1)!.buttons![0]!.data;
+      await b.instance.handle(button(pick));
+      const spent = b.charged.length;
+      await b.instance.handle(button(pick));
+      expect(b.charged).toHaveLength(spent);
+      expect(b.sent.at(-1)!.text).toContain('no longer open');
+    });
+
+    it('offers only the cameras this visitor has set up', async () => {
+      const b = bot();
+      await setUpTwo(b);
+      b.store.saveClip({ id: 'hall', scenario: 's', name: 'School hall', description: null, position: 2, startsAt: 0, lengthMs: 60_000 });
+      await b.instance.handle(message({ text: 'Tell me when the door opens.' }));
+      expect(b.sent.at(-1)!.buttons?.map((x) => x.text)).toEqual(['Building entrance', 'Car park']);
+    });
+  });
+
+  it('does not ask which camera when one is set up', async () => {
+    const b = bot();
+    b.store.saveLiveSetup(VISITOR, CLIP, JSON.parse(await readFile(join(root, 'cameras', CLIP, 'setup.json'), 'utf8')));
+    await linked(b);
+    await b.instance.handle(message({ text: 'Tell me when the door opens.' }));
+    expect(b.sent.at(-1)!.buttons?.map((x) => x.text)).toEqual(['Confirm', 'Cancel']);
   });
 
   it('sends someone who found the bot on their own to the page, and spends nothing on them', async () => {
@@ -482,7 +560,7 @@ describe('the demo bot', () => {
     expect(b.sent[0]!.text).toContain('8 MB');
   });
 
-  it('on Confirm, reads the rule with the zone’s place in the sentence, under the visitor who linked, then sends its alerts', async () => {
+  it('on Confirm, reads the rule with the zone’s place in the sentence, under the visitor who linked, and sends no alert until the clip plays', async () => {
     const b = bot();
     await linked(b);
     await b.instance.handle(message({ text: 'Tell me when the door opens.' }));
@@ -492,7 +570,8 @@ describe('the demo bot', () => {
     expect(b.typed[0]).toMatchObject({ visitor: VISITOR, text: 'Tell me when the door opens.' });
     expect(b.typed[0]!.sent).toContain('right');
     expect(b.charged.at(-1)).toEqual({ who: `telegram:${PERSON}`, kind: 'rule' });
-    expect(b.sent.at(-1)!.text).toContain('🚨 <b>ALERT: BUILDING ENTRANCE</b>\n<b>The door opens</b>');
+    expect(b.sent.some((m) => m.text?.includes('ALERT'))).toBe(false);
+    expect(b.sent.at(-1)!.text).toContain('play the clip');
   });
 
   it('spends one rule however many times Confirm is pressed', async () => {
