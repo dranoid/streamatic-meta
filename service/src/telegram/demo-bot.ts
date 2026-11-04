@@ -4,6 +4,7 @@ import { COST_MICRO_USD, NEEDS_BACKEND, NEEDS_KEYS } from '../demo/routes.js';
 import type { DemoEngine } from '../demo/engine.js';
 import type { DemoLimits, Spending } from '../demo/limits.js';
 import { placedBox, ruleFromPlan } from '../demo/rule-plan.js';
+import { withZoneEdits } from '../demo/visitor-zones.js';
 import type { DemoAlert, DemoStore } from '../demo/store.js';
 import type { ClipFolder } from '../follow/clips.js';
 import { planRule, type GuidePlan, type GuidePlanner } from '../guide/plan.js';
@@ -31,7 +32,7 @@ interface Held {
 export interface DemoBotOptions {
   chat: BotChat;
   links: TelegramLinks;
-  store: Pick<DemoStore, 'clip' | 'rule'>;
+  store: Pick<DemoStore, 'clip' | 'rule' | 'zoneEdits'>;
   engine: Pick<DemoEngine, 'type' | 'typed'>;
   limits: Pick<DemoLimits, 'charge'>;
   cameras: Pick<CameraFolder, 'get'>;
@@ -126,21 +127,30 @@ export class DemoBot {
     await this.#say(person, `Linked to ${name}. Alerts from the rules you tick on the page will arrive here as the clip plays. You can also send a voice note in English, or a sentence, here to add a rule to this clip. Send /stop to end this.`);
   }
 
-  async #heard(person: number, link: TelegramLink, file: string): Promise<string> {
+  // The camera with the zones as the person's page shows them.
+  async #camera(link: TelegramLink) {
     const camera = await this.#options.cameras.get(link.clip);
+    return camera && withZoneEdits(camera, this.#options.store.zoneEdits(link.visitor, link.clip));
+  }
+
+  async #heard(person: number, link: TelegramLink, file: string): Promise<string> {
+    const camera = await this.#camera(link);
     const reply = await this.#options.voiceNotes.readAudio(await this.#options.chat.download(file), voiceKeywords(camera?.zones ?? []), () => this.#charge(person, 'plan'));
     if ('error' in reply.body) throw new Refused(reply.body.error);
     return reply.body.text;
   }
 
   async #plan(person: number, link: TelegramLink, sentence: string): Promise<void> {
-    const { cameras, clips, planner } = this.#options;
+    const { clips, planner } = this.#options;
     const clip = await clips.get(link.clip);
-    const camera = await cameras.get(link.clip);
+    const camera = await this.#camera(link);
     if (!clip || !camera) throw new Refused('That clip is no longer available. Please link this chat from the page again.');
     if (sentence.length < 3 || sentence.length > 300) throw new Refused('Please say what to watch in one sentence.');
     await this.#charge(person, 'plan');
     const result = await planRule({ sentence, site: camera.site, zones: camera.zones, planner });
+    if (result.status === 'search') {
+      return this.#say(person, `You said: ${sentence}\n\nFinding and tracking an item is done on the page, on the clip. In this chat, please say what ${clip.name} should alert you about.`);
+    }
     if (result.status !== 'ready') {
       return this.#say(person, `You said: ${sentence}\n\nA rule for this could not be planned on ${clip.name}. It holds: ${camera.zones.map((z) => z.name).join(', ')}. Please say it another way.`);
     }
@@ -162,7 +172,7 @@ export class DemoBot {
   }
 
   async #pressed(person: number, press: string, data: string): Promise<void> {
-    const { chat, links, abilities, store, engine, cameras, clips } = this.#options;
+    const { chat, links, abilities, store, engine, clips } = this.#options;
     await chat.answer(press).catch(() => undefined);
     const link = links.ofPerson(person);
     if (!link) return this.#say(person, this.#toThePage());
@@ -174,7 +184,7 @@ export class DemoBot {
     if (!abilities.rules) return this.#say(person, NEEDS_BACKEND);
     const row = store.clip(held.clip);
     const clip = await clips.get(held.clip);
-    const camera = await cameras.get(held.clip);
+    const camera = await this.#camera({ ...link, clip: held.clip });
     const made = clip && camera ? ruleFromPlan(held.plan, camera.zones, clip) : null;
     if (!row || !made) throw new Refused('That plan does not fit this clip. Please send it again.');
     await this.#charge(person, 'rule');

@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, ArrowRight, Check, CircleAlert, CircleCheck, LoaderCircle, RotateCcw, Wand2 } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, CircleAlert, CircleCheck, LoaderCircle, Pencil, RotateCcw, Trash2, Wand2 } from 'lucide-react';
 import { PageHeader } from '@/components/layout/page-header';
 import { NeedsKeys } from '@/components/needs-keys';
 import { PictureBusy, PictureFrame, ZONE_COLOURS, type DrawnPath } from '@/components/picture-frame';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { Link } from '@/components/ui/link';
 import { Notice } from '@/components/ui/notice';
 import { Segmented } from '@/components/ui/segmented';
@@ -19,15 +20,15 @@ import { sentence } from '@/lib/time';
 
 const STEPS = [
   { title: 'Camera view', note: 'Streamatic starts from a still picture of what the camera sees. A live camera provides one by day, one at dusk and one at night.' },
-  { title: 'What is in view', note: 'Streamatic lists the items that matter for this kind of site.' },
-  { title: 'Zones', note: 'Each item is outlined and becomes a zone your rules can name. Move the pointer over a zone to see its name.' },
+  { title: 'Zones', note: 'Streamatic finds what is in view for this kind of site and outlines each item as a zone your rules can name. You can rename or delete a zone. Your changes apply only to what you see, and Reset returns them.' },
   { title: 'Rules', note: 'Select the rules you want on this camera, then add them.' },
 ] as const;
+const ZONES_STEP = 1;
 const LAST_STEP = STEPS.length - 1;
 
 const READING_MS = 1_200;
-const ITEM_MS = 140;
 const ZONE_MS = 320;
+const LONGEST_REVEAL_MS = 6_000;
 
 // Counts up to `total`, one every `everyMs`, so a saved result is shown as it was found. Nothing is sent anywhere meanwhile.
 function useReveal(total: number, everyMs: number, startKey: unknown): number {
@@ -104,9 +105,20 @@ export function SetupCameraPage({ id }: { id: string }) {
     setStage('ready');
     refreshClip();
   };
+  const zonesChanged = useCallback(
+    (next: DemoSetup) => {
+      queryClient.setQueryData(['demo-setup', id], next);
+      refreshClip();
+    },
+    [queryClient, id, refreshClip],
+  );
   const reset = useMutation({
-    mutationFn: () => Promise.all(progress.added.map((rule) => api.removeClipRule(id, rule).catch(() => null))),
-    onSuccess: () => {
+    mutationFn: async () => {
+      await Promise.all(progress.added.map((rule) => api.removeClipRule(id, rule).catch(() => null)));
+      return api.resetDemoZones(id);
+    },
+    onSuccess: (next) => {
+      zonesChanged(next);
       saveProgress(id, null);
       setProgress(progressOf(id));
       setConfirmingReset(false);
@@ -115,7 +127,7 @@ export function SetupCameraPage({ id }: { id: string }) {
       refreshClip();
     },
   });
-  const hasProgress = progress.ready || progress.added.length > 0;
+  const hasProgress = progress.ready || progress.added.length > 0 || setup.data?.edited === true;
 
   return (
     <div className='mx-auto max-w-4xl'>
@@ -134,8 +146,9 @@ export function SetupCameraPage({ id }: { id: string }) {
       {confirmingReset && (
         <Notice className='mb-4'>
           <p>
-            Reset this camera? It returns to not set up{progress.added.length > 0 ? `, and the ${progress.added.length === 1 ? 'rule' : `${progress.added.length} rules`} added from setup will be removed from its clip` : ''}.
+            Reset this camera? It returns to not set up.{setup.data?.edited ? ' Its zones return to what setup found.' : ''}{progress.added.length > 0 ? ` The ${progress.added.length === 1 ? 'rule' : `${progress.added.length} rules`} added from setup will be removed from its clip.` : ''}
           </p>
+          {reset.isError && <p className='text-destructive mt-1 text-xs'>{reset.error.message}</p>}
           <div className='mt-2 flex flex-wrap gap-2'>
             <Button size='sm' disabled={reset.isPending} onClick={() => reset.mutate()}>
               {reset.isPending && <LoaderCircle className='animate-spin' />}
@@ -164,7 +177,7 @@ export function SetupCameraPage({ id }: { id: string }) {
           </CardContent>
         </Card>
       )}
-      {setup.data && typeof stage === 'number' && <Steps key={id} setup={setup.data} step={stage} onStep={setStage} clipRules={clip.data?.rules ?? []} chosenBefore={progress.offered} clip={id} onFinish={finish} name={name} />}
+      {setup.data && typeof stage === 'number' && <Steps key={id} setup={setup.data} step={stage} onStep={setStage} clipRules={clip.data?.rules ?? []} chosenBefore={progress.offered} clip={id} onFinish={finish} name={name} onZonesChanged={zonesChanged} />}
       {setup.data && stage === 'ready' && <Ready id={id} setup={setup.data} rules={clip.data?.rules ?? []} offered={progress.offered} added={progress.added} problem={problem} />}
     </div>
   );
@@ -179,6 +192,7 @@ function Steps({
   chosenBefore,
   onFinish,
   name,
+  onZonesChanged,
 }: {
   setup: DemoSetup;
   step: number;
@@ -188,8 +202,8 @@ function Steps({
   chosenBefore: string[];
   onFinish: (offered: string[], added: string[], problem: string | null) => void;
   name: string;
+  onZonesChanged: (next: DemoSetup) => void;
 }) {
-  const items = useMemo(() => [...new Set(setup.zones.map((z) => sentence(z.item)))], [setup]);
   const [readingDone, setReadingDone] = useState(false);
   useEffect(() => {
     if (step !== 0) return;
@@ -197,18 +211,23 @@ function Steps({
     const done = setTimeout(() => setReadingDone(true), window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : READING_MS);
     return () => clearTimeout(done);
   }, [step]);
-  const itemsShown = useReveal(step === 1 ? items.length : 0, ITEM_MS, step);
-  const zonesShown = useReveal(step === 2 ? setup.zones.length : 0, ZONE_MS, step);
-  const stepDone = step === 0 ? readingDone : step === 1 ? itemsShown >= items.length : step === 2 ? zonesShown >= setup.zones.length : true;
+  // The zones are revealed once, as many as setup found, so renaming or deleting one does not start the reveal again.
+  const [zonesToReveal] = useState(setup.zones.length);
+  const revealed = useReveal(step === ZONES_STEP ? zonesToReveal : 0, Math.min(ZONE_MS, LONGEST_REVEAL_MS / Math.max(1, zonesToReveal)), step);
+  // Among many like zones, a row shows which one it is by drawing that zone alone.
+  const [pointedAt, setPointedAt] = useState<string | null>(null);
+  const allRevealed = revealed >= zonesToReveal;
+  const zones = allRevealed ? setup.zones : setup.zones.slice(0, revealed);
+  const stepDone = step === 0 ? readingDone : step === ZONES_STEP ? allRevealed : true;
   const [label, setLabel] = useState(setup.pictures[0]!.label);
   const manyPictures = setup.pictures.length > 1;
   const lastLabel = setup.pictures[setup.pictures.length - 1]!.label;
   const paths = useMemo<DrawnPath[]>(
     () =>
-      step !== 2
+      step !== ZONES_STEP
         ? []
-        : setup.zones.slice(0, zonesShown).flatMap((zone, i) => (zone.pathsBy[label] ?? []).map((d, j) => ({ key: `${zone.name}-${j}`, d, colour: ZONE_COLOURS[i % ZONE_COLOURS.length]!, style: 'fill' as const, title: sentence(zone.name), group: zone.name }))),
-    [setup, step, zonesShown, label],
+        : zones.flatMap((zone, i) => (pointedAt !== null && pointedAt !== zone.name ? [] : (zone.pathsBy[label] ?? [])).map((d, j) => ({ key: `${zone.name}-${j}`, d, colour: ZONE_COLOURS[i % ZONE_COLOURS.length]!, style: 'fill' as const, title: sentence(zone.name), group: zone.name }))),
+    [zones, step, label, pointedAt],
   );
 
   return (
@@ -248,34 +267,30 @@ function Steps({
           </div>
         ) : (
           step < LAST_STEP && (
-            <PictureFrame src={step === 2 ? setup.pictures.find((p) => p.label === label)!.src : setup.picture} alt={`The view from ${name}`} paths={paths}>
+            <PictureFrame src={step === ZONES_STEP ? setup.pictures.find((p) => p.label === label)!.src : setup.picture} alt={`The view from ${name}`} paths={paths}>
               {step === 0 && !readingDone && <PictureBusy label='Reading the picture' />}
-              {step === 1 && itemsShown < items.length && <PictureBusy label='Listing what is in view' />}
             </PictureFrame>
           )
         )}
-        {step === 2 && manyPictures && <Segmented label='Picture' value={label} options={setup.pictures.map((p) => ({ value: p.label, label: sentence(p.label) }))} onChange={setLabel} />}
-        {step === 1 && (
-          <ul aria-label='What is in view' className='flex min-h-16 flex-wrap content-start gap-1.5'>
-            {items.slice(0, itemsShown).map((item) => (
-              <li key={item} className='animate-in fade-in rounded-md border px-2 py-1 text-xs'>
-                {item}
-              </li>
-            ))}
-          </ul>
-        )}
-        {step === 2 && (
+        {step === ZONES_STEP && manyPictures && <Segmented label='Picture' value={label} options={setup.pictures.map((p) => ({ value: p.label, label: sentence(p.label) }))} onChange={setLabel} />}
+        {step === ZONES_STEP && (
           <>
             <p className='text-muted-foreground text-xs' role='status'>
-              {zonesShown < setup.zones.length ? `Outlining ${zonesShown + 1} of ${setup.zones.length}: ${sentence(setup.zones[zonesShown]!.name)}` : `${setup.zones.length} zones are in place.`}
+              {!allRevealed ? `Outlining ${revealed + 1} of ${zonesToReveal}: ${sentence(setup.zones[revealed]?.name ?? '')}` : zonesInPlace(setup.zones.length)}
             </p>
-            <ul aria-label='Zones' className='flex min-h-16 flex-wrap content-start gap-1.5'>
-              {setup.zones.slice(0, zonesShown).map((zone, i) => (
-                <li key={zone.name} className='animate-in fade-in flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs'>
-                  <span className='size-2.5 rounded-full' style={{ background: ZONE_COLOURS[i % ZONE_COLOURS.length] }} />
-                  {sentence(zone.name)}
-                  {manyPictures && !zone.seenAt.includes(lastLabel) && <span className='text-muted-foreground'>(uncertain at {lastLabel})</span>}
-                </li>
+            <ul aria-label='Zones' className='grid max-h-80 min-h-16 content-start items-start gap-2 overflow-y-auto sm:grid-cols-2' onMouseLeave={() => setPointedAt(null)} onBlur={() => setPointedAt(null)}>
+              {zones.map((zone, i) => (
+                <ZoneRow
+                  key={zone.name}
+                  onPoint={() => setPointedAt(zone.name)}
+                  zone={zone.name}
+                  colour={ZONE_COLOURS[i % ZONE_COLOURS.length]!}
+                  note={manyPictures && !zone.seenAt.includes(lastLabel) ? `Uncertain at ${lastLabel}` : null}
+                  rulesOnIt={clipRules.filter((r) => r.kind === 'typed' && r.zones.some((z) => z.name === zone.name)).length}
+                  canEdit={allRevealed}
+                  clip={clip}
+                  onChanged={onZonesChanged}
+                />
               ))}
             </ul>
           </>
@@ -296,6 +311,76 @@ function Steps({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+const zonesInPlace = (count: number) => (count === 0 ? 'No zones are in place.' : count === 1 ? '1 zone is in place.' : `${count} zones are in place.`);
+
+function ZoneRow({ zone, colour, note, rulesOnIt, canEdit, clip, onChanged, onPoint }: { zone: string; colour: string; note: string | null; rulesOnIt: number; canEdit: boolean; clip: string; onChanged: (next: DemoSetup) => void; onPoint: () => void }) {
+  const [mode, setMode] = useState<'shown' | 'renaming' | 'deleting'>('shown');
+  const [draft, setDraft] = useState(sentence(zone));
+  const rename = useMutation({ mutationFn: (name: string) => api.renameDemoZone(clip, zone, name), onSuccess: onChanged });
+  const remove = useMutation({ mutationFn: () => api.deleteDemoZone(clip, zone), onSuccess: onChanged });
+  const problem = rename.error?.message ?? remove.error?.message ?? null;
+  const save = (e: FormEvent) => {
+    e.preventDefault();
+    const name = draft.trim();
+    if (name === sentence(zone)) setMode('shown');
+    else rename.mutate(name);
+  };
+
+  return (
+    <li className='animate-in fade-in hover:bg-accent/50 min-w-0 rounded-lg border px-3 py-2 text-sm' onMouseEnter={onPoint} onFocus={onPoint}>
+      {mode === 'renaming' ? (
+        <form onSubmit={save} className='flex flex-wrap items-center gap-2'>
+          <span className='size-2.5 shrink-0 rounded-full' style={{ background: colour }} aria-hidden />
+          <Input aria-label={`New name for ${sentence(zone)}`} value={draft} maxLength={60} autoFocus className='h-8 max-w-64 min-w-40 flex-1' onChange={(e) => setDraft(e.target.value)} />
+          <Button size='sm' type='submit' disabled={rename.isPending || draft.trim().length === 0}>
+            {rename.isPending && <LoaderCircle className='animate-spin' />}
+            Save
+          </Button>
+          <Button size='sm' type='button' variant='outline' disabled={rename.isPending} onClick={() => { rename.reset(); setDraft(sentence(zone)); setMode('shown'); }}>
+            Cancel
+          </Button>
+        </form>
+      ) : (
+        <div className='flex flex-wrap items-center gap-2'>
+          <span className='size-2.5 shrink-0 rounded-full' style={{ background: colour }} aria-hidden />
+          <span className='min-w-0 flex-1 font-medium'>
+            {sentence(zone)}
+            {note && <span className='text-muted-foreground ml-2 text-xs font-normal'>{note}</span>}
+          </span>
+          {canEdit && mode === 'shown' && (
+            <span className='flex gap-1'>
+              <Button size='sm' variant='ghost' aria-label={`Rename ${sentence(zone)}`} title='Rename' className='size-8 p-0' onClick={() => setMode('renaming')}>
+                <Pencil />
+              </Button>
+              <Button size='sm' variant='ghost' aria-label={`Delete ${sentence(zone)}`} title='Delete' className='size-8 p-0' onClick={() => setMode('deleting')}>
+                <Trash2 />
+              </Button>
+            </span>
+          )}
+        </div>
+      )}
+      {mode === 'deleting' && (
+        <div className='mt-3 space-y-2'>
+          <p className='text-sm'>
+            Delete the zone “{sentence(zone)}”? It will no longer be outlined on this camera, and new rules cannot name it.
+            {rulesOnIt > 0 && ` ${rulesOnIt === 1 ? 'The 1 rule that uses it stays on the clip and keeps' : `The ${rulesOnIt} rules that use it stay on the clip and keep`} watching that place.`}
+          </p>
+          <div className='flex flex-wrap gap-2'>
+            <Button size='sm' disabled={remove.isPending} onClick={() => remove.mutate()}>
+              {remove.isPending && <LoaderCircle className='animate-spin' />}
+              Delete
+            </Button>
+            <Button size='sm' variant='outline' disabled={remove.isPending} onClick={() => { remove.reset(); setMode('shown'); }}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+      {problem && <p className='text-destructive mt-2 text-xs' role='alert'>{problem}</p>}
+    </li>
   );
 }
 
@@ -393,7 +478,7 @@ function Ready({ id, setup, rules, offered, added, problem }: { id: string; setu
             This camera is ready
           </CardTitle>
           <CardDescription>
-            {!setup.hasClip ? `${setup.zones.length} zones are in place. This camera has no recording here, so its rules cannot be run on this page.` : `${setup.zones.length} zones are in place, and ${chosen.length === 0 ? 'no rules were added' : chosen.length === 1 ? '1 rule was added' : `${chosen.length} rules were added`}.`}
+            {!setup.hasClip ? `${zonesInPlace(setup.zones.length)} This camera has no recording here, so its rules cannot be run on this page.` : `${zonesInPlace(setup.zones.length)} ${chosen.length === 0 ? 'No rules were added.' : chosen.length === 1 ? '1 rule was added.' : `${chosen.length} rules were added.`}`}
           </CardDescription>
         </div>
       </CardHeader>

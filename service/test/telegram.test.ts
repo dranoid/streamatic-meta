@@ -275,7 +275,7 @@ describe('the demo bot', () => {
       abilities,
       wait: async () => undefined,
     });
-    return { instance, sent, links, typed, charged, heardAudio };
+    return { instance, sent, links, typed, charged, heardAudio, store };
   }
 
   const linked = async (b: ReturnType<typeof bot>) => {
@@ -330,6 +330,15 @@ describe('the demo bot', () => {
     expect(plan.text).toContain('Tell me when someone opens the door.');
     expect(plan.text).toContain('Building entrance');
     expect(plan.buttons?.map((x) => x.text)).toEqual(['Confirm', 'Cancel']);
+  });
+
+  it('says plainly that finding an item is done on the page, and holds nothing to confirm', async () => {
+    const b = bot({ draft: { draft: async () => ({ search: { item: 'ladder', words: ['ladder'] } }) } });
+    await linked(b);
+    await b.instance.handle(message({ text: 'Track the ladder' }));
+    const reply = b.sent.at(-1)!;
+    expect(reply.text).toContain('Finding and tracking an item is done on the page');
+    expect(reply.buttons ?? []).toEqual([]);
   });
 
   it('counts against the person’s Telegram id, so clearing a cookie resets nothing', async () => {
@@ -400,6 +409,14 @@ describe('the demo bot', () => {
     const last = b.sent.at(-1)!.text;
     expect(last).toContain('Two things in order.');
     expect(last).toContain('Tell me when someone opens a door.');
+  });
+
+  it('plans on the zones as the linked visitor’s page shows them', async () => {
+    const b = bot({ draft: { draft: async ({ sentence, zones }) => ({ sentence, about: 'entrance', zones: zones.map((z) => z.name), box: null, hours: null }) } });
+    await linked(b);
+    b.store.saveZoneEdit(VISITOR, CLIP, { zone: 'door', name: 'entrance' });
+    await b.instance.handle(message({ text: 'Tell me when the entrance opens.' }));
+    expect(b.sent.at(-1)!.text).toContain('Zones: entrance');
   });
 
   it('asks for other words when no plan fits the clip, showing what it holds and no model’s reasoning', async () => {

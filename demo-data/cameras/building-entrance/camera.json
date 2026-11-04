@@ -1,1 +1,1 @@
-{"name":"Building entrance","site":"the entrance of a public building","baseWords":["door","vehicle"],"pictures":{"clip":"still.jpg"},"group":"meva"}
+{"name":"Building entrance","site":"the entrance of a public building","baseWords":["door","vehicle"],"pictures":{"clip":"still.jpg"},"group":"meva","tested":["Tell me when someone opens the door of the building.","Tell me when someone gets out of a vehicle."]}

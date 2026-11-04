@@ -20,6 +20,8 @@ export interface Camera {
   backend: { deviceId: string; recorded: { from: string; to: string } | null } | null;
   // Cameras at one place share this, so the guide can offer another of them; null for a camera on its own.
   group: string | null;
+  // Sentences run through the page three times that raised a real alert each time, offered ahead of setup's own suggestions.
+  tested: string[];
 }
 
 // One folder per camera under <root>/cameras: camera.json, its pictures, setup.json once setup has run, zone-names.json,
@@ -39,11 +41,11 @@ export class CameraFolder {
     const config = await readFile(join(dir, 'camera.json'), 'utf8').catch(() => null);
     if (config === null) return null;
     const saved = await readFile(join(dir, 'setup.json'), 'utf8').catch(() => null);
-    const { name, site, baseWords, pictures, backend = null, group = null } = JSON.parse(config) as Pick<Camera, 'name' | 'site' | 'baseWords' | 'pictures'> & { backend?: Camera['backend']; group?: string };
+    const { name, site, baseWords, pictures, backend = null, group = null, tested = [] } = JSON.parse(config) as Pick<Camera, 'name' | 'site' | 'baseWords' | 'pictures'> & { backend?: Camera['backend']; group?: string; tested?: string[] };
     const folder = async (name: string) => ((await stat(join(dir, name)).catch(() => null))?.isDirectory() ? join(dir, name) : null);
     const episode = await folder('episode');
     const setup = saved === null ? null : (JSON.parse(saved) as CameraSetup);
-    return { id, name, site, baseWords, pictures, setup, zones: setup ? cameraZones(setup, await this.zoneNames(id)) : [], episode, backend, group };
+    return { id, name, site, baseWords, pictures, setup, zones: setup ? cameraZones(setup, await this.zoneNames(id)) : [], episode, backend, group, tested };
   }
 
   async zoneNames(id: string): Promise<ZoneName[]> {

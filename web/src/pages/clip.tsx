@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { BellRing, CircleAlert, Crosshair, LoaderCircle, Pause, Play, Search, SkipForward, SquareDashed, X } from 'lucide-react';
+import { ArrowRight, BellRing, CircleAlert, Crosshair, Eye, EyeOff, LoaderCircle, Pause, Play, Search, SkipForward, SquareDashed, X } from 'lucide-react';
 import { BoxDrawer, type DrawnBox } from '@/components/box-drawer';
 import { Outlines, PictureBusy, PictureFrame, ZONE_COLOURS, type DrawnPath } from '@/components/picture-frame';
-import { DemoGuide } from '@/components/demo-guide';
+import { DemoGuide, type GuideFinding } from '@/components/demo-guide';
 import { LanguageChoice, type AlertLanguage } from '@/components/language-choice';
 import { NeedsKeys } from '@/components/needs-keys';
 import { TelegramAlerts, useTelegramLink } from '@/components/telegram-alerts';
@@ -12,6 +12,7 @@ import { Timeline } from '@/components/timeline';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Label } from '@/components/ui/input';
+import { Link } from '@/components/ui/link';
 import { Notice } from '@/components/ui/notice';
 import { Skeleton } from '@/components/ui/skeleton';
 import { api, clipPictureUrl, clipVideoUrl, type Clip, type DemoAlert, type DemoClip, type DemoRule, type DemoZone, type Follow, type FollowJob, type Thing } from '@/lib/api';
@@ -22,6 +23,9 @@ import { sentence } from '@/lib/time';
 
 const POLL_MS = 1_000;
 const FOLLOW_COLOUR = '#e8c547';
+// Gold first, then colours that stay apart on a picture by day or on infrared; red is kept for alerts.
+const FOLLOW_COLOURS = [FOLLOW_COLOUR, '#34d399', '#f472b6', '#22d3ee', '#fb923c', '#a78bfa', '#a3e635', '#94a3b8'];
+const MOST_TRACKED_AT_ONCE = 4;
 const ALERT_COLOUR = '#ef4444';
 const RULE_ZONE_COLOUR = '#538ee7';
 // How long an alert stays over the picture once it has reached the person.
@@ -45,6 +49,13 @@ export function ClipPage({ id, isPublic = false, trackSeconds = null }: { id: st
   const clip = clips.data?.find((c) => c.id === id);
   // A sentence sent here by the page that chose this camera. It leaves the address at once, so reloading does not spend on it again.
   const [ask] = useState(() => new URLSearchParams(location.search).get('ask'));
+  // An alert selected on the events page: its rule, and the moment to open at.
+  const [opened] = useState(() => {
+    const query = new URLSearchParams(location.search);
+    const rule = query.get('rule');
+    const at = Number(query.get('at'));
+    return rule && Number.isFinite(at) ? { rule, atMs: at } : null;
+  });
   useEffect(() => {
     if (location.search) history.replaceState(null, '', location.pathname);
   }, []);
@@ -59,24 +70,31 @@ export function ClipPage({ id, isPublic = false, trackSeconds = null }: { id: st
         title={clip.name}
         description={isPublic ? 'Describe a rule to the guide, or select one, and play the clip. Pause on any frame to search it.' : 'Pause on a frame where it appears, then search for it.'}
       />
-      <ClipWatch key={clip.id} clip={clip} follows={follows.data ?? []} demo={demo.data ?? null} trackSeconds={trackSeconds} ask={ask} />
+      <ClipWatch key={clip.id} clip={clip} follows={follows.data ?? []} demo={demo.data ?? null} trackSeconds={trackSeconds} ask={ask} opened={opened} />
     </>
   );
 }
 
-function ClipWatch({ clip, follows, demo, trackSeconds, ask }: { clip: Clip; follows: Follow[]; demo: DemoClip | null; trackSeconds: number | null; ask: string | null }) {
+function ClipWatch({ clip, follows, demo, trackSeconds, ask, opened }: { clip: Clip; follows: Follow[]; demo: DemoClip | null; trackSeconds: number | null; ask: string | null; opened: { rule: string; atMs: number } | null }) {
   const queryClient = useQueryClient();
   const { models } = useAbilities();
   const video = useRef<HTMLVideoElement>(null);
   const playerRef = useRef<HTMLDivElement>(null);
+  const pictureCardRef = useRef<HTMLDivElement>(null);
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [shownId, setShownId] = useState<string | null>(null);
+  const [shownIds, setShownIds] = useState<string[]>([]);
   const [choosingAt, setChoosingAt] = useState<number | null>(null);
-  const shown = follows.find((f) => f.id === shownId) ?? null;
+  // What the guide found, waiting on the picture to be selected and tracked.
+  const [guided, setGuided] = useState<{ item: string; found: string[]; things: Thing[] } | null>(null);
+  const [finding, setFinding] = useState<GuideFinding | null>(null);
+  // The colour goes with the item, whichever others are showing with it.
+  const colourOf = useCallback((id: string) => FOLLOW_COLOURS[Math.max(0, follows.findIndex((f) => f.id === id)) % FOLLOW_COLOURS.length]!, [follows]);
+  const shown = useMemo(() => follows.filter((f) => shownIds.includes(f.id)), [follows, shownIds]);
   // Each ticked rule with the moment on the clip it was ticked at.
-  const [ticks, setTicks] = useState<Record<string, number>>({});
+  const [ticks, setTicks] = useState<Record<string, number>>(() => (opened ? { [opened.rule]: 0 } : {}));
   const [showZones, setShowZones] = useState(false);
+  const [showTracked, setShowTracked] = useState(true);
   const [language, setLanguage] = useState<AlertLanguage>('english');
   const [guideZones, setGuideZones] = useState<DemoZone[] | null>(null);
   const tickList = useMemo(() => Object.entries(ticks).map(([rule, armedMs]) => ({ rule, armedMs })), [ticks]);
@@ -102,19 +120,57 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask }: { clip: Clip; fol
     video.current.currentTime = seconds;
     setTime(seconds);
   };
+  useEffect(() => {
+    if (opened) seek(Math.max(0, opened.atMs - LEAD_IN_MS) / 1000);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const length = clip.frames / clip.fps;
   const currentFrame = Math.min(clip.frames - 1, Math.floor(time * clip.fps + 0.001));
-  const framesOfShown = useMemo(() => new Map(shown?.frames.map((f) => [f.frame, f])), [shown]);
-  const here = framesOfShown.get(currentFrame);
+  const framesOfShown = useMemo(() => shown.map((f) => ({ id: f.id, frames: new Map(f.frames.map((at) => [at.frame, at])) })), [shown]);
+  const here = framesOfShown.flatMap(({ id, frames }) => {
+    const at = frames.get(currentFrame);
+    return at ? [{ id, path: at.path }] : [];
+  });
 
   const startChoosing = () => {
     video.current?.pause();
+    setGuided(null);
     setChoosingAt(currentFrame);
   };
-  const followed = useCallback((id: string) => {
+  const stopChoosing = () => {
     setChoosingAt(null);
-    setShownId(id);
-  }, []);
+    setGuided(null);
+    setFinding(null);
+  };
+  const followed = (found: Follow[]) => {
+    setChoosingAt(null);
+    setShownIds(found.map((f) => f.id));
+    if (!guided) return;
+    // The guide was asked to find it, so it plays from where the item comes into view.
+    const firstInView = Math.min(...found.flatMap((f) => f.spans.map((s) => s.from)));
+    setGuided(null);
+    setFinding({ stage: 'done', item: guided.item, follows: found, fps: clip.fps });
+    if (Number.isFinite(firstInView)) {
+      seek(firstInView / clip.fps);
+      void video.current?.play();
+    }
+    playerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  };
+  const findItem = async (item: string, words: string[]) => {
+    video.current?.pause();
+    const frame = Math.min(clip.frames - 1, Math.floor((video.current?.currentTime ?? 0) * clip.fps + 0.001));
+    setFinding({ stage: 'searching', item });
+    setChoosingAt(null);
+    const search = await api.searchClip(clip.id, frame, { item, words });
+    if (search.found.length === 0) {
+      setFinding({ stage: 'none', item, looks: search.looks });
+      return;
+    }
+    setGuided({ item, found: search.found, things: search.things });
+    setChoosingAt(search.frame);
+    setFinding(search.found.length === 1 ? { stage: 'tracking', item, framesDone: 0, framesTotal: 0, at: search.frame / clip.fps } : { stage: 'select', item, count: search.found.length, at: search.frame / clip.fps });
+    requestAnimationFrame(() => pictureCardRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
+  };
   const refreshDemo = useCallback(() => void queryClient.invalidateQueries({ queryKey: ['demo-clip', clip.id] }), [queryClient, clip.id]);
   const nowMs = time * 1000;
   const telegram = useTelegramLink(clip.id, language);
@@ -178,6 +234,9 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask }: { clip: Clip; fol
             if (zones) playerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
           }}
           onTyped={refreshDemo}
+          finding={finding}
+          onFindItem={findItem}
+          onStopFinding={stopChoosing}
           onAdd={(rule, firstAlert) => {
             setTicks((all) => ({ ...all, [rule]: 0 }));
             seek(firstAlert ? Math.max(0, firstAlert.atMs - LEAD_IN_MS) / 1000 : 0);
@@ -186,7 +245,7 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask }: { clip: Clip; fol
           }}
         />
       )}
-      <Card className='min-w-0'>
+      <Card ref={pictureCardRef} className='min-w-0'>
         <CardContent className='space-y-4'>
           <div ref={playerRef} className={cn('relative aspect-video overflow-hidden rounded-lg bg-black', choosingAt !== null && 'hidden', banner && 'ring-destructive ring-4')}>
             <video
@@ -210,15 +269,26 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask }: { clip: Clip; fol
                 <span>{inLanguage(banner, language) ?? ruleLabel(rulesById.get(banner.rule))}</span>
               </div>
             )}
-            {here && (
+            {showTracked && here.length > 0 && (
               <svg viewBox={`0 0 ${clip.width} ${clip.height}`} preserveAspectRatio='xMidYMid meet' className='pointer-events-none absolute inset-0 h-full w-full' aria-hidden>
-                <path d={here.path} fillRule='evenodd' fill={FOLLOW_COLOUR} fillOpacity={0.3} stroke={FOLLOW_COLOUR} strokeWidth={Math.max(2, clip.width / 360)} strokeLinejoin='round' />
+                {here.map(({ id, path }) => (
+                  <path key={id} d={path} fillRule='evenodd' fill={colourOf(id)} fillOpacity={0.3} stroke={colourOf(id)} strokeWidth={Math.max(2, clip.width / 360)} strokeLinejoin='round' />
+                ))}
               </svg>
             )}
           </div>
 
           {choosingAt !== null ? (
-            <Choosing clip={clip} frame={choosingAt} trackSeconds={trackSeconds} onCancel={() => setChoosingAt(null)} onFollowed={followed} />
+            <Choosing
+              key={`${choosingAt}-${guided?.item ?? ''}`}
+              clip={clip}
+              frame={choosingAt}
+              trackSeconds={trackSeconds}
+              guided={guided}
+              onCancel={stopChoosing}
+              onFollowed={followed}
+              onProgress={(framesDone, framesTotal) => guided && setFinding({ stage: 'tracking', item: guided.item, framesDone, framesTotal, at: choosingAt / clip.fps })}
+            />
           ) : (
             <>
               <Timeline length={length * 1000} play={time * 1000} onSeek={(ms) => seek(ms / 1000)} label={(ms) => duration(ms / 1000)}>
@@ -236,14 +306,14 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask }: { clip: Clip; fol
                         ))}
                       </div>
                     )}
-                    {shown && (
-                      <div className='bg-muted/60 relative h-2 overflow-hidden rounded-full' role='img' aria-label={`When the ${shown.name} was in view`}>
-                        {shown.spans.map((s) => {
+                    {shown.map((follow) => (
+                      <div key={follow.id} className='bg-muted/60 relative h-2 overflow-hidden rounded-full' role='img' aria-label={`When the ${follow.name} was in view`}>
+                        {follow.spans.map((s) => {
                           const from = at((s.from / clip.fps) * 1000);
-                          return <span key={s.from} className='absolute inset-y-0 rounded-full' style={{ left: `${from}%`, width: `${Math.max(at(((s.to + 1) / clip.fps) * 1000) - from, 0.5)}%`, background: FOLLOW_COLOUR }} />;
+                          return <span key={s.from} className='absolute inset-y-0 rounded-full' style={{ left: `${from}%`, width: `${Math.max(at(((s.to + 1) / clip.fps) * 1000) - from, 0.5)}%`, background: colourOf(follow.id) }} />;
                         })}
                       </div>
-                    )}
+                    ))}
                   </>
                 )}
               </Timeline>
@@ -272,6 +342,12 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask }: { clip: Clip; fol
                     {showZones ? 'Hide what setup outlined' : 'Show what setup outlined'}
                   </Button>
                 )}
+                {shown.length > 0 && (
+                  <Button size='sm' variant='outline' aria-pressed={showTracked} onClick={() => setShowTracked((v) => !v)}>
+                    {showTracked ? <EyeOff /> : <Eye />}
+                    {showTracked ? 'Hide the tracked outlines' : 'Show the tracked outlines'}
+                  </Button>
+                )}
               </div>
               {!models && <NeedsKeys />}
               {trackSeconds !== null && models && <p className='text-muted-foreground text-xs'>Pause the clip where an item appears and search this frame. Streamatic can then track the item from {trackSeconds} seconds before that frame to {trackSeconds} seconds after it.</p>}
@@ -295,14 +371,32 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask }: { clip: Clip; fol
                 })
               }
             />
-            <AlertsCard alerts={reached} rules={rulesById} ticking={tickList.length > 0} next={nextAlert} language={language} onLanguage={setLanguage} onGoTo={goToAlert} telegram={<TelegramAlerts telegram={telegram} problem={telegramProblem} />} />
+            <Card>
+              <CardHeader>
+                <div>
+                  <CardTitle>Alerts</CardTitle>
+                  <CardDescription>Each alert appears on the picture 3 seconds after its moment. A live camera takes longer, since its pictures must first be uploaded and read.</CardDescription>
+                </div>
+              </CardHeader>
+              <CardContent className='space-y-3'>
+                <p className='text-sm' role='status'>
+                  {tickList.length === 0 ? 'Select a rule to see its alerts.' : nextAlert ? `The next alert appears at ${duration(nextAlert.shownMs / 1000)}.` : 'This rule raises no further alerts from this point. Select it earlier in the clip, or select another rule.'}
+                </p>
+                <LanguageChoice value={language} onChange={setLanguage} />
+                <TelegramAlerts telegram={telegram} problem={telegramProblem} />
+                <Link href='/events' className='text-primary inline-flex items-center gap-1.5 text-sm font-medium hover:underline [&_svg]:size-4'>
+                  See every alert on Events
+                  <ArrowRight />
+                </Link>
+              </CardContent>
+            </Card>
           </>
         )}
         <Card>
           <CardHeader>
             <div>
               <CardTitle>Found in this clip</CardTitle>
-              <CardDescription>Select one to see it in the clip.</CardDescription>
+              <CardDescription>Select any of them to see them in the clip together.</CardDescription>
             </div>
           </CardHeader>
           <CardContent>
@@ -314,15 +408,19 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask }: { clip: Clip; fol
                   <li key={f.id}>
                     <button
                       type='button'
-                      aria-pressed={f.id === shownId}
+                      aria-pressed={shownIds.includes(f.id)}
                       onClick={() => {
                         setChoosingAt(null);
-                        setShownId(f.id);
-                        if (f.spans[0]) seek(f.spans[0].from / clip.fps);
+                        const on = !shownIds.includes(f.id);
+                        setShownIds((all) => (on ? [...all, f.id] : all.filter((id) => id !== f.id)));
+                        if (on && f.spans[0]) seek(f.spans[0].from / clip.fps);
                       }}
-                      className={cn('hover:bg-accent w-full rounded-lg border p-3 text-left text-sm transition-colors', f.id === shownId && 'border-primary')}
+                      className={cn('hover:bg-accent w-full rounded-lg border p-3 text-left text-sm transition-colors', shownIds.includes(f.id) && 'border-primary')}
                     >
-                      <span className='font-medium'>{sentence(f.name)}</span>
+                      <span className='flex items-center gap-2 font-medium'>
+                        <span className='size-2.5 shrink-0 rounded-full' style={{ background: colourOf(f.id) }} aria-hidden />
+                        {sentence(f.name)}
+                      </span>
                       <span className='text-muted-foreground mt-1 block text-xs'>
                         {f.spans.length === 0
                           ? 'Not found in this clip'
@@ -385,53 +483,28 @@ function RulesCard({ rules, ticks, onToggle }: { rules: DemoRule[]; ticks: Recor
 // An alert's words in the language chosen; an alert not written in it stays in English.
 const inLanguage = (alert: DemoAlert, language: AlertLanguage) => (language === 'english' ? null : (alert.captions[language] ?? null));
 
-function AlertsCard({ alerts, rules, ticking, next, language, onLanguage, onGoTo, telegram }: { alerts: DemoAlert[]; rules: Map<string, DemoRule>; ticking: boolean; next: DemoAlert | null; language: AlertLanguage; onLanguage: (language: AlertLanguage) => void; onGoTo: (alert: DemoAlert) => void; telegram: ReactNode }) {
-  return (
-    <Card>
-      <CardHeader>
-        <div className='space-y-3'>
-          <div>
-            <CardTitle>Alerts</CardTitle>
-            <CardDescription>What Streamatic’s rules really raised on this clip. Here each appears 3 seconds after its moment. A live camera takes longer, since its pictures must first be uploaded and read.</CardDescription>
-          </div>
-          <LanguageChoice value={language} onChange={onLanguage} />
-          {telegram}
-        </div>
-      </CardHeader>
-      <CardContent>
-        {alerts.length === 0 && (
-          <p className='text-muted-foreground text-sm'>{!ticking ? 'Select a rule to see its alerts.' : next ? `No alerts yet. The next alert appears at ${duration(next.shownMs / 1000)}.` : 'This rule raises no further alerts from this point. Select it earlier in the clip, or select another rule.'}</p>
-        )}
-        <ul className='space-y-3'>
-          {alerts.map((a) => (
-            <li key={`${a.rule}-${a.key}`}>
-              <button type='button' onClick={() => onGoTo(a)} className='hover:bg-accent w-full rounded-lg border p-2 text-left transition-colors'>
-                {a.picture && <img src={a.picture} alt={a.caption ?? 'The picture this alert carries'} className='mb-2 aspect-video w-full rounded object-cover' loading='lazy' />}
-                <span className='block text-sm font-medium'>{ruleLabel(rules.get(a.rule))}</span>
-                {inLanguage(a, language) ? (
-                  <span lang={language === 'yoruba' ? 'yo' : 'pcm'} className='mt-1 block text-sm'>
-                    {inLanguage(a, language)}
-                  </span>
-                ) : (
-                  a.caption && <span className='text-muted-foreground mt-1 line-clamp-2 text-xs'>{a.caption}</span>
-                )}
-                <span className='text-muted-foreground mt-1 block text-xs'>
-                  Happened at {duration(a.atMs / 1000)}.
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      </CardContent>
-    </Card>
-  );
-}
-
-// The follow mode, on one paused frame: everything found is outlined, and the person selects what to follow.
-function Choosing({ clip, frame, trackSeconds, onCancel, onFollowed }: { clip: Clip; frame: number; trackSeconds: number | null; onCancel: () => void; onFollowed: (id: string) => void }) {
+// The follow mode, on one paused frame: everything found is outlined, and the person selects what to follow. Sent by the guide,
+// it holds only what the guide found, without naming the frame, and one item is tracked without being asked.
+function Choosing({
+  clip,
+  frame,
+  trackSeconds,
+  guided,
+  onCancel,
+  onFollowed,
+  onProgress,
+}: {
+  clip: Clip;
+  frame: number;
+  trackSeconds: number | null;
+  guided: { item: string; found: string[]; things: Thing[] } | null;
+  onCancel: () => void;
+  onFollowed: (follows: Follow[]) => void;
+  onProgress: (framesDone: number, framesTotal: number) => void;
+}) {
   const queryClient = useQueryClient();
-  const [things, setThings] = useState<Thing[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [things, setThings] = useState<Thing[]>(() => guided?.things.filter((t) => guided.found.includes(t.id)) ?? []);
+  const [selected, setSelected] = useState<string[]>([]);
   const [word, setWord] = useState('');
   const [note, setNote] = useState<string | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -439,10 +512,12 @@ function Choosing({ clip, frame, trackSeconds, onCancel, onFollowed }: { clip: C
   const [drawing, setDrawing] = useState(false);
   const [box, setBox] = useState<DrawnBox | null>(null);
 
-  const name = useQuery({ queryKey: ['name-frame', clip.id, frame], queryFn: () => api.outline(clip.id, frame, {}), retry: false, staleTime: Infinity });
+  const name = useQuery({ queryKey: ['name-frame', clip.id, frame], queryFn: () => api.outline(clip.id, frame, {}), retry: false, staleTime: Infinity, enabled: guided === null });
+  const naming = guided === null && name.isPending;
   useEffect(() => {
     if (name.data) setThings(name.data.things);
   }, [name.data]);
+  const toggle = (id: string) => setSelected((all) => (all.includes(id) ? all.filter((other) => other !== id) : all.length < MOST_TRACKED_AT_ONCE ? [...all, id] : all));
 
   const search = useMutation({
     mutationFn: (w: string) => api.outline(clip.id, frame, { word: w }),
@@ -456,8 +531,9 @@ function Choosing({ clip, frame, trackSeconds, onCancel, onFollowed }: { clip: C
     mutationFn: (drawn: DrawnBox) => api.outline(clip.id, frame, { box: drawn }),
     onSuccess: (result) => {
       setThings(result.things);
-      setSelected(result.selected ?? null);
       if (result.selected) {
+        const drawn = result.selected;
+        setSelected((all) => (all.includes(drawn) ? all : [...all, drawn].slice(-MOST_TRACKED_AT_ONCE)));
         setDrawing(false);
         setBox(null);
         setNote(null);
@@ -467,10 +543,27 @@ function Choosing({ clip, frame, trackSeconds, onCancel, onFollowed }: { clip: C
     },
   });
   const start = useMutation({
-    mutationFn: (thing: string) => api.startFollow(clip.id, frame, thing),
+    mutationFn: (ids: string[]) => api.startFollow(clip.id, frame, ids),
     onSuccess: ({ id }) => setJobId(id),
   });
+  const tracked = (ids: string[]) => {
+    setSelected(ids);
+    setJob(null);
+    setJobId(null);
+    start.mutate(ids);
+  };
 
+  // One item found by the guide needs no choosing.
+  const startedByGuide = useRef(false);
+  useEffect(() => {
+    if (!guided || guided.found.length !== 1 || startedByGuide.current) return;
+    startedByGuide.current = true;
+    tracked(guided.found);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [guided]);
+
+  const latestCallbacks = useRef({ onFollowed, onProgress });
+  latestCallbacks.current = { onFollowed, onProgress };
   useEffect(() => {
     if (!jobId) return;
     let stopped = false;
@@ -478,9 +571,10 @@ function Choosing({ clip, frame, trackSeconds, onCancel, onFollowed }: { clip: C
       const latest = await api.followJob(clip.id, jobId).catch(() => null);
       if (stopped) return;
       if (latest) setJob(latest);
+      if (latest?.state === 'running') latestCallbacks.current.onProgress(latest.framesDone, latest.framesTotal);
       if (latest?.state === 'done') {
         await queryClient.invalidateQueries({ queryKey: ['follows', clip.id] });
-        onFollowed(jobId);
+        latestCallbacks.current.onFollowed(latest.follows);
         return;
       }
       if (latest?.state !== 'failed') setTimeout(poll, POLL_MS);
@@ -489,13 +583,17 @@ function Choosing({ clip, frame, trackSeconds, onCancel, onFollowed }: { clip: C
     return () => {
       stopped = true;
     };
-  }, [jobId, clip.id, queryClient, onFollowed]);
+  }, [jobId, clip.id, queryClient]);
 
   const running = (jobId !== null && job?.state !== 'failed') || start.isPending;
-  const selectedThing = things.find((t) => t.id === selected) ?? null;
+  const selectedThings = things.filter((t) => selected.includes(t.id));
+  const trackingWhat = selectedThings.length === 1 ? `the ${selectedThings[0]!.name}` : `${selectedThings.length} items`;
+  const framesDone = job?.state === 'running' ? job.framesDone : 0;
   const busyLabel = running
-    ? `Tracking the ${selectedThing?.name ?? job?.name ?? 'item'}`
-    : name.isPending
+    ? framesDone === 0
+      ? `Preparing to track ${trackingWhat}`
+      : `Tracking ${trackingWhat}`
+    : naming
       ? 'Finding the items in this frame'
       : search.isPending
         ? 'Searching this frame'
@@ -507,9 +605,9 @@ function Choosing({ clip, frame, trackSeconds, onCancel, onFollowed }: { clip: C
     key: t.id,
     d: t.path,
     colour: ZONE_COLOURS[words.indexOf(t.name) % ZONE_COLOURS.length]!,
-    style: t.id === selected ? 'selected' : 'fill',
+    style: selected.includes(t.id) ? 'selected' : 'fill',
     title: sentence(t.name),
-    onSelect: running ? undefined : () => setSelected(t.id),
+    onSelect: running ? undefined : () => toggle(t.id),
   }));
 
   const onSearch = (event: FormEvent) => {
@@ -529,12 +627,11 @@ function Choosing({ clip, frame, trackSeconds, onCancel, onFollowed }: { clip: C
     <div className='space-y-4'>
       <PictureFrame src={clipPictureUrl(clip.id, frame)} alt={`Frame ${frame} of ${clip.name}`} paths={drawing ? [] : paths}>
         {drawing && <BoxDrawer width={clip.width} height={clip.height} box={box} onChange={setBox} />}
-        {busyLabel && <PictureBusy label={busyLabel} />}
+        {busyLabel && <PictureBusy label={busyLabel} progress={running && job?.state === 'running' && job.framesTotal > 0 ? { done: job.framesDone, total: job.framesTotal } : null} />}
       </PictureFrame>
 
       {running ? (
         <p className='text-muted-foreground text-xs'>
-          {job?.framesSeen ? `Found on ${job.framesSeen.toLocaleString('en-GB')} frames so far. ` : ''}
           {trackSeconds === null ? 'This usually takes under a minute.' : `Tracking covers ${trackSeconds} seconds either side of this frame, and usually takes about a minute.`}
         </p>
       ) : drawing ? (
@@ -562,9 +659,14 @@ function Choosing({ clip, frame, trackSeconds, onCancel, onFollowed }: { clip: C
         </>
       ) : (
         <>
-          {!name.isPending && (
+          {!naming && (
             <p className='text-muted-foreground text-sm'>
-              {things.length === 0 ? 'No items were outlined on this frame.' : 'Streamatic outlined these items on this frame. Select an outline to track it.'} If an item is not outlined, enter its name or draw a box around it.
+              {things.length === 0
+                ? 'No items were outlined on this frame.'
+                : guided
+                  ? `Streamatic found ${guided.found.length} items for “${guided.item}” on this frame. Select up to ${MOST_TRACKED_AT_ONCE} of them to track.`
+                  : `Streamatic outlined these items on this frame. Select up to ${MOST_TRACKED_AT_ONCE} outlines to track them together.`}{' '}
+              If an item is not outlined, enter its name or draw a box around it.
             </p>
           )}
           <form onSubmit={onSearch} className='flex flex-wrap items-end gap-2'>
@@ -583,15 +685,11 @@ function Choosing({ clip, frame, trackSeconds, onCancel, onFollowed }: { clip: C
           <div className='flex flex-wrap items-center gap-2'>
             <Button
               size='sm'
-              disabled={!selectedThing}
-              onClick={() => {
-                setJob(null);
-                setJobId(null);
-                if (selectedThing) start.mutate(selectedThing.id);
-              }}
+              disabled={selectedThings.length === 0}
+              onClick={() => tracked(selectedThings.map((t) => t.id))}
             >
               <Crosshair />
-              {!selectedThing ? 'Select an item to track' : trackSeconds === null ? `Track the ${selectedThing.name} through the clip` : `Track the ${selectedThing.name}`}
+              {selectedThings.length === 0 ? 'Select an item to track' : `Track ${trackingWhat}${trackSeconds === null ? ' through the clip' : ''}`}
             </Button>
             <Button
               size='sm'

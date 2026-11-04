@@ -171,14 +171,23 @@ export function PictureFrame({
 }
 
 // Covers the whole picture while it is being worked on, so it is plain that the picture itself is what is in progress.
-export function PictureBusy({ label }: { label: string }) {
+export function PictureBusy({ label, progress = null }: { label: string; progress?: { done: number; total: number } | null }) {
+  const percent = progress && progress.total > 0 ? Math.min(100, Math.round((progress.done / progress.total) * 100)) : null;
   return (
     <div role='status' className='absolute inset-0 z-20 flex items-center justify-center overflow-hidden bg-black/55 backdrop-blur-[1px]'>
-      <div className='picture-scan absolute inset-y-0 w-1/3' />
-      <p className='relative flex items-center gap-2 rounded-md bg-black/70 px-3 py-2 text-sm font-medium text-white'>
-        <LoaderCircle className='size-4 animate-spin' />
-        {label}
-      </p>
+      {!progress && <div className='picture-scan absolute inset-y-0 w-1/3' />}
+      <div className='relative w-full max-w-sm px-4'>
+        <p className='flex items-center justify-center gap-2 rounded-md bg-black/70 px-3 py-2 text-center text-sm font-medium text-white'>
+          <LoaderCircle className='size-4 shrink-0 animate-spin' />
+          {label}
+          {percent !== null && percent > 0 ? `: ${percent}%` : ''}
+        </p>
+        {progress && (
+          <div role='progressbar' aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent ?? 0} className='mt-2 h-2 overflow-hidden rounded-full bg-white/25'>
+            <div className='bg-primary h-full rounded-full transition-[width] duration-500' style={{ width: `${percent ?? 0}%` }} />
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -17,6 +17,12 @@ export interface RuleZone {
   paths: string[];
 }
 
+// One visitor's change to a camera's zone, kept under the name setup gave it: a new name, or null when they deleted it.
+export interface ZoneEdit {
+  zone: string;
+  name: string | null;
+}
+
 export interface DemoRule {
   id: string;
   clip: string;
@@ -129,6 +135,10 @@ export class DemoStore {
         rule TEXT NOT NULL REFERENCES demo_rules(id), language TEXT NOT NULL, text TEXT NOT NULL,
         PRIMARY KEY (rule, language)
       );
+      CREATE TABLE IF NOT EXISTS demo_zone_edits (
+        visitor TEXT NOT NULL, camera TEXT NOT NULL, zone TEXT NOT NULL, name TEXT,
+        PRIMARY KEY (visitor, camera, zone)
+      );
     `);
   }
 
@@ -181,6 +191,26 @@ export class DemoStore {
     this.#db.prepare('DELETE FROM demo_captions WHERE rule = ?').run(id);
     this.#db.prepare('DELETE FROM demo_alerts WHERE rule = ?').run(id);
     this.#db.prepare('DELETE FROM demo_rules WHERE id = ?').run(id);
+  }
+
+  zoneEdits(visitor: string, camera: string): ZoneEdit[] {
+    return this.#db.prepare('SELECT zone, name FROM demo_zone_edits WHERE visitor = ? AND camera = ?').all(visitor, camera) as unknown as ZoneEdit[];
+  }
+
+  saveZoneEdit(visitor: string, camera: string, edit: ZoneEdit): void {
+    this.#db.prepare('INSERT OR REPLACE INTO demo_zone_edits (visitor, camera, zone, name) VALUES (?, ?, ?, ?)').run(visitor, camera, edit.zone, edit.name);
+  }
+
+  clearZoneEdits(visitor: string, camera: string): void {
+    this.#db.prepare('DELETE FROM demo_zone_edits WHERE visitor = ? AND camera = ?').run(visitor, camera);
+  }
+
+  // A rule keeps its zones' outlines from when it was made, so a new name is written into the visitor's rules that show it.
+  renameZoneOnRules(clip: string, visitor: string, from: string, to: string): void {
+    const update = this.#db.prepare('UPDATE demo_rules SET zones = ? WHERE id = ?');
+    for (const rule of this.rules(clip, visitor).filter((r) => r.kind === 'typed' && r.zones.some((z) => z.name === from))) {
+      update.run(JSON.stringify(rule.zones.map((z) => (z.name === from ? { ...z, name: to } : z))), rule.id);
+    }
   }
 
   isCopied(rule: string): boolean {

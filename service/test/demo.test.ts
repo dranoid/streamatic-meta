@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -189,6 +189,7 @@ describe('the demo engine', () => {
       pictures: [{ label: 'clip', src: `/demo-still/${CLIP}/clip` }],
       zones: [{ name: 'door', item: 'door', seenAt: ['clip'], paths: ['M960 100 Z'], pathsBy: { clip: ['M960 100 Z'] } }],
       rules: ['Tell me when the door opens.'],
+      edited: false,
     });
     const still = await fetch(`${base}/demo-still/${CLIP}`);
     expect(still.status).toBe(200);
@@ -288,6 +289,47 @@ describe('routing a sentence to a camera', () => {
     const reply = await fetch(`${base}/api/demo/voice-notes`, { method: 'POST', headers: { cookie: 'streamatic_demo=v1' }, body: new Uint8Array([1]) });
     expect(((await reply.json()) as { text: string }).text).toBe('Tell me when someone opens the door.');
     expect(voiceKeywordsAsked[0]).toEqual(expect.arrayContaining(['door', 'shop']));
+  });
+});
+
+describe('the events page', () => {
+  it('lists every alert the clips’ rules raised from the start of each clip, with its clip, rule, moment and picture', async () => {
+    const { visitor } = await start();
+    const { body } = await visitor('v1')('/api/demo/events');
+    expect(body.events).toMatchObject([{ clip: CLIP, camera: 'Building entrance', rule: 'rule-1', yours: false, key: 'key-1', atMs: 42_000, picture: `/demo-evidence/${CLIP}/key-1.jpg` }]);
+    expect(typeof body.events[0].ruleName).toBe('string');
+  });
+
+  it('adds a visitor’s own rule once it is ready, and never shows it to anyone else', async () => {
+    const { visitor, setDraft } = await start();
+    const mine = visitor('v1');
+    const { body: created } = await mine(`/api/demo/clips/${CLIP}/rules`, { text: 'Tell me when a door opens.' });
+    expect((await mine('/api/demo/events')).body.events.filter((e: any) => e.yours)).toEqual([]);
+    setDraft('ready');
+    await mine(`/api/demo/clips/${CLIP}/rules/${created.id}`);
+    const own = (await mine('/api/demo/events')).body.events.filter((e: any) => e.yours);
+    expect(own).toMatchObject([{ rule: created.id, ruleName: expect.any(String), atMs: 42_000 }]);
+    expect((await visitor('v2')('/api/demo/events')).body.events.map((e: any) => e.rule)).not.toContain(created.id);
+  });
+});
+
+describe('sentences offered to a visitor', () => {
+  it('offers the camera’s tested sentences on the clip, in setup and on the home page, in place of setup’s own', async () => {
+    const { visitor, root } = await start();
+    const file = join(root, 'cameras', CLIP, 'camera.json');
+    await writeFile(file, JSON.stringify({ ...JSON.parse(await readFile(file, 'utf8')), tested: ['Tell me when someone opens the door.'] }));
+    const ask = visitor('v1');
+    expect((await ask(`/api/demo/clips/${CLIP}`)).body.suggestions).toEqual(['Tell me when someone opens the door.']);
+    expect((await ask(`/api/demo/clips/${CLIP}/setup`)).body.rules).toEqual(['Tell me when someone opens the door.']);
+    expect((await ask('/api/demo/clips')).body[0].suggestions).toEqual(['Tell me when someone opens the door.']);
+  });
+
+  it('keeps setup’s own suggestions for a camera with no tested sentences', async () => {
+    const { visitor } = await start();
+    const ask = visitor('v1');
+    expect((await ask(`/api/demo/clips/${CLIP}`)).body.suggestions).toEqual(['Tell me when the door opens.']);
+    expect((await ask(`/api/demo/clips/${CLIP}/setup`)).body.rules).toEqual(['Tell me when the door opens.']);
+    expect((await ask('/api/demo/clips')).body[0].suggestions).toEqual([]);
   });
 });
 
@@ -677,5 +719,103 @@ describe('DemoLimits', () => {
     expect(await reopened.charge('v', 'rule', 600)).toMatch(/limit/i);
     now += 24 * 60 * 60 * 1000;
     expect(await reopened.charge('v', 'rule', 600)).toBeNull();
+  });
+});
+
+describe('a visitor’s zones', () => {
+  const door = SETUP.zones[0]!;
+  const twoDoors = { ...SETUP, zones: [{ ...door, outlines: { clip: [door.outlines.clip[0]!, { ...door.outlines.clip[0]!, objectId: '2', box: { left: 0, top: 100, right: 200, bottom: 500 }, path: 'M0 100 Z' }] } }] };
+  const call = (base: string, cookie: string, method: string, path: string, body?: unknown) =>
+    fetch(`${base}/api/demo/clips/${CLIP}/zones${path}`, { method, headers: { cookie: `streamatic_demo=${cookie}`, 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const namesOn = async (ask: (path: string) => Promise<{ body: any }>) => ({
+    clip: (await ask(`/api/demo/clips/${CLIP}`)).body.zones.map((z: any) => z.name),
+    setup: (await ask(`/api/demo/clips/${CLIP}/setup`)).body.zones.map((z: any) => z.name),
+  });
+
+  it('lists each outlined thing as its own zone in setup, under the name the player and the guide use', async () => {
+    const { visitor } = await start({ setup: twoDoors });
+    expect(await namesOn(visitor('v1'))).toEqual({ clip: ['door 1', 'door 2'], setup: ['door 1', 'door 2'] });
+  });
+
+  it('renames a zone for the visitor who renamed it and for nobody else', async () => {
+    const { visitor, base } = await start();
+    const renamed = await call(base, 'v1', 'PUT', '/door', { name: 'Front door' });
+    expect(renamed.status).toBe(200);
+    expect(((await renamed.json()) as any).zones.map((z: any) => z.name)).toEqual(['Front door']);
+    expect(await namesOn(visitor('v1'))).toEqual({ clip: ['Front door'], setup: ['Front door'] });
+    expect(await namesOn(visitor('v2'))).toEqual({ clip: ['door'], setup: ['door'] });
+  });
+
+  it('deletes a zone for the visitor who deleted it and for nobody else', async () => {
+    const { visitor, base } = await start({ setup: twoDoors });
+    expect((await call(base, 'v1', 'DELETE', '/door%201')).status).toBe(200);
+    expect(await namesOn(visitor('v1'))).toEqual({ clip: ['door 2'], setup: ['door 2'] });
+    expect((await namesOn(visitor('v2'))).setup).toEqual(['door 1', 'door 2']);
+  });
+
+  it('plans and routes on the visitor’s own zones', async () => {
+    const { visitor, base } = await start({ guide: planner({ about: 'entrance', zones: ['entrance'] }) });
+    const sentence = 'Tell me when the entrance opens.';
+    const plan = (who: string) => visitor(who)(`/api/demo/clips/${CLIP}/plans`, { sentence });
+    expect((await plan('v1')).body.status).toBe('needs-person');
+    await call(base, 'v1', 'PUT', '/door', { name: 'entrance' });
+    expect((await plan('v1')).body).toMatchObject({ status: 'ready', plan: { zones: ['entrance'] } });
+    expect((await plan('v2')).body.status).toBe('needs-person');
+    expect((await visitor('v1')('/api/demo/route', { sentence })).body.cameras.map((c: any) => c.zones)).toEqual([['entrance']]);
+    expect((await visitor('v2')('/api/demo/route', { sentence })).body.cameras).toEqual([]);
+  });
+
+  it('no longer plans or routes on a zone the visitor deleted', async () => {
+    const { visitor, base } = await start();
+    await call(base, 'v1', 'DELETE', '/door');
+    const sentence = 'Tell me when the door opens.';
+    expect((await visitor('v1')(`/api/demo/clips/${CLIP}/plans`, { sentence })).body.status).toBe('needs-person');
+    expect((await visitor('v1')('/api/demo/route', { sentence })).body.cameras).toEqual([]);
+    expect((await visitor('v1')(`/api/demo/clips/${CLIP}/rules`, { plan: { sentence, about: 'door', zones: ['door'], box: null, hours: null } })).status).toBe(400);
+  });
+
+  it('carries a rename to the visitor’s rules, and leaves a rule on a deleted zone as it is, since its sentence holds the place', async () => {
+    const { visitor, base } = await start();
+    const mine = visitor('v1');
+    const plan = { sentence: 'Tell me when the door opens.', about: 'door', zones: ['door'], box: null, hours: null };
+    const { id } = (await mine(`/api/demo/clips/${CLIP}/rules`, { plan })).body;
+    const ruleZones = async () => (await mine(`/api/demo/clips/${CLIP}`)).body.rules.find((r: any) => r.id === id).zones.map((z: any) => z.name);
+    await call(base, 'v1', 'PUT', '/door', { name: 'Front door' });
+    expect(await ruleZones()).toEqual(['Front door']);
+    await call(base, 'v1', 'DELETE', '/Front%20door');
+    expect(await ruleZones()).toEqual(['Front door']);
+  });
+
+  it('refuses a name another zone holds, a blank name and a zone that is not there', async () => {
+    const { base } = await start({ setup: twoDoors });
+    const taken = await call(base, 'v1', 'PUT', '/door%201', { name: 'DOOR 2' });
+    expect(taken.status).toBe(409);
+    expect(((await taken.json()) as any).error).toBe('Another zone on this camera is already called “door 2”.');
+    expect((await call(base, 'v1', 'PUT', '/door%201', { name: '  ' })).status).toBe(400);
+    expect((await call(base, 'v1', 'PUT', '/gate', { name: 'Gate' })).status).toBe(404);
+    expect((await call(base, 'v1', 'DELETE', '/gate')).status).toBe(404);
+  });
+
+  it('lets a zone be renamed twice and keeps its own name allowed in another case', async () => {
+    const { visitor, base } = await start();
+    await call(base, 'v1', 'PUT', '/door', { name: 'Front door' });
+    expect((await call(base, 'v1', 'PUT', '/Front%20door', { name: 'front door' })).status).toBe(200);
+    expect((await call(base, 'v1', 'PUT', '/front%20door', { name: 'Main door' })).status).toBe(200);
+    expect((await namesOn(visitor('v1'))).setup).toEqual(['Main door']);
+  });
+
+  it('returns the zones and the rules’ names on reset, and says whether anything was changed', async () => {
+    const { visitor, base } = await start({ setup: twoDoors });
+    const mine = visitor('v1');
+    expect((await mine(`/api/demo/clips/${CLIP}/setup`)).body.edited).toBe(false);
+    const plan = { sentence: 'Tell me when door 1 opens.', about: 'door 1', zones: ['door 1'], box: null, hours: null };
+    const { id } = (await mine(`/api/demo/clips/${CLIP}/rules`, { plan })).body;
+    await call(base, 'v1', 'PUT', '/door%201', { name: 'Front door' });
+    await call(base, 'v1', 'DELETE', '/door%202');
+    expect((await mine(`/api/demo/clips/${CLIP}/setup`)).body.edited).toBe(true);
+    const reset = await call(base, 'v1', 'DELETE', '');
+    expect(reset.status).toBe(200);
+    expect((await mine(`/api/demo/clips/${CLIP}/setup`)).body).toMatchObject({ edited: false, zones: [{ name: 'door 1' }, { name: 'door 2' }] });
+    expect((await mine(`/api/demo/clips/${CLIP}`)).body.rules.find((r: any) => r.id === id).zones.map((z: any) => z.name)).toEqual(['door 1']);
   });
 });

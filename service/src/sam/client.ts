@@ -28,8 +28,14 @@ export interface MediaSize {
 export type FollowTarget = { box: Box } | { point: { x: number; y: number } };
 
 const FILES_URL = 'https://api.meta.ai/v1/files';
-// SAM reports each object under the id the request gave it, and a request here follows one thing.
-const FOLLOWED_ID = 1;
+const FRAME_MARKER = /^<(\d+)f>/;
+// A box drawn on a picture asks about one thing, so it needs one id.
+const OUTLINED_ID = 1;
+
+// SAM goes from the selected frame to the end, then back from just before it to the first, so a frame's number says how far it has gone.
+export function framesDoneAt(marker: number, selected: number, frames: number): number {
+  return marker >= selected ? marker - selected + 1 : frames - selected + (selected - marker);
+}
 
 export class SamClient {
   readonly #apiKey: string;
@@ -70,7 +76,7 @@ export class SamClient {
 
   // A box drawn on a picture: the outline of the one thing it encloses, or null when SAM finds nothing there.
   async outlineIn(picture: Picture, size: MediaSize, box: Box, name: string): Promise<Outline | null> {
-    const prompt = buildObjectPrompt({ size, objects: [{ id: FOLLOWED_ID, prompts: [{ box }] }] });
+    const prompt = buildObjectPrompt({ size, objects: [{ id: OUTLINED_ID, prompts: [{ box }] }] });
     const { outlines } = await outlinesFromText(name, await this.#request(picture, prompt));
     return outlines[0] ?? null;
   }
@@ -84,12 +90,17 @@ export class SamClient {
     return ((await response.json()) as { id: string }).id;
   }
 
-  // Follows one thing through an uploaded video, both ways from the frame it was selected on. The reply lists only the
-  // frames the thing is on, so onFrames can report how many so far but never how far through the video.
-  async track(fileId: string, size: MediaSize, frame: number, target: FollowTarget, onFrames: (seen: number) => void): Promise<FollowedFrame[]> {
-    const prompt = 'box' in target
-      ? { frame, box: { ...target.box, right: Math.min(target.box.right, size.width), bottom: Math.min(target.box.bottom, size.height) } }
-      : { frame, points: [target.point] };
+  // Follows several things through an uploaded video in one request, both ways from the frame they were selected on, each in
+  // its place in the list. The charge is by the frame, however many things are asked for.
+  async track(fileId: string, size: MediaSize, frame: number, targets: FollowTarget[], frames: number, onFramesDone: (done: number) => void): Promise<FollowedFrame[][]> {
+    const objects = targets.map((target, i) => ({
+      id: i + 1,
+      prompts: [
+        'box' in target
+          ? { frame, box: { ...target.box, right: Math.min(target.box.right, size.width), bottom: Math.min(target.box.bottom, size.height) } }
+          : { frame, points: [target.point] },
+      ],
+    }));
     const body = JSON.stringify({
       model: 'sam-3.1',
       stream: true,
@@ -97,7 +108,7 @@ export class SamClient {
         {
           role: 'user',
           content: [
-            { type: 'input_text', text: buildObjectPrompt({ size, objects: [{ id: FOLLOWED_ID, prompts: [prompt] }] }) },
+            { type: 'input_text', text: buildObjectPrompt({ size, objects }) },
             { type: 'input_video', file_id: fileId },
           ],
         },
@@ -114,7 +125,8 @@ export class SamClient {
         continue;
       }
       if (!response.ok || !response.body) throw new SamError(`SAM 3.1 returned ${response.status} for a video.`);
-      return framesFromText(await readStream(response.body, onFrames));
+      const byObject = await framesFromText(await readStream(response.body, (marker) => onFramesDone(framesDoneAt(marker, frame, frames))));
+      return objects.map(({ id }) => byObject.get(id) ?? []);
     }
   }
 
@@ -151,11 +163,11 @@ export class SamClient {
   }
 }
 
-async function readStream(body: ReadableStream<Uint8Array>, onFrames: (seen: number) => void): Promise<string> {
+async function readStream(body: ReadableStream<Uint8Array>, onFrame: (marker: number) => void): Promise<string> {
   const decoder = new TextDecoder();
   let pending = '';
   let text = '';
-  let seen = 0;
+  let lineStart = 0;
   for await (const chunk of body as unknown as AsyncIterable<Uint8Array>) {
     pending += decoder.decode(chunk, { stream: true });
     const lines = pending.split('\n');
@@ -166,9 +178,12 @@ async function readStream(body: ReadableStream<Uint8Array>, onFrames: (seen: num
       if (event.type === 'error' || event.type === 'response.failed') throw new SamError('SAM 3.1 could not finish the video.');
       if (event.type !== 'response.output_text.delta') continue;
       text += event.delta ?? '';
-      // A frame's marker is only counted once its line has ended, so a marker cut across two deltas is not missed or doubled.
-      const finished = text.split('\n').length - 1;
-      if (finished !== seen) onFrames((seen = finished));
+      // A frame's marker is only read once its line has ended, so a marker cut across two deltas is not missed or doubled.
+      for (let end = text.indexOf('\n', lineStart); end !== -1; end = text.indexOf('\n', lineStart)) {
+        const marker = FRAME_MARKER.exec(text.slice(lineStart, lineStart + 16));
+        if (marker) onFrame(Number(marker[1]));
+        lineStart = end + 1;
+      }
     }
   }
   return text;

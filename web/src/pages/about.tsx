@@ -7,45 +7,53 @@ const PARTS = [
     title: 'Setting up a camera',
     sam: 'Outlines each listed item on the day, dusk and night pictures, so it becomes a zone a rule can watch.',
     spark: 'Lists what it sees in the three pictures, and suggests rules for what was outlined.',
-    code: 'Matches each zone across the three pictures, so it is named once.',
+    built: 'Matches each zone across the three pictures, so it is named once. Lets a visitor rename or delete a zone for themselves alone, and carries that to the player, the guide and the chat.',
   },
   {
     title: 'Running a rule',
     sam: 'Outlines the rule’s zones on the alert’s pictures, so the person sees the place the rule is about.',
     spark: 'Chooses which picture goes on the alert. It is not asked whether the rule holds.',
-    code: 'Streamatic’s existing rules, which were built before this event, read the sentence and answer it on the camera’s pictures. This build sends them the sentence with each zone’s place, and copies their alerts into its events.',
+    built: 'Sends Streamatic’s rules the sentence with each zone’s place, and copies their alerts into this page.',
+    before: 'Streamatic’s rules read the sentence, answer it on the camera’s pictures, and decide whether and when to alert.',
   },
   {
     title: 'The guide',
     sam: null,
-    spark: 'Drafts a plan for the rule from the person’s sentence, typed or written out from a voice note by Muse Voice Transcribe.',
-    code: 'Chooses the camera from what setup outlined, or stays on the camera the person is on. Checks the plan against the camera’s zones and the person’s own words, and sends a refused plan back with the reason. Marks each stage done when the page shows it done, and asks the person once, to add the finished rule.',
+    spark: 'Decides from the person’s sentence, typed or written out from a voice note by Muse Voice Transcribe, whether it is a rule or a search. For a rule it drafts the plan; for a search it gives up to three names for the item.',
+    built: 'Chooses the camera from what setup outlined, or stays on the camera the person is on. Checks a plan against the camera’s zones and the person’s own words, and sends a refused plan back with the reason. Looks for a searched item on the paused frame and then every 30 seconds through the clip. Marks each stage done when the page shows it done, and asks the person only to add a finished rule or to select among the items found.',
   },
   {
     title: 'Searching a clip',
-    sam: 'Outlines what is on the paused frame, under each word or inside a box the person draws. Then tracks the selected outline both ways from that frame, from its box alone, over the minute around that frame, since each frame is charged.',
+    sam: 'Outlines what is on the paused frame, under each word or inside a box the person draws. Then tracks up to four selected outlines in one request, both ways from that frame, from their boxes alone, over the minute around that frame, since each frame is charged.',
     spark: 'Lists the kinds of thing on the frame that could be searched for, and names what a drawn box holds.',
-    code: 'Accumulates what each search finds on the one frame, prefers the outline found by a drawn item’s name when it is the same thing, removes stray dots, works out when the thing was in view, and keeps each result so asking again costs nothing.',
+    built: 'Accumulates what each search finds on the one frame, prefers the outline found by a drawn item’s name when it is the same thing, removes stray dots, works out from the frames SAM has finished how far the track has gone and when each item was in view, and keeps each result so asking again costs nothing.',
+  },
+  {
+    title: 'Events',
+    sam: null,
+    spark: null,
+    built: 'Lists every alert Streamatic’s rules raised on the clips, and those of the rules a visitor added, which only that visitor sees, in the language chosen. No model is called.',
   },
   {
     title: 'The clips on this page',
     sam: 'Outlines what a clip shows when the clip is set up, and on a picture you upload.',
     spark: 'Lists what is worth outlining, suggests rules and drafts the guide’s plan.',
-    code: 'Keeps the clips and rules in this page’s own database, serves the videos, and works out from the moment a rule is selected what you see and when. Whether and when a rule alerts is decided by Streamatic’s existing rules, built before this event, and copied here once.',
+    built: 'Keeps the clips and rules in this page’s own database, serves the videos, and works out from the moment a rule is selected what you see and when.',
+    before: 'Whether and when a rule alerts is decided by Streamatic’s rules, and copied here once.',
   },
   {
     title: 'Alerts in Pidgin and Yoruba',
     sam: null,
     spark: 'Says what a rule’s alert means in the language chosen, from the rule alone. It is not asked whether the rule holds.',
-    code: 'Keeps what was written, so each rule is written once and playing a clip calls no model.',
+    built: 'Keeps what was written, so each rule is written once and playing a clip calls no model.',
   },
   {
     title: 'Alerts on Telegram',
     sam: null,
     spark: 'Plans a rule from a voice note or a sentence sent in the chat, as the guide does on the page.',
-    code: 'Links the chat from the page by Telegram’s own number for the person, keeps the page’s daily limits, and sends each alert as the clip plays through it.',
+    built: 'Links the chat from the page by Telegram’s own number for the person, keeps the page’s daily limits, and sends each alert as the clip plays through it.',
   },
-];
+] satisfies Array<{ title: string; sam: string | null; spark: string | null; built: string; before?: string }>;
 
 export function AboutPage() {
   return (
@@ -53,7 +61,7 @@ export function AboutPage() {
       <PageHeader
         icon={<Info />}
         title='About'
-        description='Streamatic, built for the Meta hackathon on SAM 3.1, Muse Spark Open and Muse Voice Transcribe. This page sets out what each part does.'
+        description='What each part of this page does: what SAM 3.1, Muse Spark Open and Muse Voice Transcribe do, what was built for this hackathon, and what Streamatic had from before this event.'
       />
       <div className='grid gap-4 lg:grid-cols-2'>
         {PARTS.map((part) => (
@@ -64,8 +72,9 @@ export function AboutPage() {
             <CardContent>
               <dl className='space-y-3 text-sm'>
                 {part.sam && <Part name='SAM 3.1' text={part.sam} />}
-                <Part name='Muse Spark Open' text={part.spark} />
-                <Part name='Streamatic’s own code' text={part.code} />
+                {part.spark && <Part name='Muse Spark Open' text={part.spark} />}
+                <Part name='Built for this hackathon' text={part.built} />
+                {'before' in part && part.before && <Part name='Streamatic, from before this event' text={part.before} />}
               </dl>
             </CardContent>
           </Card>

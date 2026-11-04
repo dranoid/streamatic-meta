@@ -9,7 +9,8 @@ World). It holds only the work built during the event, 26 October to 4 November 
 ## What existed before the event
 
 Streamatic's cameras, video storage, rules, alerts on Telegram and WhatsApp, and search over camera footage. None of
-that code is in this repository. The new work here calls the existing product's API like any other client.
+that code is in this repository. The new work here calls the existing product's API like any other client. The Telegram link
+and chat on the demo page are new, built during the event in this repository, and are separate from the product's own alerts.
 
 In particular, whether a rule holds is decided by Streamatic's existing rules, built before the event: they read the
 sentence, check the camera can answer it, and ask the vision model on the camera's pictures. The models below do not.
@@ -19,6 +20,9 @@ sentence, check the camera can answer it, and ask the vision model on the camera
 - **A camera that sets itself up.** SAM 3.1 outlines what the camera sees under a list of everyday words
   (gate, wall, car, keke, person), by day and at night. Muse Spark picks what matters for that site and
   suggests the rules worth having, keeping SAM's own names so every rule is written in words SAM answers to.
+- **Zones you can change.** On the demo page, setup lists what is in view as one set of zones, each of which you can rename or delete. The page is shared, so this applies
+  only to what you see: the player, the guide's plan, routing to a camera and the linked chat all use your zones, and Reset returns them. A rule already using a deleted zone
+  keeps watching that place, since its sentence holds the place.
 - **What it found at night.** Setup reports, zone by zone, which of the day, dusk and night pictures found it. A zone the night
   picture missed is marked uncertain at night, and what was seen but could not be outlined is named. This is code over setup's
   result, with no model call.
@@ -28,6 +32,11 @@ sentence, check the camera can answer it, and ask the vision model on the camera
   the alert, and is not asked whether the rule holds.
 - **One zone across day, dusk and night.** Each zone is matched across a camera's pictures by its place, and one that was not
   found on the night picture is marked as uncertain at night.
+- **A guide that finds an item from one sentence.** Say "Track the bag" and Muse Spark Open decides this is a search rather than a rule, in the
+  same call that would plan a rule, and gives up to three names for the item. Code then looks on the paused frame, and if the item is not there,
+  every 30 seconds through the clip, nearest first, because SAM can miss a word on one frame and find it on the next. An item found on another frame
+  is asked for again on the paused frame by its box, so the track runs around the moment you stopped at. One outline is tracked by itself; several
+  wait on the picture for you to select one or more; the clip then plays from where the item comes into view.
 - **A guide that finishes the rule from one sentence.** Say what you want watched, on the home page or on one camera.
   On the home page, code finds the camera whose setup outlined the most of what you asked about and the guide carries on there;
   when several outlined it, you choose. On one camera the rule stays on that camera, unless another camera at the same place
@@ -45,9 +54,13 @@ sentence, check the camera can answer it, and ask the vision model on the camera
 - **Search that goes past words.** Pause a clip and search for anything: a word, a box drawn around it, or one of
   the things already found. Muse Spark Open lists what is on the frame and SAM 3.1 outlines each, down to the
   thing's exact shape, and every result stays on the one frame. A drawn box asks for the one thing it encloses, which
-  Muse Spark Open names; the outline found under that name is kept when it is the same thing, because a box alone can take in the ground around it. SAM 3.1 then tracks the selected outline over the minute around
-  that frame, since SAM charges by the frame, both ways from it and from its box alone: no word, and no limit on how many similar things are in
-  view. The outline stays on it in the player, and a bar shows when it was in view.
+  Muse Spark Open names; the outline found under that name is kept when it is the same thing, because a box alone can take in the ground around it. SAM 3.1 then tracks up to four selected outlines in one request, over the minute around
+  that frame, since SAM charges by the frame and not by the item, both ways from it and from their boxes alone: no word, and no limit on how many similar things are in
+  view. A bar shows how far the track has gone, worked out from the frames SAM has finished. Each item keeps its own outline and colour in the player, and its own bar for when it was in view.
+- **Events.** Every alert Streamatic's rules raised on the clips, and those of the rules a visitor added, which only that visitor sees, in English, Pidgin or Yoruba. Each opens
+  its clip at that moment with its rule selected.
+- **Suggestions tested on the clip.** Each suggested sentence was run three times through the page's own path and raised a real alert each time. No
+  result is kept: selecting a suggestion runs it live, with one click.
 - **A demo engine anyone can open.** Recorded clips with the alerts Streamatic's rules raised on them, rules to select, each
   alert shown 3 seconds after its moment, a Setup page where you take each camera through its saved setup and add the rules you select to its clip, and the guide.
   Clips and rules are kept in the page's own database and its videos are served from there, so playing a clip calls no
@@ -63,7 +76,12 @@ sentence, check the camera can answer it, and ask the vision model on the camera
 |---|---|---|
 | SAM 3.1 | Meta Model API | Outlining the scene at setup and on each alert's pictures, tracking a selected object through video |
 | Muse Voice Transcribe | Meta Model API | Writing out a voice note as the sentence the guide plans from |
-| Muse Spark Open | Baseten | Listing what a camera sees, suggesting rules, drafting the guide's plan, choosing the picture an alert carries, writing an alert in Pidgin and Yoruba, naming what can be tracked in a clip |
+| Muse Spark Open | Baseten | Listing what a camera sees, suggesting rules, deciding whether a sentence is a rule or a search, drafting the guide's plan, choosing the picture an alert carries, writing an alert in Pidgin and Yoruba, naming what can be tracked in a clip |
+
+## Why the demo uses recorded clips
+
+This page uses recorded clips. The cameras Streamatic has deployed are on private property, so for reasons of permission and privacy they appear only in
+the submission video.
 
 ## Running it
 

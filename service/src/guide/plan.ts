@@ -16,18 +16,39 @@ export interface PlanAttempt {
   problems: string[];
 }
 
+// The person asked to find an item in the footage rather than to be told about it later: what they call it, and names to search by.
+export interface GuideSearch {
+  search: { item: string; words: string[] };
+}
+
+export type GuideDraft = GuidePlan | GuideSearch;
+
 export interface GuidePlanner {
   // Each refused plan comes back with what was wrong with it, so the next draft can put it right.
-  draft(request: { sentence: string; site: string; zones: CameraZone[] }, refused: PlanAttempt[]): Promise<GuidePlan>;
+  draft(request: { sentence: string; site: string; zones: CameraZone[] }, refused: PlanAttempt[]): Promise<GuideDraft>;
 }
 
 export type PlanResult =
   | { status: 'ready'; plan: GuidePlan; attempts: PlanAttempt[] }
+  | { status: 'search'; item: string; words: string[]; attempts: PlanAttempt[] }
   | { status: 'needs-person'; problems: string[]; attempts: PlanAttempt[] };
 
 const MAX_ZONES = 4;
 // After this many refused plans the guide stops and asks the person.
 const MAX_TRIES = 3;
+// Each name costs a call on every frame looked at.
+const MOST_SEARCH_WORDS = 3;
+
+// A sentence says "the bag"; the item is "bag", which reads on the screen and which SAM answers to.
+const bareName = (name: string) => name.trim().replace(/^(the|a|an|my|our|this|that)\s+/i, '');
+
+function searchWords(item: string, words: string[]): string[] {
+  const seen = new Set<string>();
+  return [item, ...words]
+    .map(bareName)
+    .filter((w) => w !== '' && !seen.has(w.toLowerCase()) && seen.add(w.toLowerCase()))
+    .slice(0, MOST_SEARCH_WORDS);
+}
 
 const words = (text: string) => new Set(text.toLowerCase().replace(/['’]s\b/g, '').split(/[^\p{L}\p{N}]+/u).filter(Boolean));
 const within = (part: string, whole: Set<string>) => [...words(part)].every((w) => whole.has(w));
@@ -83,6 +104,10 @@ export async function planRule({
   const attempts: PlanAttempt[] = [];
   for (let tries = 0; tries < MAX_TRIES; tries++) {
     const plan = await planner.draft({ sentence, site, zones }, attempts.slice());
+    if ('search' in plan) {
+      const item = bareName(plan.search.item);
+      return { status: 'search', item, words: searchWords(item, plan.search.words), attempts };
+    }
     const { passed, problems } = checkPlan(plan, zones, sentence);
     attempts.push({ plan, problems });
     if (passed) return { status: 'ready', plan, attempts };

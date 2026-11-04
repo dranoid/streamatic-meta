@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { CameraZone } from '../cameras/camera-zones.js';
-import type { GuidePlan, GuidePlanner, PlanAttempt } from '../guide/plan.js';
+import type { GuideDraft, GuidePlanner, PlanAttempt } from '../guide/plan.js';
 import type { SparkClient } from './client.js';
 
 const hour = z.number().int();
@@ -11,12 +11,14 @@ const planShape = z.object({
   box: z.object({ name: z.string(), question: z.string(), over: z.string().nullable() }).nullable(),
   hours: z.object({ from: hour, to: hour }).nullable(),
 });
+const searchShape = z.object({ search: z.object({ item: z.string().min(1), words: z.array(z.string()) }) });
+const draftShape = z.union([searchShape, planShape]);
 
 // Spark Open drafts the plan; the guide checks it in code before anything is done in the app.
 export class SparkGuidePlanner implements GuidePlanner {
   constructor(private readonly spark: SparkClient) {}
 
-  async draft({ sentence, site, zones }: { sentence: string; site: string; zones: CameraZone[] }, refused: PlanAttempt[]): Promise<GuidePlan> {
+  async draft({ sentence, site, zones }: { sentence: string; site: string; zones: CameraZone[] }, refused: PlanAttempt[]): Promise<GuideDraft> {
     const listed = zones.map((z) => `- "${z.name}" (outlined as "${z.word}", on the ${Object.keys(z.outlines).join(', ')} pictures)`).join('\n');
     const corrections = refused.length
       ? `\nEarlier plans were refused. Fix exactly what each refusal says:\n${refused
@@ -24,9 +26,13 @@ export class SparkGuidePlanner implements GuidePlanner {
           .join('\n')}\n`
       : '';
     return this.spark.json(
-      `A person asked for an alert on a security camera at ${site}: "${sentence}"
+      `A person said this about a camera at ${site}: "${sentence}"
 The camera's zones, each a thing SAM 3.1 outlined:
 ${listed || '- none'}
+
+First decide what the person wants. If they want an item found or tracked in the footage now, with no alert to come ("Track the ladder", "Where is the blue van?", "Find the person in the red cap"), reply with JSON only:
+{"search": {"item": "the item in the person's own words", "words": ["up to 3 short everyday names for that item, plainest first, that SAM 3.1 could outline it by"]}}
+Otherwise they want an alert, and you plan the rule as follows.
 
 A zone marks that thing itself, for a rule about it: it opens, moves, or is no longer there. To watch for something
 appearing in or near a place (someone on the stairs, a van in the loading bay), mark the place with a box and a question instead.
@@ -40,7 +46,7 @@ Plan the rule the app will build:
 ${corrections}
 Reply with JSON only: {"sentence": "", "about": "", "zones": [], "box": null, "hours": null}`,
       [],
-      planShape,
+      draftShape,
     );
   }
 }

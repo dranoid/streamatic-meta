@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CameraZone } from '../src/cameras/camera-zones.js';
-import { checkPlan, planRule, type GuidePlan, type GuidePlanner } from '../src/guide/plan.js';
+import { checkPlan, planRule, type GuideDraft, type GuidePlan, type GuidePlanner } from '../src/guide/plan.js';
 
 const outline = (word: string) => ({ word, objectId: '0', box: { left: 0, top: 0, right: 1, bottom: 1 }, path: 'M0 0Z' });
 const zones: CameraZone[] = [
@@ -87,7 +87,7 @@ describe('checkPlan on what the rule is about', () => {
   });
 });
 
-function fakePlanner(plans: GuidePlan[]) {
+function fakePlanner(plans: GuideDraft[]) {
   const seen: Array<Array<{ plan: GuidePlan; problems: string[] }>> = [];
   const planner: GuidePlanner = {
     async draft(_request, refused) {
@@ -116,6 +116,21 @@ describe('planRule', () => {
     expect(result.status).toBe('ready');
     expect(seen[1]).toEqual([{ plan: wrong, problems: [checkPlan(wrong, zones, asked).problems[0]] }]);
     expect(result.attempts.map((a) => a.problems.length > 0)).toEqual([true, false]);
+  });
+
+  it('hands back a search when the person asked to find an item, with no rule checks', async () => {
+    const { planner } = fakePlanner([{ search: { item: 'ladder', words: ['ladder'] } }]);
+    expect(await planRule({ sentence: 'Track the ladder', site: 'a yard', zones, planner })).toEqual({ status: 'search', item: 'ladder', words: ['ladder'], attempts: [] });
+  });
+
+  it('searches by the item itself first and by at most three names', async () => {
+    const { planner } = fakePlanner([{ search: { item: ' ladder ', words: ['steps', ' Ladder', 'ladder', '', 'stepladder', 'rungs'] } }]);
+    expect(await planRule({ sentence: 'Track the ladder', site: 'a yard', zones, planner })).toMatchObject({ item: 'ladder', words: ['ladder', 'steps', 'stepladder'] });
+  });
+
+  it('names the item without the article the sentence had it with', async () => {
+    const { planner } = fakePlanner([{ search: { item: 'The ladder', words: ['the ladder', 'a ladder', 'stepladder'] } }]);
+    expect(await planRule({ sentence: 'Track the ladder', site: 'a yard', zones, planner })).toMatchObject({ item: 'ladder', words: ['ladder', 'stepladder'] });
   });
 
   it('stops after three refused plans and asks a person, with what was wrong', async () => {

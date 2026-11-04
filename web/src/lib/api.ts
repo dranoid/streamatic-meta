@@ -122,6 +122,7 @@ export interface PlanAttempt {
 
 export type PlanResult =
   | { status: 'ready'; plan: GuidePlan; attempts: PlanAttempt[] }
+  | { status: 'search'; item: string; words: string[]; attempts: PlanAttempt[] }
   | { status: 'needs-person'; problems: string[]; attempts: PlanAttempt[] };
 
 // Another camera at the same place whose setup outlined what was asked about, when this one's did not.
@@ -204,10 +205,21 @@ export interface Follow {
   frames: Array<{ frame: number; box: Box; path: string }>;
 }
 
-export type FollowJob =
-  | { state: 'running'; name: string; framesSeen: number }
-  | { state: 'done'; name: string; framesSeen: number; follow: Follow }
-  | { state: 'failed'; name: string; framesSeen: number };
+interface FollowProgress {
+  names: string[];
+  framesDone: number;
+  framesTotal: number;
+}
+
+export type FollowJob = ({ state: 'running' } & FollowProgress) | ({ state: 'done'; follows: Follow[] } & FollowProgress) | ({ state: 'failed' } & FollowProgress);
+
+export interface ItemSearch {
+  // The frame the item is outlined on, and which outlines there are the item.
+  frame: number;
+  found: string[];
+  looks: number;
+  things: Thing[];
+}
 
 export interface ThingsFound {
   things: Thing[];
@@ -232,6 +244,22 @@ export interface DemoClipSummary extends Clip {
   description: string | null;
   rules: number;
   alerts: number;
+  // Sentences tested on this clip, which a visitor can run with one click.
+  suggestions: string[];
+}
+
+export interface DemoEvent {
+  clip: string;
+  camera: string;
+  rule: string;
+  ruleName: string;
+  // A rule this visitor added.
+  yours: boolean;
+  key: string;
+  atMs: number;
+  picture: string | null;
+  caption: string | null;
+  captions: Partial<Record<CaptionLanguage, string>>;
 }
 
 export interface DemoZone {
@@ -269,6 +297,8 @@ export interface DemoSetup {
   pictures: Array<{ label: string; src: string }>;
   zones: Array<DemoZone & { item: string; seenAt: string[]; pathsBy: Record<string, string[]> }>;
   rules: string[];
+  // Whether this visitor has renamed or deleted any of this camera's zones.
+  edited: boolean;
 }
 
 export interface DemoTick {
@@ -347,17 +377,24 @@ export const api = {
   outline: (clip: string, frame: number, what: { word: string } | { box: { left: number; top: number; right: number; bottom: number } } | Record<string, never>) =>
     request<ThingsFound>(`/api/clips/${encodeURIComponent(clip)}/frames/${frame}/things`, { method: 'POST', body: JSON.stringify(what) }),
   follows: (clip: string) => request<Follow[]>(`/api/clips/${encodeURIComponent(clip)}/follows`),
-  startFollow: (clip: string, frame: number, thing: string) =>
-    request<{ id: string }>(`/api/clips/${encodeURIComponent(clip)}/follows`, { method: 'POST', body: JSON.stringify({ frame, thing }) }),
+  searchClip: (clip: string, frame: number, what: { item: string; words: string[] }) =>
+    request<ItemSearch>(`/api/clips/${encodeURIComponent(clip)}/frames/${frame}/search`, { method: 'POST', body: JSON.stringify(what) }),
+  startFollow: (clip: string, frame: number, things: string[]) =>
+    request<{ id: string }>(`/api/clips/${encodeURIComponent(clip)}/follows`, { method: 'POST', body: JSON.stringify({ frame, things }) }),
   followJob: (clip: string, id: string) => request<FollowJob>(`/api/clips/${encodeURIComponent(clip)}/follows/${encodeURIComponent(id)}`),
   app: () => request<AppInfo>('/api/app'),
   demoClips: () => request<DemoClipSummary[]>('/api/demo/clips'),
+  demoEvents: () => request<{ events: DemoEvent[] }>('/api/demo/events'),
   demoCameras: () => request<DemoCamera[]>('/api/demo/cameras'),
   routeSentence: (sentence: string) => request<{ cameras: CameraOffer[] }>('/api/demo/route', { method: 'POST', body: JSON.stringify({ sentence }) }),
   routeFromClip: (clip: string, sentence: string) => request<{ elsewhere: CameraOffer[] }>(`/api/demo/clips/${encodeURIComponent(clip)}/route`, { method: 'POST', body: JSON.stringify({ sentence }) }),
   voiceNoteOnPage: (audio: Blob) => sendVoiceNote('/api/demo/voice-notes', audio),
   demoClip: (clip: string) => request<DemoClip>(`/api/demo/clips/${encodeURIComponent(clip)}`),
   demoSetup: (clip: string) => request<DemoSetup>(`/api/demo/clips/${encodeURIComponent(clip)}/setup`),
+  renameDemoZone: (clip: string, zone: string, name: string) =>
+    request<DemoSetup>(`/api/demo/clips/${encodeURIComponent(clip)}/zones/${encodeURIComponent(zone)}`, { method: 'PUT', body: JSON.stringify({ name }) }),
+  deleteDemoZone: (clip: string, zone: string) => request<DemoSetup>(`/api/demo/clips/${encodeURIComponent(clip)}/zones/${encodeURIComponent(zone)}`, { method: 'DELETE' }),
+  resetDemoZones: (clip: string) => request<DemoSetup>(`/api/demo/clips/${encodeURIComponent(clip)}/zones`, { method: 'DELETE' }),
   demoAlerts: (clip: string, ticks: DemoTick[]) =>
     request<{ alerts: DemoAlert[] }>(`/api/demo/clips/${encodeURIComponent(clip)}/alerts`, { method: 'POST', body: JSON.stringify({ ticks }) }),
   telegramStatus: (clip: string) => request<{ linked: boolean; link: string | null }>(`/api/demo/telegram?clip=${encodeURIComponent(clip)}`),

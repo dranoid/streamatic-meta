@@ -10,7 +10,7 @@ import { Link } from '@/components/ui/link';
 import { Notice } from '@/components/ui/notice';
 import { VoiceNote } from '@/components/voice-note';
 import { useAbilities } from '@/lib/abilities';
-import { api, type CameraOffer, type DemoAlert, type DemoClip, type DemoRule, type DemoZone, type GuidePlan, type PlanAttempt } from '@/lib/api';
+import { api, type CameraOffer, type DemoAlert, type DemoClip, type DemoRule, type DemoZone, type Follow, type GuidePlan, type PlanAttempt } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { RULE_FINISHED } from '@/lib/setup-progress';
 import { clockTime, sentence as asSentence } from '@/lib/time';
@@ -40,7 +40,18 @@ type Run =
   | { stage: 'offer'; sentence: string; elsewhere: CameraOffer[] }
   | { stage: 'planning'; sentence: string; stayed: boolean }
   | { stage: 'not-planned'; sentence: string; problems: string[]; attempts: number }
+  | { stage: 'search'; sentence: string }
   | { stage: 'zones' | 'running'; sentence: string; plan: GuidePlan | null; attempts: PlanAttempt[] };
+
+// How the search for an item stands on the clip's own picture, which the guide reports stage by stage.
+export type GuideFinding =
+  | { stage: 'searching'; item: string }
+  | { stage: 'none'; item: string; looks: number }
+  | { stage: 'select'; item: string; count: number; at: number }
+  | { stage: 'tracking'; item: string; framesDone: number; framesTotal: number; at: number }
+  | { stage: 'done'; item: string; follows: Follow[]; fps: number };
+
+const moment = (seconds: number) => `${Math.floor(Math.round(seconds) / 60)}:${String(Math.round(seconds) % 60).padStart(2, '0')}`;
 
 // The guide on a clip. One sentence, and it does the rest on this page: it checks this is the camera to use, plans the rule, shows the
 // zones on the player and runs the rule through Streamatic. The one thing it asks for is the confirmation to add the finished rule.
@@ -52,6 +63,9 @@ export function DemoGuide({
   onShowZones,
   onAdd,
   onTyped,
+  finding,
+  onFindItem,
+  onStopFinding,
 }: {
   clip: DemoClip;
   cameraName: string;
@@ -61,6 +75,9 @@ export function DemoGuide({
   onShowZones: (zones: DemoZone[] | null) => void;
   onAdd: (rule: string, firstAlert: DemoAlert | null) => void;
   onTyped: () => void;
+  finding: GuideFinding | null;
+  onFindItem: (item: string, words: string[]) => Promise<void>;
+  onStopFinding: () => void;
 }) {
   const { models, rules: canRunRules } = useAbilities();
   const [text, setText] = useState(ask ?? '');
@@ -76,6 +93,7 @@ export function DemoGuide({
     setRuleId(null);
     setProblem(null);
     onShowZones(null);
+    onStopFinding();
   };
 
   const runRule = async (me: number, sentence: string, rule: { text: string } | { plan: GuidePlan }, plan: GuidePlan | null, attempts: PlanAttempt[]) => {
@@ -91,6 +109,7 @@ export function DemoGuide({
     setProblem(null);
     setRuleId(null);
     onShowZones(null);
+    onStopFinding();
     try {
       if (!stay) {
         setRun({ stage: 'choosing', sentence });
@@ -104,6 +123,11 @@ export function DemoGuide({
       setRun({ stage: 'planning', sentence, stayed: stay });
       const planned = await api.planOnClip(clip.id, sentence);
       if (!alive()) return;
+      if (planned.status === 'search') {
+        setRun({ stage: 'search', sentence });
+        await onFindItem(planned.item, planned.words);
+        return;
+      }
       if (planned.status !== 'ready') {
         setRun({ stage: 'not-planned', sentence, problems: planned.problems, attempts: planned.attempts.length });
         return;
@@ -154,13 +178,15 @@ export function DemoGuide({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdded]);
 
-  const busy = run !== null && run.stage !== 'offer' && run.stage !== 'not-planned' && !(run.stage === 'running' && reading !== undefined && RULE_FINISHED.has(reading.status));
+  const searchOver = finding?.stage === 'done' || finding?.stage === 'none';
+  const busy = run !== null && run.stage !== 'offer' && run.stage !== 'not-planned' && !(run.stage === 'search' && searchOver) && !(run.stage === 'running' && reading !== undefined && RULE_FINISHED.has(reading.status));
   const plan = run && (run.stage === 'zones' || run.stage === 'running') ? run.plan : null;
   const attempts = run && (run.stage === 'zones' || run.stage === 'running') ? run.attempts : [];
   const rejected = attempts.filter((a) => a.problems.length > 0);
   const shownZones = plan ? zonesOf(clip, plan) : [];
   const clockNote = plan?.hours ? `This clip’s clock runs from ${clockTime(clip.startsAt)} to ${clockTime(clip.startsAt + clip.lengthMs)}, so a rule limited to other hours will not alert on it.` : null;
   const stageIndex = !run ? -1 : run.stage === 'choosing' ? 0 : run.stage === 'planning' ? 1 : run.stage === 'zones' ? 2 : run.stage === 'running' ? 3 : -1;
+  const isSearch = run?.stage === 'search';
 
   return (
     <Card>
@@ -170,7 +196,7 @@ export function DemoGuide({
             <Compass className='text-primary size-4' />
             Guide
           </CardTitle>
-          <CardDescription>Say what this camera should monitor. Streamatic does the rest on this page, and asks you only to confirm the finished rule.</CardDescription>
+          <CardDescription>Say what this camera should monitor, or name an item to find in the clip. Streamatic does the rest on this page, and asks you only to confirm a finished rule or to select among the items found.</CardDescription>
         </div>
       </CardHeader>
       <CardContent className='space-y-3'>
@@ -182,10 +208,10 @@ export function DemoGuide({
             if (text.trim()) void start(text.trim());
           }}
         >
-          <Input aria-label='What should this camera monitor?' className='min-w-48 flex-1' maxLength={300} disabled={!models} value={text} onChange={(e) => setText(e.target.value)} placeholder='Tell me when someone stops by the entrance.' />
+          <Input aria-label='What should this camera monitor, or what should it find?'className='min-w-48 flex-1' maxLength={300} disabled={!models} value={text} onChange={(e) => setText(e.target.value)} placeholder='Tell me when someone stops by the entrance.' />
           <Button type='submit' disabled={!models || !canRunRules || text.trim().length < 3 || busy}>
             {busy ? <Loader2 className='animate-spin' /> : <Compass />}
-            Add rule
+            Start
           </Button>
           {run && (
             <Button type='button' variant='outline' onClick={stop}>
@@ -199,7 +225,19 @@ export function DemoGuide({
         {models && !run && !problem && clip.suggestions.length > 0 && (
           <div className='flex flex-wrap items-center gap-1.5'>
             {clip.suggestions.slice(0, 3).map((s) => (
-              <Button key={s} type='button' size='sm' variant='outline' className='h-auto max-w-full shrink whitespace-normal py-1 text-left text-xs' onClick={() => setText(s)}>
+              <Button
+                key={s}
+                type='button'
+                size='sm'
+                variant='outline'
+                className='h-auto max-w-full shrink whitespace-normal py-1 text-left text-xs'
+                disabled={!canRunRules}
+                onClick={() => {
+                  setText(s);
+                  // Each of these belongs to this clip, so no other camera is offered.
+                  void start(s, { stay: true });
+                }}
+              >
                 {s}
               </Button>
             ))}
@@ -239,13 +277,15 @@ export function DemoGuide({
           </div>
         )}
 
+        {isSearch && finding && <SearchStages cameraName={cameraName} finding={finding} />}
+
         {stageIndex >= 0 && (
           <ol className='space-y-1.5 text-sm' aria-label='What the guide is doing' aria-live='polite'>
             <Stage state={stageIndex > 0 ? 'done' : 'now'} title='Choosing the camera'>
               {stageIndex > 0 ? `Using ${cameraName}.` : null}
             </Stage>
             {stageIndex >= 1 && (
-              <Stage state={stageIndex > 1 ? 'done' : 'now'} title='Planning the rule'>
+              <Stage state={stageIndex > 1 ? 'done' : 'now'} title={plan ? 'Planning the rule' : 'Reading your request'}>
                 {plan && (
                   <>
                     <p>Watches for: {plan.about}</p>
@@ -315,6 +355,40 @@ export function DemoGuide({
         {isAdded && <Notice>The rule is on this clip. {alerts.length === 0 ? 'It raised no alert here.' : 'Playing from just before its first alert.'}</Notice>}
       </CardContent>
     </Card>
+  );
+}
+
+// Each stage is ticked from what the clip's own picture has done.
+function SearchStages({ cameraName, finding }: { cameraName: string; finding: GuideFinding }) {
+  const { item } = finding;
+  const found = finding.stage === 'select' || finding.stage === 'tracking' || finding.stage === 'done';
+  const percent = finding.stage === 'tracking' && finding.framesTotal > 0 ? Math.round((finding.framesDone / finding.framesTotal) * 100) : 0;
+  return (
+    <ol className='space-y-1.5 text-sm' aria-label='What the guide is doing' aria-live='polite'>
+      <Stage state='done' title='Choosing the camera'>{`Using ${cameraName}.`}</Stage>
+      <Stage state={found ? 'done' : finding.stage === 'none' ? 'stopped' : 'now'} title={`Searching the clip for the ${item}`}>
+        {finding.stage === 'none' && `The ${item} was not found on the ${finding.looks} frames searched. Pause where it appears, select Search this frame and draw a box around it.`}
+        {(finding.stage === 'select' || finding.stage === 'tracking') && `Found on the frame at ${moment(finding.at)}.`}
+      </Stage>
+      {finding.stage === 'select' && (
+        <Stage state='now' title='Selecting what to track'>
+          {`${finding.count} items were found. Select up to 4 on the picture.`}
+        </Stage>
+      )}
+      {(finding.stage === 'tracking' || finding.stage === 'done') && (
+        <Stage state={finding.stage === 'done' ? 'done' : 'now'} title={`Tracking the ${item}`}>
+          {finding.stage === 'tracking' && (percent > 0 ? `${percent}% of the frames so far.` : 'Preparing the frames around this moment.')}
+          {finding.stage === 'done' &&
+            finding.follows.map((f) => (
+              <p key={f.id}>
+                {f.spans.length === 0
+                  ? `${asSentence(f.name)}: could not be tracked from this frame.`
+                  : `${asSentence(f.name)}: in view ${f.spans.map((s) => `${moment(s.from / finding.fps)}–${moment((s.to + 1) / finding.fps)}`).join(', ')}.`}
+              </p>
+            ))}
+        </Stage>
+      )}
+    </ol>
   );
 }
 

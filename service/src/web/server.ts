@@ -15,8 +15,9 @@ import { voiceKeywords, type VoiceNotes } from '../voice/voice-note.js';
 import { keepStretch } from '../events/copy-alert.js';
 import type { EventStore } from '../events/store.js';
 import type { ClipFolder } from '../follow/clips.js';
-import type { Follows } from '../follow/follows.js';
-import type { ClipThings } from '../follow/things.js';
+import { findItem } from '../follow/find-item.js';
+import { MOST_TRACKED_AT_ONCE, type Follows } from '../follow/follows.js';
+import type { ClipThings, Thing } from '../follow/things.js';
 import { planRule, type GuidePlanner } from '../guide/plan.js';
 import { answerQuestion, type QuestionPlanner } from '../questions/answer.js';
 import { zoneBox, type RuleStore, type SavedRule, type Zone } from '../rules/rule-store.js';
@@ -68,7 +69,8 @@ const thingsInput = z.union([
   z.object({}),
 ]);
 const captionAsked = z.object({ language: z.enum(captionLanguages as [CaptionLanguage, ...CaptionLanguage[]]) });
-const followInput = z.object({ frame: z.number().int().min(0), thing: text(10) });
+const searchInput = z.object({ item: text(60), words: z.array(text(60)).min(1).max(3) });
+const followInput = z.object({ frame: z.number().int().min(0), things: z.array(text(10)).min(1).max(MOST_TRACKED_AT_ONCE) });
 
 // A draft waits here for the person's yes, so what is saved is exactly what they were shown.
 interface HeldDraft {
@@ -264,6 +266,9 @@ export function appHandler({
       if (method === 'GET') return send(response, 200, { things: await following.things.list(id, frame) });
       if (method === 'POST') return send(response, 200, await outlineOnFrame(id, frame, await readJson(request), charge));
     }
+    if (method === 'POST' && (match = /^\/api\/clips\/([^/]+)\/frames\/(\d+)\/search$/.exec(path))) {
+      return send(response, 200, await searchForItem(decodeURIComponent(match[1]!), Number(match[2]), await readJson(request), charge));
+    }
     if ((match = /^\/api\/clips\/([^/]+)\/follows$/.exec(path))) {
       const id = decodeURIComponent(match[1]!);
       if (method === 'GET') return send(response, 200, await following.follows.list(id));
@@ -290,7 +295,8 @@ export function appHandler({
       if (!parsed.success) throw new RequestError(400, 'Tell the guide what to watch.');
       const camera = await cameras.get(parsed.data.camera);
       if (!camera) throw new RequestError(404, 'No such camera.');
-      const planned = await planRule({ sentence: parsed.data.sentence, site: camera.site, zones: camera.zones, planner: guidePlanner });
+      const drafted = await planRule({ sentence: parsed.data.sentence, site: camera.site, zones: camera.zones, planner: guidePlanner });
+      const planned = drafted.status === 'search' ? { status: 'needs-person', problems: ['Finding and tracking an item is done on a clip, under Search.'], attempts: [] } : drafted;
       return send(response, 200, { ...planned, elsewhere: camerasThatOutlined(parsed.data.sentence, camera, await cameras.list()) });
     }
     if (method === 'POST' && (match = /^\/api\/cameras\/([^/]+)\/voice-notes$/.exec(path))) {
@@ -393,20 +399,47 @@ export function appHandler({
     return { things: await following.things.list(id, frame) };
   }
 
+  async function searchForItem(id: string, frame: number, body: Record<string, unknown>, charge: (kind: 'look') => Promise<void>) {
+    const parsed = searchInput.safeParse(body);
+    if (!parsed.success) throw new RequestError(400, 'Enter the name of the item to find.');
+    const clip = await following.clips.get(id);
+    if (!clip || frame >= clip.frames) throw new RequestError(404, 'No such frame.');
+    const found = await findItem({
+      clip: id,
+      frame,
+      frames: clip.frames,
+      fps: clip.fps,
+      size: { width: clip.width, height: clip.height },
+      item: parsed.data.item,
+      words: parsed.data.words,
+      picture: async (at) => {
+        const bytes = await following.clips.picture(id, at);
+        return bytes ? { bytes, mimeType: 'image/jpeg' } : null;
+      },
+      outlineAll: following.outlineAll,
+      outlineIn: following.outlineIn,
+      things: following.things,
+      charge: () => charge('look'),
+    });
+    return { ...found, things: await following.things.list(id, found.frame) };
+  }
+
   // The box is read from what was outlined on the frame, never taken from the request.
   async function startFollow(id: string, body: Record<string, unknown>, charge: (kind: 'track') => Promise<void>): Promise<string> {
     const parsed = followInput.safeParse(body);
-    if (!parsed.success) throw new RequestError(400, 'Select what to track.');
+    if (!parsed.success) throw new RequestError(400, `Select up to ${MOST_TRACKED_AT_ONCE} items to track.`);
     if (!(await following.clips.get(id))) throw new RequestError(404, 'No such clip.');
-    const thing = (await following.things.list(id, parsed.data.frame)).find((t) => t.id === parsed.data.thing);
-    if (!thing) throw new RequestError(400, 'That outline is not on this frame. Select another.');
-    if (!(await following.follows.isKept(id, parsed.data.frame, thing.box))) await charge('track');
-    return following.follows.start(id, parsed.data.frame, thing);
+    const onFrame = await following.things.list(id, parsed.data.frame);
+    const things = parsed.data.things.map((wanted) => onFrame.find((t) => t.id === wanted));
+    if (things.some((t) => !t)) throw new RequestError(400, 'That outline is not on this frame. Select another.');
+    const selected = things as Thing[];
+    if (!(await following.follows.isKept(id, parsed.data.frame, selected.map((t) => t.box)))) await charge('track');
+    return following.follows.start(id, parsed.data.frame, selected);
   }
 
   // Each zone with the rules that watch it, found by place, so the camera page can tell active zones from the rest.
   async function withRules(full: Camera) {
-    const { episode, backend: linked, group: _group, ...camera } = full;
+    const { episode, backend: linked, group: _group, tested: _tested, ...camera } = full;
     const onCamera = rules.list(camera.id);
     return {
       ...camera,

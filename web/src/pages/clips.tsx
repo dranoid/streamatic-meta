@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { ArrowRight, Compass, ImageUp, LoaderCircle, Search, Wand2 } from 'lucide-react';
 import { OfferCard } from '@/components/demo-guide';
+import { RECORDED_CLIPS_NOTE } from '@/components/layout/app-shell';
 import { PageHeader } from '@/components/layout/page-header';
 import { PictureFrame } from '@/components/picture-frame';
 import { VoiceNote } from '@/components/voice-note';
@@ -25,9 +26,10 @@ const WHAT_TO_TRY = [
 ];
 
 // One sentence with no camera chosen. Code finds the camera that outlined what was asked about, and the guide carries on there by itself.
-function AskAnyCamera({ clips }: { clips: Clip[] }) {
+function AskAnyCamera({ clips }: { clips: Array<Clip & Partial<DemoClipSummary>> }) {
   const { models, rules } = useAbilities();
   const [text, setText] = useState('');
+  const tested = models && rules ? clips.flatMap((clip) => (clip.suggestions ?? []).slice(0, 2).map((sentence) => ({ clip, sentence }))) : [];
   const choosing = useMutation({
     mutationFn: (sentence: string) => api.routeSentence(sentence),
     onSuccess: ({ cameras }, sentence) => {
@@ -56,15 +58,31 @@ function AskAnyCamera({ clips }: { clips: Clip[] }) {
             <Input id='ask-any-camera' className='min-w-48 flex-1' maxLength={300} disabled={!models} value={text} onChange={(e) => setText(e.target.value)} placeholder='Tell me when someone opens the door of the building.' />
             <Button type='submit' disabled={!models || !rules || text.trim().length < 3 || choosing.isPending}>
               {choosing.isPending ? <LoaderCircle className='animate-spin' /> : <Compass />}
-              Add rule
+              Start
             </Button>
           </div>
         </form>
+        {tested.length > 0 && !found && (
+          <div className='space-y-1.5'>
+            <p className='text-muted-foreground text-xs'>Or select one of these. Each was tested on its clip, and runs there live.</p>
+            <div className='flex flex-wrap items-center gap-1.5'>
+              {tested.map(({ clip, sentence }) => (
+                <Link
+                  key={`${clip.id}-${sentence}`}
+                  href={`/clips/${encodeURIComponent(clip.id)}?ask=${encodeURIComponent(sentence)}`}
+                  className='hover:bg-accent inline-flex max-w-full items-center rounded-md border px-2.5 py-1 text-left text-xs'
+                >
+                  {sentence} ({clip.name})
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
         <VoiceNote disabled={!models} read={api.voiceNoteOnPage} onText={setText} />
         {choosing.isError && <Notice tone='error'>{choosing.error.message}</Notice>}
         {found && found.length === 0 && (
           <div className='space-y-2'>
-            <Notice>No camera outlined what you asked about by name. Select the camera to run this rule on.</Notice>
+            <Notice>No camera outlined what you asked about by name. Select the camera to use.</Notice>
             <div className='flex flex-wrap gap-2'>
               {clips.map((clip) => (
                 <Link key={clip.id} href={`/clips/${encodeURIComponent(clip.id)}?ask=${encodeURIComponent(asked)}`} className='hover:bg-accent inline-flex h-8 items-center rounded-md border px-2.5 text-sm font-medium'>
@@ -106,6 +124,7 @@ export function ClipsPage({ isPublic = false, app }: { isPublic?: boolean; app?:
       {app?.models === false && (
         <Notice className='mb-6'>Provide your keys for the full experience. The README says which to add. The clips, rules, alerts and kept searches work without them.</Notice>
       )}
+      {app?.credit === 'meva' && <Notice className='mb-6'>{RECORDED_CLIPS_NOTE}</Notice>}
       {isPublic && (
         <AskAnyCamera clips={clips.data ?? []} />
       )}

@@ -129,7 +129,6 @@
 
 @media (prefers-reduced-motion: reduce) {
   .picture-scan {
-    animation: none;
-    left: 33%;
+    display: none;
   }
 }

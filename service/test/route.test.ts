@@ -4,7 +4,7 @@ import type { CameraZone } from '../src/cameras/camera-zones.js';
 import { camerasForSentence, camerasThatOutlined } from '../src/guide/route.js';
 
 const zone = (word: string, name = word, item = word): CameraZone => ({ word, name, item, outlines: { day: [{ word, objectId: '0', box: { left: 0, top: 0, right: 1, bottom: 1 }, path: 'M0 0Z' }] } });
-const camera = (id: string, group: string | null, zones: CameraZone[]): Camera => ({ id, name: `${id} camera`, site: 's', baseWords: [], pictures: {}, setup: null, zones, episode: null, backend: null, group });
+const camera = (id: string, group: string | null, zones: CameraZone[]): Camera => ({ id, name: `${id} camera`, site: 's', baseWords: [], pictures: {}, setup: null, zones, episode: null, backend: null, group, tested: [] });
 
 const here = camera('here', 'site', [zone('gate'), zone('wall')]);
 const shops = camera('shops', 'site', [zone('shop'), zone('road')]);

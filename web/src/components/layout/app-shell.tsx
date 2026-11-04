@@ -5,6 +5,9 @@ import { Link } from '@/components/ui/link';
 import { cn } from '@/lib/cn';
 import type { Route } from '@/lib/router';
 
+// Said only over the public clips: on the footage of a deployed camera it would be untrue.
+export const RECORDED_CLIPS_NOTE = 'This page uses recorded clips. The cameras Streamatic has deployed are on private property, so for reasons of permission and privacy they appear only in the submission video.';
+
 const PRIVATE_NAV = [
   { href: '/cameras', label: 'Cameras', icon: Cctv, pages: ['cameras', 'camera'] },
   { href: '/events', label: 'Events', icon: BellRing, pages: ['events', 'event'] },
@@ -15,6 +18,7 @@ const PRIVATE_NAV = [
 const PUBLIC_NAV = [
   { href: '/setup', label: 'Setup', icon: Wand2, pages: ['setup', 'setup-camera'] },
   { href: '/clips', label: 'Clips', icon: Clapperboard, pages: ['clips', 'clip'] },
+  { href: '/events', label: 'Events', icon: BellRing, pages: ['events'] },
   { href: '/try', label: 'Your own picture', icon: ImageUp, pages: ['try'] },
   { href: '/about', label: 'About', icon: Info, pages: ['about'] },
 ];
@@ -100,6 +104,7 @@ function SmallPrint({ credit }: { credit: 'meva' | null }) {
   return (
     <footer className='text-muted-foreground mx-auto w-full max-w-[90rem] space-y-1 border-t px-4 py-4 text-xs leading-relaxed md:px-6'>
       <p>A picture you upload is sent to Meta and to Baseten to be analysed, and a voice note, on this page or in the Telegram chat you link from it, is sent to Meta to be written out, under the hackathon’s credit terms, which allow Meta to use them for product improvement. This page keeps no copy of either. Please upload only a picture you are allowed to share.</p>
+      {credit === 'meva' && <p>{RECORDED_CLIPS_NOTE}</p>}
       {credit === 'meva' && (
         <p>
           Clips: MEVA dataset by Kitware Inc. and IARPA,{' '}

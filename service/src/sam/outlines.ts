@@ -44,16 +44,22 @@ export interface FollowedFrame {
   path: string;
 }
 
-// SAM tracks forward from the prompted frame and then backward, so the reply is not in frame order.
-export async function framesFromText(text: string): Promise<FollowedFrame[]> {
+// Each object's frames under the id the request gave it. SAM tracks forward from the prompted frame and then backward, so the reply is not in frame order.
+export async function framesFromText(text: string): Promise<Map<number, FollowedFrame[]>> {
   const result = await parseVideoStream(completedResponse(text)).finalResult;
-  return recordsOfKind(result.records, 'mask')
-    .map((record) => ({
+  const byObject = new Map<number, FollowedFrame[]>();
+  for (const record of recordsOfKind(result.records, 'mask')) {
+    const id = Number(record.objectId);
+    const frames = byObject.get(id) ?? [];
+    frames.push({
       frame: frameIndexOf(record) ?? 0,
       box: { ...record.bounds },
       path: translatePath(decodeMaskToSVGPath(record.mask), record.bounds.left, record.bounds.top),
-    }))
-    .sort((a, b) => a.frame - b.frame);
+    });
+    byObject.set(id, frames);
+  }
+  for (const frames of byObject.values()) frames.sort((a, b) => a.frame - b.frame);
+  return byObject;
 }
 
 // The parser reads a stream of events; a non-streaming reply is the same text as one finished lane.

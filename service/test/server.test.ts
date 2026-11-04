@@ -139,7 +139,7 @@ async function start({
     replay: async () => ({ id: 'replay-1', status: 'completed', counted: { coverage: { framesRead: 3, framesRecorded: 3 } }, stretches: [{ startIso: new Date(AT).toISOString(), endIso: new Date(AT + 5000).toISOString(), frameUrl: 'https://pictures.test/1' }] }),
   };
   const written: unknown[] = [];
-  const followCalls = { lists: 0, tracks: [] as Array<{ frame: number; target: unknown }> };
+  const followCalls = { lists: 0, tracks: [] as Array<{ frame: number; targets: unknown }> };
   const carBox = { left: 5, top: 5, right: 20, bottom: 20 };
   const clips = new ClipFolder(root);
   server = createServer(
@@ -167,9 +167,9 @@ async function start({
         things: new ClipThings(root),
         follows: new Follows(root, clips, {
           upload: async () => 'file-1',
-          track: async (_file, _size, frame, target) => {
-            followCalls.tracks.push({ frame, target });
-            return [{ frame, box: carBox, path: 'M5 5Z' }];
+          track: async (_file, _size, frame, targets) => {
+            followCalls.tracks.push({ frame, targets });
+            return targets.map(() => [{ frame, box: carBox, path: 'M5 5Z' }]);
           },
         }),
         listThings: async () => (followCalls.lists++, ['car']),
@@ -676,10 +676,10 @@ describe('following a thing in a clip', () => {
     expect(charged).toEqual(['look']);
     await post(base, '/api/clips/yard/frames/3/things', { word: 'bag' });
     expect(charged).toEqual(['look', 'look']);
-    const started = (await (await post(base, '/api/clips/yard/follows', { frame: 3, thing: things[0]!.id })).json()) as { id: string };
+    const started = (await (await post(base, '/api/clips/yard/follows', { frame: 3, things: [things[0]!.id] })).json()) as { id: string };
     expect(charged).toEqual(['look', 'look', 'track']);
-    await vi.waitFor(async () => expect(((await (await fetch(`${base}/api/clips/yard/follows/${started.id}`)).json()) as { state: string }).state).toBe('done'));
-    await post(base, '/api/clips/yard/follows', { frame: 3, thing: things[0]!.id });
+    await vi.waitFor(async () => expect(((await (await fetch(`${base}/api/clips/yard/follows/${encodeURIComponent(started.id)}`)).json()) as { state: string }).state).toBe('done'));
+    await post(base, '/api/clips/yard/follows', { frame: 3, things: [things[0]!.id] });
     expect(charged).toEqual(['look', 'look', 'track']);
 
     reached = 'You have reached today’s limit.';
@@ -692,29 +692,59 @@ describe('following a thing in a clip', () => {
   it('follows from the box outlined on the frame, and refuses an outline that is not there', async () => {
     const { base, followCalls } = await start({ clip: true });
     const { things } = (await (await post(base, '/api/clips/yard/frames/3/things', {})).json()) as { things: Array<{ id: string }> };
-    expect((await post(base, '/api/clips/yard/follows', { frame: 4, thing: things[0]!.id })).status).toBe(400);
+    expect((await post(base, '/api/clips/yard/follows', { frame: 4, things: [things[0]!.id] })).status).toBe(400);
 
-    const started = await post(base, '/api/clips/yard/follows', { frame: 3, thing: things[0]!.id });
+    const started = await post(base, '/api/clips/yard/follows', { frame: 3, things: [things[0]!.id] });
     expect(started.status).toBe(202);
     const { id } = (await started.json()) as { id: string };
     let job: any;
     for (let i = 0; i < 50 && job?.state !== 'done'; i++) {
-      job = await (await fetch(`${base}/api/clips/yard/follows/${id}`)).json();
+      job = await (await fetch(`${base}/api/clips/yard/follows/${encodeURIComponent(id)}`)).json();
       await new Promise((r) => setTimeout(r, 5));
     }
-    expect(job).toMatchObject({ state: 'done', follow: { name: 'car', spans: [{ from: 3, to: 3 }] } });
-    expect(followCalls.tracks).toEqual([{ frame: 3, target: { box: { left: 5, top: 5, right: 20, bottom: 20 } } }]);
+    expect(job).toMatchObject({ state: 'done', framesTotal: 20, follows: [{ name: 'car', spans: [{ from: 3, to: 3 }] }] });
+    expect(followCalls.tracks).toEqual([{ frame: 3, targets: [{ box: { left: 5, top: 5, right: 20, bottom: 20 } }] }]);
     expect(((await (await fetch(`${base}/api/clips/yard/follows`)).json()) as unknown[]).length).toBe(1);
   });
 
-  it('follows the thing selected, not another on the same frame', async () => {
-    const { base, followCalls } = await start({ clip: true });
+  it('follows the things selected, not another on the same frame, and charges one track for the request', async () => {
+    const charged: string[] = [];
+    const { base, followCalls } = await start({ clip: true, spend: async (_req, _res, kind) => (charged.push(kind), null) });
     await post(base, '/api/clips/yard/frames/3/things', {});
     const { things } = (await (await post(base, '/api/clips/yard/frames/3/things', { word: 'bag' })).json()) as { things: Array<{ id: string; name: string }> };
+    await post(base, '/api/clips/yard/frames/3/things', { box: { left: 22, top: 22, right: 38, bottom: 34 } });
     const bag = things.find((t) => t.name === 'bag')!;
-    expect((await post(base, '/api/clips/yard/follows', { frame: 3, thing: 'no-such' })).status).toBe(400);
-    expect((await post(base, '/api/clips/yard/follows', { frame: 3, thing: bag.id })).status).toBe(202);
+    const car = things.find((t) => t.name === 'car')!;
+    charged.length = 0;
+    expect((await post(base, '/api/clips/yard/follows', { frame: 3, things: ['no-such'] })).status).toBe(400);
+    expect((await post(base, '/api/clips/yard/follows', { frame: 3, things: [] })).status).toBe(400);
+    expect((await post(base, '/api/clips/yard/follows', { frame: 3, things: [bag.id, car.id] })).status).toBe(202);
+    expect(charged).toEqual(['track']);
     await new Promise((r) => setTimeout(r, 20));
-    expect(followCalls.tracks).toEqual([{ frame: 3, target: { box: { left: 40, top: 5, right: 60, bottom: 30 } } }]);
+    expect(followCalls.tracks).toEqual([{ frame: 3, targets: [{ box: { left: 40, top: 5, right: 60, bottom: 30 } }, { box: { left: 5, top: 5, right: 20, bottom: 20 } }] }]);
+  });
+
+  it('searches for an item by its names, charges each look, and reports which outlines are the item', async () => {
+    const charged: string[] = [];
+    const { base } = await start({ clip: true, spend: async (_req, _res, kind) => (charged.push(kind), null) });
+    const found = (await (await post(base, '/api/clips/yard/frames/3/search', { item: 'bag', words: ['bag', 'backpack'] })).json()) as { frame: number; found: string[]; things: Array<{ id: string; name: string }> };
+    expect(found.frame).toBe(3);
+    expect(charged).toEqual(['look']);
+    expect(found.things.filter((t) => found.found.includes(t.id)).map((t) => t.name)).toEqual(['bag']);
+    expect((await post(base, '/api/clips/yard/frames/3/search', { item: '', words: [] })).status).toBe(400);
+    expect((await post(base, '/api/clips/yard/frames/999/search', { item: 'bag', words: ['bag'] })).status).toBe(404);
+  });
+
+  it('says so when no look finds the item', async () => {
+    const { base } = await start({ clip: true });
+    const found = (await (await post(base, '/api/clips/yard/frames/3/search', { item: 'nothing', words: ['nothing'] })).json()) as { found: string[] };
+    expect(found.found).toEqual([]);
+  });
+
+  it('refuses more items at once than one request can track', async () => {
+    const { base } = await start({ clip: true });
+    const { things } = (await (await post(base, '/api/clips/yard/frames/3/things', {})).json()) as { things: Array<{ id: string }> };
+    const refused = await post(base, '/api/clips/yard/follows', { frame: 3, things: Array(5).fill(things[0]!.id) });
+    expect(refused.status).toBe(400);
   });
 });

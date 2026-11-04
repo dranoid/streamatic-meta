@@ -17,6 +17,7 @@ import type { DemoEngine } from './engine.js';
 import type { DemoLimits, Spending } from './limits.js';
 import { placedBox, ruleFromPlan, zonePaths } from './rule-plan.js';
 import type { DemoRule, DemoStore } from './store.js';
+import { nameFromSetup, withZoneEdits } from './visitor-zones.js';
 
 export const NEEDS_KEYS = 'Provide your keys for the full experience. The README says which to add. The clips and their alerts work without them.';
 export const NEEDS_BACKEND = 'Reading a new rule needs Streamatic’s backend, which this copy is not connected to. It works on the hosted page, whose address is in the README.';
@@ -43,6 +44,8 @@ const newRule = z.union([z.object({ text: sentence }), z.object({ plan: planShap
 const ticked = z.object({ ticks: z.array(z.object({ rule: z.string().max(64), armedMs: z.number().min(0) })).max(10) });
 const planAsked = z.object({ sentence });
 const telegramAlert = z.object({ rule: z.string().max(64), key: z.string().max(200) });
+// A zone's name is written into the sentence a rule sends, so it holds words and nothing else.
+const zoneName = z.object({ name: z.string().trim().min(1).max(60).regex(/^[\p{L}\p{N}][\p{L}\p{N} '’-]*$/u) });
 const telegramChoice = z.object({ clip: z.string().max(200), language: z.enum(['english', 'pidgin', 'yoruba']) });
 
 class Refusal extends Error {
@@ -86,6 +89,8 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
     throw new Refusal(400, 'The request is not valid.');
   }
 }
+
+const offeredSentences = (camera: Camera) => (camera.tested.length > 0 ? camera.tested : (camera.setup?.rules ?? []).map((r) => r.sentence));
 
 const viewOf = ({ id, kind, text, name, readsAs, status, progress, rewrites, reason, canAnswer, zones }: DemoRule) => ({ id, kind, text, name, readsAs, status, progress, rewrites, reason, canAnswer, zones });
 
@@ -139,8 +144,14 @@ export function demoHandler({
     return shown;
   };
 
-  const planned = async (clip: string, plan: Parameters<typeof ruleFromPlan>[0]) => {
-    const camera = await cameras.get(clip);
+  const edited = (camera: Camera, visitor: string) => withZoneEdits(camera, store.zoneEdits(visitor, camera.id));
+  const cameraFor = async (id: string, visitor: string) => {
+    const camera = await cameras.get(id);
+    return camera && edited(camera, visitor);
+  };
+  const camerasFor = async (visitor: string) => (await cameras.list()).map((c) => edited(c, visitor));
+  const planned = async (clip: string, visitor: string, plan: Parameters<typeof ruleFromPlan>[0]) => {
+    const camera = await cameraFor(clip, visitor);
     const size = await clips.get(clip);
     if (!camera || !size) throw new Refusal(404, 'No such clip.');
     const made = ruleFromPlan(plan, camera.zones, size);
@@ -154,6 +165,25 @@ export function demoHandler({
     const first = Object.keys(camera.pictures)[0]!;
     const paths = camera.zones.filter((z) => found.zones.includes(z.name)).flatMap((z) => (z.outlines[first] ?? Object.values(z.outlines).flat()).map((o) => o.path));
     return { ...found, hasClip: store.clip(found.camera) !== null, picture: stillOf(found.camera), paths };
+  };
+  const setupOf = (camera: Camera, visitor: string) => ({
+    hasClip: store.clip(camera.id) !== null,
+    picture: stillOf(camera.id),
+    pictures: Object.keys(camera.pictures).map((label) => ({ label, src: `${stillOf(camera.id)}/${encodeURIComponent(label)}` })),
+    zones: camera.zones.map((z) => ({
+      name: z.name,
+      item: z.item,
+      seenAt: Object.keys(z.outlines).filter((label) => z.outlines[label]!.length > 0),
+      paths: zonePaths(z),
+      pathsBy: Object.fromEntries(Object.entries(z.outlines).map(([label, outlines]) => [label, outlines.map((o) => o.path)])),
+    })),
+    rules: offeredSentences(camera),
+    edited: store.zoneEdits(visitor, camera.id).length > 0,
+  });
+  const setUpCamera = async (id: string) => {
+    const camera = await cameras.get(id);
+    if (!camera?.setup) throw new Refusal(404, 'This camera has not been set up.');
+    return camera;
   };
   const needsBot = () => {
     if (!telegram) throw new Refusal(409, NEEDS_KEYS);
@@ -171,23 +201,51 @@ export function demoHandler({
     }
     if (method === 'GET' && path === '/api/demo/clips') {
       const shown = await Promise.all(
-        store.clips().map(async (row) => ({ ...(await withVideo(row.id)), description: row.description, rules: store.rules(row.id, '').length, alerts: store.alertCount(row.id) })),
+        store.clips().map(async (row) => ({
+          ...(await withVideo(row.id)),
+          description: row.description,
+          rules: store.rules(row.id, '').length,
+          alerts: store.alertCount(row.id),
+          suggestions: (await cameras.get(row.id))?.tested ?? [],
+        })),
       );
       send(response, 200, shown);
+      return true;
+    }
+    if (method === 'GET' && path === '/api/demo/events') {
+      const visitor = visitorOf(request, response);
+      const events = store.clips().flatMap((row) =>
+        store
+          .rules(row.id, visitor)
+          .filter((rule) => rule.status === 'ready')
+          .flatMap((rule) =>
+            store.alerts(rule.id, 0).map(({ picture, ...alert }) => ({
+              ...alert,
+              clip: row.id,
+              camera: row.name,
+              ruleName: rule.kind === 'typed' ? rule.text : rule.name,
+              yours: rule.kind === 'typed',
+              picture: picture ? `/demo-evidence/${encodeURIComponent(row.id)}/${encodeURIComponent(picture)}` : null,
+            })),
+          )
+          .sort((a, b) => a.atMs - b.atMs),
+      );
+      send(response, 200, { events });
       return true;
     }
     if (method === 'GET' && (match = /^\/api\/demo\/clips\/([^/]+)$/.exec(path))) {
       const id = decodeURIComponent(match[1]!);
       const row = clipRow(id);
-      const camera = await cameras.get(id);
+      const visitor = visitorOf(request, response);
+      const camera = await cameraFor(id, visitor);
       send(response, 200, {
         id,
         description: row.description,
         startsAt: row.startsAt,
         lengthMs: row.lengthMs,
         zones: (camera?.zones ?? []).map((z) => ({ name: z.name, paths: zonePaths(z) })),
-        suggestions: (camera?.setup?.rules ?? []).map((r) => r.sentence),
-        rules: store.rules(id, visitorOf(request, response)).map(viewOf),
+        suggestions: camera ? offeredSentences(camera) : [],
+        rules: store.rules(id, visitor).map(viewOf),
       });
       return true;
     }
@@ -198,37 +256,64 @@ export function demoHandler({
     if (method === 'POST' && path === '/api/demo/route') {
       const parsed = planAsked.safeParse(await readJson(request));
       if (!parsed.success) throw new Refusal(400, 'Please describe the rule in a sentence.');
-      const all = await cameras.list();
+      const all = await camerasFor(visitorOf(request, response));
       send(response, 200, { cameras: camerasForSentence(parsed.data.sentence, all).map((found) => offerOf(found, all)) });
       return true;
     }
     if (method === 'POST' && (match = /^\/api\/demo\/clips\/([^/]+)\/route$/.exec(path))) {
-      const here = await cameras.get(decodeURIComponent(match[1]!));
+      const visitor = visitorOf(request, response);
+      const here = await cameraFor(decodeURIComponent(match[1]!), visitor);
       if (!here) throw new Refusal(404, 'No such clip.');
       const parsed = planAsked.safeParse(await readJson(request));
       if (!parsed.success) throw new Refusal(400, 'Please describe the rule in a sentence.');
-      const all = await cameras.list();
+      const all = await camerasFor(visitor);
       send(response, 200, { elsewhere: camerasThatOutlined(parsed.data.sentence, here, all).map((found) => offerOf(found, all)) });
       return true;
     }
     if (method === 'POST' && path === '/api/demo/voice-notes') {
       if (!abilities.models) throw new Refusal(409, NEEDS_KEYS);
       const visitor = visitorOf(request, response);
-      const { status, body } = await voiceNotes.read(request, voiceKeywords((await cameras.list()).flatMap((c) => c.zones)), () => charge(visitor, 'plan'));
+      const { status, body } = await voiceNotes.read(request, voiceKeywords((await camerasFor(visitor)).flatMap((c) => c.zones)), () => charge(visitor, 'plan'));
       send(response, status, body);
       return true;
     }
     if (method === 'GET' && (match = /^\/api\/demo\/clips\/([^/]+)\/setup$/.exec(path))) {
       const id = decodeURIComponent(match[1]!);
-      const camera = await cameras.get(id);
-      if (!camera?.setup) throw new Refusal(404, 'This camera has not been set up.');
-      send(response, 200, {
-        hasClip: store.clip(id) !== null,
-        picture: stillOf(id),
-        pictures: Object.keys(camera.pictures).map((label) => ({ label, src: `${stillOf(id)}/${encodeURIComponent(label)}` })),
-        zones: camera.setup.zones.map((z) => ({ name: z.name, item: z.item, seenAt: z.seenAt, paths: zonePaths(z), pathsBy: Object.fromEntries(Object.entries(z.outlines).map(([label, outlines]) => [label, outlines.map((o) => o.path)])) })),
-        rules: camera.setup.rules.map((r) => r.sentence),
-      });
+      const visitor = visitorOf(request, response);
+      send(response, 200, setupOf(edited(await setUpCamera(id), visitor), visitor));
+      return true;
+    }
+    if (method === 'DELETE' && (match = /^\/api\/demo\/clips\/([^/]+)\/zones$/.exec(path))) {
+      const id = decodeURIComponent(match[1]!);
+      const camera = await setUpCamera(id);
+      const visitor = visitorOf(request, response);
+      for (const { zone, name } of store.zoneEdits(visitor, id)) {
+        if (name !== null) store.renameZoneOnRules(id, visitor, name, zone);
+      }
+      store.clearZoneEdits(visitor, id);
+      send(response, 200, setupOf(camera, visitor));
+      return true;
+    }
+    if ((method === 'PUT' || method === 'DELETE') && (match = /^\/api\/demo\/clips\/([^/]+)\/zones\/([^/]+)$/.exec(path))) {
+      const id = decodeURIComponent(match[1]!);
+      const asked = decodeURIComponent(match[2]!);
+      const camera = await setUpCamera(id);
+      const visitor = visitorOf(request, response);
+      const edits = store.zoneEdits(visitor, id);
+      const shown = withZoneEdits(camera, edits);
+      if (!shown.zones.some((z) => z.name === asked)) throw new Refusal(404, 'This zone is no longer on this camera.');
+      if (method === 'DELETE') {
+        store.saveZoneEdit(visitor, id, { zone: nameFromSetup(asked, edits), name: null });
+      } else {
+        const parsed = zoneName.safeParse(await readJson(request));
+        if (!parsed.success) throw new Refusal(400, 'Please give the zone a name of letters and numbers.');
+        const { name } = parsed.data;
+        const taken = shown.zones.find((z) => z.name !== asked && z.name.toLowerCase() === name.toLowerCase());
+        if (taken) throw new Refusal(409, `Another zone on this camera is already called “${taken.name}”.`);
+        store.saveZoneEdit(visitor, id, { zone: nameFromSetup(asked, edits), name });
+        store.renameZoneOnRules(id, visitor, asked, name);
+      }
+      send(response, 200, setupOf(edited(camera, visitor), visitor));
       return true;
     }
     if (method === 'POST' && (match = /^\/api\/demo\/clips\/([^/]+)\/alerts$/.exec(path))) {
@@ -246,9 +331,10 @@ export function demoHandler({
       const parsed = planAsked.safeParse(await readJson(request));
       if (!parsed.success) throw new Refusal(400, 'Please describe the rule in a sentence.');
       if (!abilities.models) throw new Refusal(409, NEEDS_KEYS);
-      const camera = await cameras.get(id);
+      const visitor = visitorOf(request, response);
+      const camera = await cameraFor(id, visitor);
       if (!camera) throw new Refusal(404, 'No such clip.');
-      await charge(visitorOf(request, response), 'plan');
+      await charge(visitor, 'plan');
       const result = await planRule({ sentence: parsed.data.sentence, site: camera.site, zones: camera.zones, planner: guidePlanner });
       send(response, 200, result.status === 'ready' ? { ...result, plan: placedBox(result.plan, camera.zones) } : result);
       return true;
@@ -257,8 +343,8 @@ export function demoHandler({
       const id = decodeURIComponent(match[1]!);
       clipRow(id);
       if (!abilities.models) throw new Refusal(409, NEEDS_KEYS);
-      const camera = await cameras.get(id);
       const visitor = visitorOf(request, response);
+      const camera = await cameraFor(id, visitor);
       const { status, body } = await voiceNotes.read(request, voiceKeywords(camera?.zones ?? []), () => charge(visitor, 'plan'));
       send(response, status, body);
       return true;
@@ -269,10 +355,10 @@ export function demoHandler({
       const parsed = newRule.safeParse(await readJson(request));
       if (!parsed.success) throw new Refusal(400, 'Write the rule in a sentence.');
       if (!abilities.rules) throw new Refusal(409, NEEDS_BACKEND);
+      const visitor = visitorOf(request, response);
       const { text, sent, zones } = 'text' in parsed.data
         ? { text: parsed.data.text, sent: parsed.data.text, zones: [] }
-        : { text: parsed.data.plan.sentence, ...(await planned(id, parsed.data.plan)) };
-      const visitor = visitorOf(request, response);
+        : { text: parsed.data.plan.sentence, ...(await planned(id, visitor, parsed.data.plan)) };
       await charge(visitor, 'rule');
       send(response, 202, { id: await engine.type(row, visitor, text, sent, zones) });
       return true;
