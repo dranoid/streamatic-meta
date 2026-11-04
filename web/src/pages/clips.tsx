@@ -55,7 +55,7 @@ function AskAnyCamera({ clips }: { clips: Array<Clip & Partial<DemoClipSummary>>
             if (text.trim()) choosing.mutate(text.trim());
           }}
         >
-          <Label htmlFor='ask-any-camera'>Add a rule</Label>
+          <Label htmlFor='ask-any-camera'>Ask Streamatic</Label>
           <div className='flex flex-wrap items-center gap-2'>
             <Input id='ask-any-camera' className='min-w-48 flex-1' maxLength={300} disabled={!models} value={text} onChange={(e) => setText(e.target.value)} placeholder='Tell me when someone opens the door of the building.' />
             <Button type='submit' disabled={!models || !rules || text.trim().length < 3 || choosing.isPending}>

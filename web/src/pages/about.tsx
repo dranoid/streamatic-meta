@@ -7,7 +7,7 @@ const PARTS = [
     title: 'Setting up a camera',
     sam: 'Outlines each listed item on the day, dusk and night pictures, so it becomes a zone a rule can watch.',
     spark: 'Lists what it sees in the three pictures, and suggests rules for what was outlined.',
-    built: 'Matches each zone across the three pictures, so it is named once. Lets a visitor rename or delete a zone for themselves alone, and carries that to the player, Add a rule and the chat.',
+    built: 'Matches each zone across the three pictures, so it is named once. Lets a visitor rename or delete a zone for themselves alone, and carries that to the player, Ask Streamatic and the chat.',
   },
   {
     title: 'Running a rule',
@@ -57,7 +57,7 @@ const PARTS = [
   {
     title: 'Alerts on Telegram',
     sam: null,
-    spark: 'Plans a rule from a voice note or a sentence sent in the chat, as Add a rule does on the page.',
+    spark: 'Plans a rule from a voice note or a sentence sent in the chat, as Ask Streamatic does on the page.',
     built: 'Links the chat from the page by Telegram’s own number for the person, keeps the page’s daily limits, and sends each alert as the clip plays through it.',
   },
 ] satisfies Array<{ title: string; sam: string | null; spark: string | null; detector?: string; built: string; before?: string }>;

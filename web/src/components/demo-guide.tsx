@@ -246,7 +246,7 @@ export function DemoGuide({
         <div>
           <CardTitle className='flex items-center gap-2'>
             <Compass className='text-primary size-4' />
-            Add a rule
+            Ask Streamatic
           </CardTitle>
           <CardDescription>Say what this camera should monitor{clip.canCount ? ', name an item to find in the clip, or ask how many people passed a place' : ', or name an item to find in the clip'}. The rest runs automatically on this page, and you are asked only to select among the items found.</CardDescription>
         </div>

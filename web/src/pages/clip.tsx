@@ -311,39 +311,6 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask, opened }: { clip: C
   return (
     <div className='grid gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]'>
       <div className='min-w-0 space-y-6'>
-      {demo && (
-        <DemoGuide
-          clip={demo}
-          cameraName={clip.name}
-          ask={ask}
-          onRuleRunning={(rule) => setTicks((all) => ({ ...all, [rule]: 0 }))}
-          onRuleProgress={setReadShare}
-          onRuleDropped={(rule) =>
-            setTicks((all) => {
-              const { [rule]: _gone, ...rest } = all;
-              return rest;
-            })
-          }
-          onPlayAlert={(firstAlert) => {
-            seek(Math.max(0, firstAlert.atMs - LEAD_IN_MS) / 1000);
-            void video.current?.play();
-            playerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-          }}
-          onShowZones={(zones) => {
-            setGuideZones(zones);
-            if (zones) playerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-          }}
-          onTyped={refreshDemo}
-          finding={finding}
-          onFindItem={findItem}
-          onStopFinding={stopChoosing}
-          onMoment={(atMs) => {
-            seek(Math.max(0, atMs - LEAD_IN_MS) / 1000);
-            void video.current?.play();
-            playerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-          }}
-        />
-      )}
       <Card ref={pictureCardRef} className='min-w-0'>
         <CardContent className='space-y-4'>
           <div ref={playerRef} className={cn('relative aspect-video overflow-hidden rounded-lg bg-black', choosingAt !== null && 'hidden', banner && 'ring-4')} style={banner ? ({ '--tw-ring-color': colourOfRule(banner.rule) } as CSSProperties) : undefined}>
@@ -472,6 +439,39 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask, opened }: { clip: C
           )}
         </CardContent>
       </Card>
+      {demo && (
+        <DemoGuide
+          clip={demo}
+          cameraName={clip.name}
+          ask={ask}
+          onRuleRunning={(rule) => setTicks((all) => ({ ...all, [rule]: 0 }))}
+          onRuleProgress={setReadShare}
+          onRuleDropped={(rule) =>
+            setTicks((all) => {
+              const { [rule]: _gone, ...rest } = all;
+              return rest;
+            })
+          }
+          onPlayAlert={(firstAlert) => {
+            seek(Math.max(0, firstAlert.atMs - LEAD_IN_MS) / 1000);
+            void video.current?.play();
+            playerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+          }}
+          onShowZones={(zones) => {
+            setGuideZones(zones);
+            if (zones) playerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+          }}
+          onTyped={refreshDemo}
+          finding={finding}
+          onFindItem={findItem}
+          onStopFinding={stopChoosing}
+          onMoment={(atMs) => {
+            seek(Math.max(0, atMs - LEAD_IN_MS) / 1000);
+            void video.current?.play();
+            playerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+          }}
+        />
+      )}
       </div>
 
       <aside className='min-w-0 space-y-4'>
