@@ -28,17 +28,8 @@ sentence, check the camera can answer it, and ask the vision model on the camera
 - **What it found at night.** Setup reports, zone by zone, which of the day, dusk and night pictures found it. A zone the night
   picture missed is marked uncertain at night, and what was seen but could not be outlined is named. This is code over setup's
   result, with no model call.
-- **Rules that know their place.** A rule is written against an outline SAM drew, not a box someone dragged by hand. The
-  place comes from SAM's box ("the door on the right side of the picture") and goes in the sentence sent to
-  Streamatic's rules, and SAM's outline is drawn on each alert's pictures. Muse Spark Open chooses which picture goes on
-  the alert, and is not asked whether the rule holds.
 - **One zone across day, dusk and night.** Each zone is matched across a camera's pictures by its place, and one that was not
   found on the night picture is marked as uncertain at night.
-- **Finding an item from one sentence.** Say "Track the bag" and Muse Spark Open decides this is a search rather than a rule, in the
-  same call that would plan a rule, and gives up to three names for the item. Code then looks on the paused frame, and if the item is not there,
-  every 30 seconds through the clip, nearest first, because SAM can miss a word on one frame and find it on the next. An item found on another frame
-  is asked for again on the paused frame by its box, so the track runs around the moment you stopped at. One outline is tracked by itself; several
-  wait on the picture for you to select one or more; the clip then plays from where the item comes into view.
 - **Add a rule: finishing the rule from one sentence.** Say what you want watched, on the home page or on one camera.
   On the home page, code finds the camera whose setup outlined the most of what you asked about and the page carries on there;
   when several outlined it, you choose. On one camera the rule stays on that camera, unless another camera at the same place
@@ -52,6 +43,27 @@ sentence, check the camera can answer it, and ask the vision model on the camera
   outline. A refused plan goes back to Muse Spark Open with what was wrong, up to three times, and then to you. The sentence can
   also be a voice note in English, recorded on the page: Muse Voice Transcribe writes it out, listening for the words setup
   outlined, and you read it before anything is planned.
+- **Rules that know their place.** A rule is written against an outline SAM drew, not a box someone dragged by hand. The
+  place comes from SAM's box ("the door on the right side of the picture") and goes in the sentence sent to
+  Streamatic's rules, and SAM's outline is drawn on each alert's pictures. Muse Spark Open chooses which picture goes on
+  the alert, and is not asked whether the rule holds.
+- **Alerts in the resident's language.** Muse Spark Open says what a rule's alert means in Nigerian Pidgin and in Yoruba, from
+  the rule alone, with a choice of language on the alert. It is written once per rule and kept, so playing a clip calls no model.
+- **Alerts on Telegram.** On a clip, "Send alerts to Telegram" links a chat to the page, for every clip, and each alert of a ticked rule arrives there
+  as its clip plays through it, with its picture, in the language chosen. If the picture cannot be sent, the alert still arrives as words. A voice note in English or a sentence sent in the chat becomes a rule
+  on a camera the visitor has set up, selected with a button when there is more than one: Muse Voice Transcribe writes it out, the checked plan is read back, and after Confirm the rule's alerts come
+  to the chat as its clip plays through them. A person is told apart by Telegram's own number for them, and the page's daily limits apply to it.
+- **Finding an item from one sentence.** Say "Track the bag" and Muse Spark Open decides this is a search rather than a rule, in the
+  same call that would plan a rule, and gives up to three names for the item. Code then looks on the paused frame, and if the item is not there,
+  every 30 seconds through the clip, nearest first, because SAM can miss a word on one frame and find it on the next. An item found on another frame
+  is asked for again on the paused frame by its box, so the track runs around the moment you stopped at. One outline is tracked by itself; several
+  wait on the picture for you to select one or more; the clip then plays from where the item comes into view.
+- **Search that goes past words.** Pause a clip and search for anything: a word, a box drawn around it, or one of
+  the things already found. Muse Spark Open lists what is on the frame and SAM 3.1 outlines each, down to the
+  thing's exact shape, and every result stays on the one frame. A drawn box asks for the one thing it encloses, which
+  Muse Spark Open names; the outline found under that name is kept when it is the same thing, because a box alone can take in the ground around it. SAM 3.1 then tracks up to four selected outlines in one request, over the minute around
+  that frame, since SAM charges by the frame and not by the item, both ways from it and from their boxes alone: no word, and no limit on how many similar things are in
+  view. A bar shows how far the track has gone, worked out from the frames SAM has finished. Each item keeps its own outline and colour in the player, and its own bar for when it was in view.
 - **Questions about a clip.** Ask "How many people went through the front door?" in the same box. Muse Spark Open sees that this is a
   question, chooses what to count and writes the answer, and code replaces the answer if its numbers are not the counts, or declines
   if the counts do not fit. The counts come from a detector and tracker that are not Meta's: RF-DETR and ByteTrack went over each clip
@@ -59,14 +71,6 @@ sentence, check the camera can answer it, and ask the vision model on the camera
   in time and each run on CPUs costs money; the model still asks its questions live over those tracks. RF-DETR reads each frame in 15 enlarged sections, since a whole
   frame shrunk to the model's size loses people far from the camera, and uses the whole frame only for what is too large for a section. A question takes seconds and uses your own zones. Counts
   are approximate, since a tracker can lose someone, mix people up or count someone twice.
-- **Alerts in the resident's language.** Muse Spark Open says what a rule's alert means in Nigerian Pidgin and in Yoruba, from
-  the rule alone, with a choice of language on the alert. It is written once per rule and kept, so playing a clip calls no model.
-- **Search that goes past words.** Pause a clip and search for anything: a word, a box drawn around it, or one of
-  the things already found. Muse Spark Open lists what is on the frame and SAM 3.1 outlines each, down to the
-  thing's exact shape, and every result stays on the one frame. A drawn box asks for the one thing it encloses, which
-  Muse Spark Open names; the outline found under that name is kept when it is the same thing, because a box alone can take in the ground around it. SAM 3.1 then tracks up to four selected outlines in one request, over the minute around
-  that frame, since SAM charges by the frame and not by the item, both ways from it and from their boxes alone: no word, and no limit on how many similar things are in
-  view. A bar shows how far the track has gone, worked out from the frames SAM has finished. Each item keeps its own outline and colour in the player, and its own bar for when it was in view.
 - **Events.** Every alert Streamatic's rules raised on the clips, and those of the rules a visitor added, which only that visitor sees, in English, Pidgin or Yoruba. Each opens
   its clip at that moment with its rule selected.
 - **Suggestions tested on the clip.** Each suggested sentence was run three times through the page's own path and raised a real alert each time. No
@@ -78,10 +82,6 @@ sentence, check the camera can answer it, and ask the vision model on the camera
   Each visitor starts at Setup: the rest of the page opens once they have set up a camera, and a clip, its alerts, its place in Events and its
   searches wait until its own camera is set up. Reset in the top bar returns all of it to the start. Tracks are listed per visitor, and their
   results are cached so that a repeat costs nothing.
-- **Alerts on Telegram.** On a clip, "Send alerts to Telegram" links a chat to the page, for every clip, and each alert of a ticked rule arrives there
-  as its clip plays through it, with its picture, in the language chosen. If the picture cannot be sent, the alert still arrives as words. A voice note in English or a sentence sent in the chat becomes a rule
-  on a camera the visitor has set up, selected with a button when there is more than one: Muse Voice Transcribe writes it out, the checked plan is read back, and after Confirm the rule's alerts come
-  to the chat as its clip plays through them. A person is told apart by Telegram's own number for them, and the page's daily limits apply to it.
 
 ## Meta models used
 
