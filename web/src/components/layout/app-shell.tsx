@@ -13,8 +13,8 @@ const PRIVATE_NAV = [
 ];
 
 const PUBLIC_NAV = [
+  { href: '/setup', label: 'Setup', icon: Wand2, pages: ['setup', 'setup-camera'] },
   { href: '/clips', label: 'Clips', icon: Clapperboard, pages: ['clips', 'clip'] },
-  { href: '/setup', label: 'Setup', icon: Wand2, pages: ['setup'] },
   { href: '/try', label: 'Your own picture', icon: ImageUp, pages: ['try'] },
   { href: '/about', label: 'About', icon: Info, pages: ['about'] },
 ];

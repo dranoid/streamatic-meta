@@ -33,12 +33,6 @@ export class ClipThings {
     return things;
   }
 
-  async rename(clip: string, frame: number, id: string, name: string): Promise<Thing[]> {
-    const things = (await this.list(clip, frame)).map((t) => (t.id === id ? { ...t, name } : t));
-    await writeFile(this.#file(clip, frame), JSON.stringify(things));
-    return things;
-  }
-
   #file(clip: string, frame: number): string {
     return join(this.root, 'clips', clip, 'things', `${frame}.json`);
   }

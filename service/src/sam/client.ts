@@ -68,9 +68,9 @@ export class SamClient {
     return Object.fromEntries(words.map((w) => [w, found[w] ?? []]));
   }
 
-  // One click on a picture: the outline of what was clicked, or null when SAM finds nothing there.
-  async outlineAt(picture: Picture, size: MediaSize, point: { x: number; y: number }, name: string): Promise<Outline | null> {
-    const prompt = buildObjectPrompt({ size, objects: [{ id: FOLLOWED_ID, prompts: [{ points: [point] }] }] });
+  // A box drawn on a picture: the outline of the one thing it encloses, or null when SAM finds nothing there.
+  async outlineIn(picture: Picture, size: MediaSize, box: Box, name: string): Promise<Outline | null> {
+    const prompt = buildObjectPrompt({ size, objects: [{ id: FOLLOWED_ID, prompts: [{ box }] }] });
     const { outlines } = await outlinesFromText(name, await this.#request(picture, prompt));
     return outlines[0] ?? null;
   }

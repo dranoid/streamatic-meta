@@ -21,7 +21,7 @@ import { planRule, type GuidePlanner } from '../guide/plan.js';
 import { answerQuestion, type QuestionPlanner } from '../questions/answer.js';
 import { zoneBox, type RuleStore, type SavedRule, type Zone } from '../rules/rule-store.js';
 import type { MediaSize, Picture } from '../sam/client.js';
-import { boxOverlap, type Box, type Outline } from '../sam/outlines.js';
+import { boxOverlap, withoutSpecks, type Box, type Outline } from '../sam/outlines.js';
 import type { CameraSetup, LabelledPicture } from '../setup/camera-setup.js';
 
 const MEDIA_TYPES: Record<string, string> = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.mp4': 'video/mp4' };
@@ -35,6 +35,8 @@ const ASSET_TYPES: Record<string, string> = {
 const MAX_BODY_BYTES = 4_000;
 const MAX_ZONES_PER_RULE = 4;
 const CLICKED_NAME = 'selected item';
+const SMALLEST_BOX = 8;
+const SAME_THING_BY_NAME = 0.25;
 
 const hour = z.number().int().min(0).max(23);
 const text = (max: number) => z.string().trim().min(1).max(max);
@@ -62,7 +64,7 @@ const guideInput = z.object({ camera: text(80), sentence: text(300) });
 const zoneNameInput = z.object({ word: text(60), label: text(30), objectId: text(10), name: text(60) });
 const thingsInput = z.union([
   z.object({ word: text(60) }),
-  z.object({ point: z.object({ x: z.number().int().min(0), y: z.number().int().min(0) }) }),
+  z.object({ box: z.object({ left: z.number().int().min(0), top: z.number().int().min(0), right: z.number().int().min(0), bottom: z.number().int().min(0) }) }),
   z.object({}),
 ]);
 const captionAsked = z.object({ language: z.enum(captionLanguages as [CaptionLanguage, ...CaptionLanguage[]]) });
@@ -144,7 +146,7 @@ export function appHandler({
     listThings: (picture: Picture) => Promise<string[]>;
     nameThing: (picture: Picture, box: Box) => Promise<string>;
     outlineAll: (picture: Picture, words: string[]) => Promise<Record<string, Outline[]>>;
-    outlineAt: (picture: Picture, size: MediaSize, point: { x: number; y: number }, name: string) => Promise<Outline | null>;
+    outlineIn: (picture: Picture, size: MediaSize, box: Box, name: string) => Promise<Outline | null>;
   };
   timeZone: string;
   now?: () => number;
@@ -340,10 +342,10 @@ export function appHandler({
     send(response, 404, { error: 'Not found.' });
   }
 
-  // With nothing asked, lists what is on the frame; a word adds what it finds, and a click adds what was clicked.
+  // With nothing asked, lists what is on the frame; a word adds what it finds, and a drawn box adds the one thing it encloses.
   async function outlineOnFrame(id: string, frame: number, body: Record<string, unknown>, charge: (kind: 'look') => Promise<void>) {
     const parsed = thingsInput.safeParse(body);
-    if (!parsed.success) throw new RequestError(400, 'Type what to look for, or select it on the picture.');
+    if (!parsed.success) throw new RequestError(400, 'Enter an item name, or draw a box on the picture.');
     const clip = await following.clips.get(id);
     const bytes = await following.clips.picture(id, frame);
     if (!clip || !bytes) throw new RequestError(404, 'No such frame.');
@@ -355,18 +357,21 @@ export function appHandler({
       const found = (await following.outlineAll(picture, [word]))[word] ?? [];
       return { things: await following.things.add(id, frame, found), found: found.length };
     }
-    if ('point' in parsed.data) {
-      const { point } = parsed.data;
-      if (point.x >= clip.width || point.y >= clip.height) throw new RequestError(400, 'Select a place on the picture.');
+    if ('box' in parsed.data) {
+      const { box } = parsed.data;
+      if (box.right > clip.width || box.bottom > clip.height || box.right - box.left < SMALLEST_BOX || box.bottom - box.top < SMALLEST_BOX) throw new RequestError(400, 'Draw a larger box inside the picture.');
       await charge('look');
-      const outline = await following.outlineAt(picture, { width: clip.width, height: clip.height }, point, CLICKED_NAME);
-      if (!outline) return { things: await following.things.list(id, frame), found: 0 };
+      const inBox = await following.outlineIn(picture, { width: clip.width, height: clip.height }, box, CLICKED_NAME);
+      if (!inBox) return { things: await following.things.list(id, frame), found: 0 };
+      // The outline is already right if the name fails, so a failed name leaves it under the plain one.
+      const name = await following.nameThing(picture, inBox.box).catch(() => CLICKED_NAME);
+      // A box alone can take in the ground around a thing and leaves stray dots; the same thing found by its name is usually cleaner.
+      const byName = name === CLICKED_NAME ? [] : (await following.outlineAll(picture, [name]).catch(() => ({} as Record<string, Outline[]>)))[name] ?? [];
+      const sameThing = byName.filter((o) => boxOverlap(o.box, inBox.box) >= SAME_THING_BY_NAME).sort((a, b) => boxOverlap(b.box, inBox.box) - boxOverlap(a.box, inBox.box))[0];
+      const outline = withoutSpecks({ ...(sameThing ?? inBox), word: name });
       const things = await following.things.add(id, frame, [outline]);
       const selected = things.reduce((best, t) => (boxOverlap(t.box, outline.box) > boxOverlap(best.box, outline.box) ? t : best));
-      if (selected.name !== CLICKED_NAME) return { things, found: 1, selected: selected.id };
-      // The outline is already right if the name fails, so a failed name leaves it under the plain one.
-      const name = await following.nameThing(picture, selected.box).catch(() => CLICKED_NAME);
-      return { things: await following.things.rename(id, frame, selected.id, name), found: 1, selected: selected.id };
+      return { things, found: 1, selected: selected.id };
     }
     const key = `${id}/${frame}`;
     if (!naming.has(key)) {

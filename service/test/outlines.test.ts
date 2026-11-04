@@ -1,12 +1,32 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { outlinesFromText } from '../src/sam/outlines.js';
+import { outlinesFromText, withoutSpecks } from '../src/sam/outlines.js';
 
 const amosuNightGate = readFileSync(new URL('./fixtures/amosu-night-gate.txt', import.meta.url), 'utf8');
 
 function pathPoints(path: string): Array<[number, number]> {
   return [...path.matchAll(/[ML](-?[\d.]+) (-?[\d.]+)/g)].map((m) => [Number(m[1]), Number(m[2])]);
 }
+
+describe('withoutSpecks', () => {
+  const large = 'M0 0L100 0L100 100L0 100Z';
+  const speck = 'M300 300L302 300L302 302L300 302Z';
+  const hole = 'M20 20L60 20L60 60L20 60Z';
+  const outline = (path: string) => ({ word: 'bench', objectId: '1', box: { left: 0, top: 0, right: 302, bottom: 302 }, path });
+
+  it('drops the stray dots around an outline, and the box closes in on what is left', () => {
+    expect(withoutSpecks(outline(large + speck))).toMatchObject({ path: large, box: { left: 0, top: 0, right: 100, bottom: 100 } });
+  });
+
+  it('keeps a real hole in the outline', () => {
+    expect(withoutSpecks(outline(large + hole)).path).toBe(large + hole);
+  });
+
+  it('leaves an outline of one piece as it is', () => {
+    const one = { word: 'bench', objectId: '1', box: { left: 0, top: 0, right: 100, bottom: 100 }, path: large };
+    expect(withoutSpecks(one)).toEqual(one);
+  });
+});
 
 describe('outlinesFromText', () => {
   it('returns one outline per object SAM found, with its box', async () => {

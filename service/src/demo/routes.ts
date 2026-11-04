@@ -187,7 +187,6 @@ export function demoHandler({
       send(response, 200, {
         picture: `/demo-still/${encodeURIComponent(id)}`,
         zones: setup.zones.map((z) => ({ name: z.name, item: z.item, paths: zonePaths(z) })),
-        notOutlined: setup.notOutlined,
         rules: setup.rules.map((r) => r.sentence),
       });
       return true;
@@ -236,6 +235,15 @@ export function demoHandler({
       const visitor = visitorOf(request, response);
       await charge(visitor, 'rule');
       send(response, 202, { id: await engine.type(row, visitor, text, sent, zones) });
+      return true;
+    }
+    if (method === 'DELETE' && (match = /^\/api\/demo\/clips\/([^/]+)\/rules\/([^/]+)$/.exec(path))) {
+      const id = decodeURIComponent(match[1]!);
+      clipRow(id);
+      const rule = store.rule(decodeURIComponent(match[2]!));
+      if (!rule || rule.clip !== id || rule.kind !== 'typed' || rule.visitor !== visitorOf(request, response)) throw new Refusal(404, 'No such rule.');
+      store.removeRule(rule.id);
+      send(response, 200, { removed: true });
       return true;
     }
     if (method === 'GET' && (match = /^\/api\/demo\/clips\/([^/]+)\/rules\/([^/]+)$/.exec(path))) {

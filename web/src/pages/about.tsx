@@ -23,9 +23,9 @@ const PARTS = [
   },
   {
     title: 'Searching a clip',
-    sam: 'Outlines what is on the paused frame, under each word or at a click. Then tracks the selected outline both ways from that frame, from its box alone: through the whole clip on a private copy, and over the minute around that frame on this public page, where each frame is charged.',
-    spark: 'Lists the kinds of thing on the frame that could be searched for, and names something selected by a click.',
-    code: 'Accumulates what each search finds on the one frame, works out when the thing was in view, and keeps each result so asking again costs nothing.',
+    sam: 'Outlines what is on the paused frame, under each word or inside a box the person draws. Then tracks the selected outline both ways from that frame, from its box alone: through the whole clip on a private copy, and over the minute around that frame on this public page, where each frame is charged.',
+    spark: 'Lists the kinds of thing on the frame that could be searched for, and names what a drawn box holds.',
+    code: 'Accumulates what each search finds on the one frame, prefers the outline found by a drawn item’s name when it is the same thing, removes stray dots, works out when the thing was in view, and keeps each result so asking again costs nothing.',
   },
   {
     title: 'The clips on this page',

@@ -11,7 +11,7 @@ import { ClipsPage } from '@/pages/clips';
 import { CamerasPage } from '@/pages/cameras';
 import { EventPage } from '@/pages/event';
 import { EventsPage } from '@/pages/events';
-import { SetupPage } from '@/pages/setup';
+import { SetupCameraPage, SetupPage } from '@/pages/setup';
 import { TryPage } from '@/pages/try';
 import { AbilitiesProvider } from '@/lib/abilities';
 import './styles.css';
@@ -24,7 +24,7 @@ function App() {
   if (app.isPending) return null;
   const isPublic = app.data?.public ?? false;
   // The public page has no cameras or events, so every other path opens its clips. The private app sets up its cameras on their own pages.
-  const route = isPublic && ['cameras', 'camera', 'events', 'event'].includes(parsed.page) ? ({ page: 'clips' } as const) : !isPublic && parsed.page === 'setup' ? ({ page: 'cameras' } as const) : parsed;
+  const route = isPublic && ['cameras', 'camera', 'events', 'event'].includes(parsed.page) ? ({ page: 'clips' } as const) : !isPublic && (parsed.page === 'setup' || parsed.page === 'setup-camera') ? ({ page: 'cameras' } as const) : parsed;
   return (
     <AbilitiesProvider value={app.data ?? null}>
     <AppShell route={route} isPublic={isPublic}>
@@ -35,6 +35,7 @@ function App() {
       {route.page === 'clips' && <ClipsPage isPublic={isPublic} {...(app.data ? { app: app.data } : {})} />}
       {route.page === 'try' && <TryPage />}
       {route.page === 'setup' && <SetupPage />}
+      {route.page === 'setup-camera' && <SetupCameraPage key={route.id} id={route.id} />}
       {route.page === 'clip' && <ClipPage id={route.id} isPublic={isPublic} trackSeconds={app.data?.trackSeconds ?? null} />}
       {route.page === 'about' && <AboutPage />}
     </AppShell>

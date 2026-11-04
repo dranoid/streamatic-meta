@@ -43,13 +43,14 @@ sentence, check the camera can answer it, and ask the vision model on the camera
   the guide offers that camera, with the thing outlined; code decides this over the zones, not the model.
 - **Alerts in the resident's language.** Muse Spark Open says what a rule's alert means in Nigerian Pidgin and in Yoruba, from
   the rule alone, with a choice of language on the alert. It is written once per rule and kept, so playing a clip calls no model.
-- **Search that goes past words.** Pause a clip and search for anything: a word, a click on the picture, or one of
+- **Search that goes past words.** Pause a clip and search for anything: a word, a box drawn around it, or one of
   the things already found. Muse Spark Open lists what is on the frame and SAM 3.1 outlines each, down to the
-  thing's exact shape, and every result stays on the one frame. SAM 3.1 then tracks the selected outline through the whole
+  thing's exact shape, and every result stays on the one frame. A drawn box asks for the one thing it encloses, which
+  Muse Spark Open names; the outline found under that name is kept when it is the same thing, because a box alone can take in the ground around it. SAM 3.1 then tracks the selected outline through the whole
   clip, both ways from that frame, from its box alone: no word, and no limit on how many similar things are in
   view. On the public page, where SAM's charge by the frame adds up, it tracks the minute around that frame. The outline stays on it in the player, and a bar shows when it was in view.
 - **A demo engine anyone can open.** Recorded clips with the alerts Streamatic's rules raised on them, rules to select, each
-  alert shown 3 seconds after its moment, a Setup page that goes through setup step by step on a picture from each camera, and the guide, whose last step adds your rule to the clip.
+  alert shown 3 seconds after its moment, a Setup page where you take each camera through its saved setup and add the rules you select to its clip, and the guide, whose last step adds your rule to the clip.
   Clips and rules are kept in the page's own database and its videos are served from there, so playing a clip calls no
   model. A picture you upload goes through the same setup, and nothing is kept. Spending is limited per visitor and per day.
 - **Alerts on Telegram.** On a clip, "Send alerts to Telegram" links a chat to the page, and each alert of a ticked rule arrives there

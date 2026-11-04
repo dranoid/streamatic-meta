@@ -175,7 +175,7 @@ async function start({
         listThings: async () => (followCalls.lists++, ['car']),
         nameThing: async () => 'bag',
         outlineAll: async (_picture, words) => Object.fromEntries(words.map((w) => [w, w === 'nothing' ? [] : [{ word: w, objectId: '0', box: w === 'car' ? carBox : { left: 40, top: 5, right: 60, bottom: 30 }, path: 'M1 1Z' }]])),
-        outlineAt: async (_picture, _size, point, name) => ({ word: name, objectId: '1', box: { left: point.x, top: point.y, right: point.x + 5, bottom: point.y + 5 }, path: 'M2 2Z' }),
+        outlineIn: async (_picture, _size, box, name) => (box.left === 2 ? null : { word: name, objectId: '1', box, path: 'M2 2Z' }),
       },
       timeZone: 'Africa/Lagos',
       now: () => AT + 60_000,
@@ -627,7 +627,7 @@ describe('following a thing in a clip', () => {
     expect((await part.arrayBuffer()).byteLength).toBe(10);
   });
 
-  it('names a frame once, and adds each search and click to what is on it', async () => {
+  it('names a frame once, and adds each search and drawn box to what is on it', async () => {
     const { base, followCalls } = await start({ clip: true });
     const named = (await (await post(base, '/api/clips/yard/frames/3/things', {})).json()) as { things: Array<{ name: string }> };
     expect(named.things.map((t) => t.name)).toEqual(['car']);
@@ -640,9 +640,31 @@ describe('following a thing in a clip', () => {
     const none = (await (await post(base, '/api/clips/yard/frames/3/things', { word: 'nothing' })).json()) as { found: number };
     expect(none.found).toBe(0);
 
-    const clicked = (await (await post(base, '/api/clips/yard/frames/3/things', { point: { x: 30, y: 30 } })).json()) as { things: Array<{ id: string; name: string }>; selected: string };
-    expect(clicked.things.find((t) => t.id === clicked.selected)!.name).toBe('bag');
-    expect((await post(base, '/api/clips/yard/frames/3/things', { point: { x: 500, y: 30 } })).status).toBe(400);
+    const drawn = (await (await post(base, '/api/clips/yard/frames/3/things', { box: { left: 22, top: 22, right: 38, bottom: 34 } })).json()) as { things: Array<{ id: string; name: string; box: unknown }>; selected: string; found: number };
+    expect(drawn.found).toBe(1);
+    expect(drawn.things.find((t) => t.id === drawn.selected)).toMatchObject({ name: 'bag', box: { left: 22, top: 22, right: 38, bottom: 34 } });
+
+    const empty = (await (await post(base, '/api/clips/yard/frames/3/things', { box: { left: 2, top: 22, right: 14, bottom: 34 } })).json()) as { found: number; selected?: string };
+    expect(empty.found).toBe(0);
+    expect(empty.selected).toBeUndefined();
+  });
+
+  it('keeps the outline found by the name of what a box holds, when it is the same thing, since a box alone can take in the ground around it', async () => {
+    const { base } = await start({ clip: true });
+    const drawn = (await (await post(base, '/api/clips/yard/frames/3/things', { box: { left: 36, top: 2, right: 64, bottom: 34 } })).json()) as { things: Array<{ id: string; name: string; box: unknown; path: string }>; selected: string };
+    expect(drawn.things.find((t) => t.id === drawn.selected)).toEqual({ id: drawn.selected, name: 'bag', box: { left: 40, top: 5, right: 60, bottom: 30 }, path: 'M1 1Z' });
+  });
+
+  it('refuses a drawn box that is outside the frame, inside out, or too small to name anything', async () => {
+    const { base } = await start({ clip: true });
+    const frame = await (await post(base, '/api/clips/yard/frames/3/things', {})).json();
+    expect(frame).toBeTruthy();
+    const refused = [
+      { left: 10, top: 10, right: 5000, bottom: 40 },
+      { left: 40, top: 10, right: 10, bottom: 40 },
+      { left: 10, top: 10, right: 12, bottom: 12 },
+    ];
+    for (const box of refused) expect((await post(base, '/api/clips/yard/frames/3/things', { box })).status).toBe(400);
   });
 
   it('charges only for what is new on a clip, and stops when the limit is reached', async () => {

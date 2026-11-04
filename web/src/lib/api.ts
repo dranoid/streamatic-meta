@@ -249,7 +249,6 @@ export interface DemoClip {
 export interface DemoSetup {
   picture: string;
   zones: Array<DemoZone & { item: string }>;
-  notOutlined: Array<{ item: string; triedWords: string[] }>;
   rules: string[];
 }
 
@@ -326,7 +325,7 @@ export const api = {
     request<{ language: CaptionLanguage; text: string }>(`/api/events/${id}/captions`, { method: 'POST', body: JSON.stringify({ language }) }),
   clips: () => request<Clip[]>('/api/clips'),
   things: (clip: string, frame: number) => request<ThingsFound>(`/api/clips/${encodeURIComponent(clip)}/frames/${frame}/things`),
-  outline: (clip: string, frame: number, what: { word: string } | { point: { x: number; y: number } } | Record<string, never>) =>
+  outline: (clip: string, frame: number, what: { word: string } | { box: { left: number; top: number; right: number; bottom: number } } | Record<string, never>) =>
     request<ThingsFound>(`/api/clips/${encodeURIComponent(clip)}/frames/${frame}/things`, { method: 'POST', body: JSON.stringify(what) }),
   follows: (clip: string) => request<Follow[]>(`/api/clips/${encodeURIComponent(clip)}/follows`),
   startFollow: (clip: string, frame: number, thing: string) =>
@@ -348,6 +347,7 @@ export const api = {
   planOnClip: (clip: string, sentence: string) => request<PlanResult>(`/api/demo/clips/${encodeURIComponent(clip)}/plans`, { method: 'POST', body: JSON.stringify({ sentence }) }),
   addToClip: (clip: string, rule: { text: string } | { plan: GuidePlan }) =>
     request<{ id: string }>(`/api/demo/clips/${encodeURIComponent(clip)}/rules`, { method: 'POST', body: JSON.stringify(rule) }),
+  removeClipRule: (clip: string, id: string) => request<{ removed: true }>(`/api/demo/clips/${encodeURIComponent(clip)}/rules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   clipRule: (clip: string, id: string) => request<DemoRule>(`/api/demo/clips/${encodeURIComponent(clip)}/rules/${encodeURIComponent(id)}`),
   setUpOwnPicture: async (file: File): Promise<OwnPictureSetup> => {
     const response = await fetch('/api/demo/uploads', { method: 'POST', headers: { 'Content-Type': file.type }, body: file });

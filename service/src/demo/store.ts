@@ -177,6 +177,12 @@ export class DemoStore {
       .run(update.name, update.readsAs, update.status, update.progress.done, update.progress.total, JSON.stringify(update.rewrites), update.reason, update.canAnswer ? 1 : 0, id);
   }
 
+  removeRule(id: string): void {
+    this.#db.prepare('DELETE FROM demo_captions WHERE rule = ?').run(id);
+    this.#db.prepare('DELETE FROM demo_alerts WHERE rule = ?').run(id);
+    this.#db.prepare('DELETE FROM demo_rules WHERE id = ?').run(id);
+  }
+
   isCopied(rule: string): boolean {
     return (this.#db.prepare('SELECT copied FROM demo_rules WHERE id = ?').get(rule) as { copied: number } | undefined)?.copied === 1;
   }

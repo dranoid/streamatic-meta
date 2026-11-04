@@ -179,15 +179,13 @@ describe('the demo engine', () => {
     expect(alertShownMs(299_500, 300_000)).toBe(299_500);
   });
 
-  it('gives the setup page each zone, what could not be outlined, the rules suggested and the picture setup ran on', async () => {
-    const notOutlined = [{ item: 'handrail', triedWords: ['handrail', 'railing'] }];
-    const { visitor, base, root } = await start({ setup: { ...SETUP, notOutlined } });
+  it('gives the setup page each zone, the rules suggested and the picture setup ran on', async () => {
+    const { visitor, base, root } = await start({ setup: { ...SETUP, notOutlined: [{ item: 'handrail', triedWords: ['handrail', 'railing'] }] } });
     await writeFile(join(root, 'cameras', CLIP, 'still.jpg'), new Uint8Array([0xff, 0xd8, 0xff]));
     const { body } = await visitor('v1')(`/api/demo/clips/${CLIP}/setup`);
     expect(body).toEqual({
       picture: `/demo-still/${CLIP}`,
       zones: [{ name: 'door', item: 'door', paths: ['M960 100 Z'] }],
-      notOutlined,
       rules: ['Tell me when the door opens.'],
     });
     const still = await fetch(`${base}/demo-still/${CLIP}`);
@@ -257,6 +255,32 @@ describe('a typed rule', () => {
     expect((await theirs(rule)).status).toBe(404);
     expect((await theirs(`/api/demo/clips/${CLIP}/alerts`, { ticks: [{ rule: created.body.id, armedMs: 0 }] })).body.alerts).toEqual([]);
     expect((await theirs(`/api/demo/clips/${CLIP}`)).body.rules.map((r: any) => r.id)).not.toContain(created.body.id);
+  });
+
+  it('removes a rule for the visitor who added it, with its alerts, and for nobody else', async () => {
+    const { base, visitor, setDraft } = await start();
+    const mine = visitor('v1');
+    const created = await mine(`/api/demo/clips/${CLIP}/rules`, { text: 'Tell me when a door opens.' });
+    const rule = `/api/demo/clips/${CLIP}/rules/${created.body.id}`;
+    setDraft('ready');
+    await mine(rule);
+    const remove = (who: string, path: string) => fetch(`${base}${path}`, { method: 'DELETE', headers: { cookie: `streamatic_demo=${who}` } });
+
+    expect((await remove('v2', rule)).status).toBe(404);
+    expect((await mine(`/api/demo/clips/${CLIP}`)).body.rules.map((r: any) => r.id)).toContain(created.body.id);
+
+    expect((await remove('v1', rule)).status).toBe(200);
+    expect((await mine(`/api/demo/clips/${CLIP}`)).body.rules.map((r: any) => r.id)).not.toContain(created.body.id);
+    expect((await mine(`/api/demo/clips/${CLIP}/alerts`, { ticks: [{ rule: created.body.id, armedMs: 0 }] })).body.alerts).toEqual([]);
+    expect((await remove('v1', rule)).status).toBe(404);
+  });
+
+  it('will not remove a rule every visitor is offered', async () => {
+    const { base, visitor } = await start();
+    const offered = (await visitor('v1')(`/api/demo/clips/${CLIP}`)).body.rules.find((r: any) => r.kind === 'offered');
+    const removed = await fetch(`${base}/api/demo/clips/${CLIP}/rules/${offered.id}`, { method: 'DELETE', headers: { cookie: 'streamatic_demo=v1' } });
+    expect(removed.status).toBe(404);
+    expect((await visitor('v2')(`/api/demo/clips/${CLIP}`)).body.rules.map((r: any) => r.id)).toContain(offered.id);
   });
 
   it('passes on a refusal with its rewrites', async () => {

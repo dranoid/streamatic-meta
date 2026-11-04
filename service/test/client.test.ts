@@ -10,6 +10,26 @@ function reply(status: number, text = ''): Response {
   return new Response(JSON.stringify(status === 200 ? body : { error: { message: 'busy' } }), { status });
 }
 
+describe('SamClient.outlineIn', () => {
+  const size = { width: 1280, height: 720 };
+  const box = { left: 100, top: 200, right: 300, bottom: 400 };
+
+  it('asks for the one thing a drawn box encloses, with no word beside it', async () => {
+    let sent: any;
+    const client = new SamClient({ apiKey: 'test', fetch: async (_url, init) => ((sent = JSON.parse(String(init?.body))), reply(200, amosuNightGate)) });
+
+    const outline = await client.outlineIn(picture, size, box, 'selected item');
+
+    expect(sent.input[0].content[0].text).toBe('<0f>1<|box;x1=100;y1=200;x2=299;y2=399;w=1280;h=720|>');
+    expect(outline?.word).toBe('selected item');
+  });
+
+  it('answers null when SAM finds nothing in the box', async () => {
+    const client = new SamClient({ apiKey: 'test', fetch: async () => reply(200, '') });
+    expect(await client.outlineIn(picture, size, box, 'selected item')).toBeNull();
+  });
+});
+
 describe('SamClient.outline', () => {
   it('sends the word and the picture, and returns the outlines', async () => {
     const sent: unknown[] = [];

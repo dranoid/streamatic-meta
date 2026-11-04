@@ -167,7 +167,7 @@ const app = appHandler({
     listThings: (picture) => followPlanner.listThings(picture),
     nameThing: async (picture, box) => followPlanner.nameThing(await cropAround(picture, box)),
     outlineAll: (picture, words) => sam.outlineAll(picture, words),
-    outlineAt: (picture, size, point, name) => sam.outlineAt(picture, size, point, name),
+    outlineIn: (picture, size, box, name) => sam.outlineIn(picture, size, box, name),
   },
   timeZone,
   playing: (id) => {

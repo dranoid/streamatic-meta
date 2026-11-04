@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { BellRing, Crosshair, LoaderCircle, Pause, Play, Search, SkipForward, X } from 'lucide-react';
+import { BellRing, CircleAlert, Crosshair, LoaderCircle, Pause, Play, Search, SkipForward, SquareDashed, X } from 'lucide-react';
+import { BoxDrawer, type DrawnBox } from '@/components/box-drawer';
 import { Outlines, PictureBusy, PictureFrame, ZONE_COLOURS, type DrawnPath } from '@/components/picture-frame';
 import { DemoGuide } from '@/components/demo-guide';
 import { LanguageChoice, type AlertLanguage } from '@/components/language-choice';
@@ -16,6 +17,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { api, clipPictureUrl, clipVideoUrl, type Clip, type DemoAlert, type DemoClip, type DemoRule, type DemoZone, type Follow, type FollowJob, type Thing } from '@/lib/api';
 import { useAbilities } from '@/lib/abilities';
 import { cn } from '@/lib/cn';
+import { RULE_FINISHED, rulesChosenInSetup, useRefreshRulesBeingAdded } from '@/lib/setup-progress';
 import { sentence } from '@/lib/time';
 
 const POLL_MS = 1_000;
@@ -29,6 +31,7 @@ const LEAD_IN_MS = 3_000;
 // A longer step than this between readings of the clock is a jump, not the clip playing through a moment.
 const LONGEST_PLAYED_STEP_MS = 2_000;
 const REFRESH_LINKED_MS = 15_000;
+const SMALLEST_BOX = 8;
 
 function duration(seconds: number): string {
   const whole = Math.max(0, Math.round(seconds));
@@ -131,6 +134,17 @@ function ClipWatch({ clip, follows, demo, trackSeconds }: { clip: Clip; follows:
     const refresh = setInterval(refreshDemo, REFRESH_LINKED_MS);
     return () => clearInterval(refresh);
   }, [telegram.linked, refreshDemo]);
+  useRefreshRulesBeingAdded(clip.id, demo?.rules ?? [], refreshDemo);
+  // The rules chosen in setup are selected on arriving here, each once, so that it can still be unselected.
+  const selectedFromSetup = useRef(new Set<string>());
+  useEffect(() => {
+    if (!demo) return;
+    const wanted = new Set(rulesChosenInSetup(clip.id));
+    const ready = demo.rules.filter((r) => r.status === 'ready' && wanted.has(r.id) && !selectedFromSetup.current.has(r.id));
+    if (ready.length === 0) return;
+    for (const rule of ready) selectedFromSetup.current.add(rule.id);
+    setTicks((all) => ({ ...all, ...Object.fromEntries(ready.map((r) => [r.id, 0])) }));
+  }, [demo, clip.id]);
   const reached = alerts.filter((a) => a.shownMs <= nowMs).sort((a, b) => b.shownMs - a.shownMs);
   const banner = reached.find((a) => nowMs - a.shownMs < ALERT_BANNER_MS) ?? null;
   const nextAlert = alerts.filter((a) => a.shownMs > nowMs).sort((a, b) => a.atMs - b.atMs)[0] ?? null;
@@ -318,6 +332,7 @@ const ruleLabel = (rule: DemoRule | undefined) => (!rule ? 'Alert' : rule.kind =
 
 function RulesCard({ rules, ticks, onToggle }: { rules: DemoRule[]; ticks: Record<string, number>; onToggle: (rule: DemoRule, on: boolean) => void }) {
   const usable = rules.filter((r) => r.status === 'ready');
+  const notReady = rules.filter((r) => r.status !== 'ready');
   return (
     <Card>
       <CardHeader>
@@ -338,6 +353,15 @@ function RulesCard({ rules, ticks, onToggle }: { rules: DemoRule[]; ticks: Recor
                   {rule.readsAs && <span className='text-muted-foreground mt-0.5 block text-xs'>Reads as: {rule.readsAs}</span>}
                 </span>
               </label>
+            </li>
+          ))}
+          {notReady.map((rule) => (
+            <li key={rule.id} className='flex items-start gap-2.5 rounded-lg border border-dashed p-3 text-sm'>
+              {RULE_FINISHED.has(rule.status) ? <CircleAlert className='text-muted-foreground mt-0.5 size-4 shrink-0' /> : <LoaderCircle className='text-primary mt-0.5 size-4 shrink-0 animate-spin' />}
+              <span className='min-w-0'>
+                <span className='font-medium'>{rule.text}</span>
+                <span className='text-muted-foreground mt-0.5 block text-xs'>{RULE_FINISHED.has(rule.status) ? (rule.reason ?? 'This rule could not be added.') : 'Streamatic is running this rule over the clip. It will be selected when it is ready.'}</span>
+              </span>
             </li>
           ))}
         </ul>
@@ -400,7 +424,8 @@ function Choosing({ clip, frame, trackSeconds, onCancel, onFollowed }: { clip: C
   const [note, setNote] = useState<string | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [job, setJob] = useState<FollowJob | null>(null);
-  const svg = useRef<SVGSVGElement | null>(null);
+  const [drawing, setDrawing] = useState(false);
+  const [box, setBox] = useState<DrawnBox | null>(null);
 
   const name = useQuery({ queryKey: ['name-frame', clip.id, frame], queryFn: () => api.outline(clip.id, frame, {}), retry: false, staleTime: Infinity });
   useEffect(() => {
@@ -415,12 +440,18 @@ function Choosing({ clip, frame, trackSeconds, onCancel, onFollowed }: { clip: C
       if (result.found) setWord('');
     },
   });
-  const click = useMutation({
-    mutationFn: (point: { x: number; y: number }) => api.outline(clip.id, frame, { point }),
+  const outliningBox = useMutation({
+    mutationFn: (drawn: DrawnBox) => api.outline(clip.id, frame, { box: drawn }),
     onSuccess: (result) => {
       setThings(result.things);
       setSelected(result.selected ?? null);
-      setNote(result.selected ? null : 'No item could be outlined at that point. Select another point, or search by name.');
+      if (result.selected) {
+        setDrawing(false);
+        setBox(null);
+        setNote(null);
+      } else {
+        setNote('No item could be outlined in this box. Fit the box closely around one item and try again.');
+      }
     },
   });
   const start = useMutation({
@@ -456,8 +487,8 @@ function Choosing({ clip, frame, trackSeconds, onCancel, onFollowed }: { clip: C
       ? 'Finding the items in this frame'
       : search.isPending
         ? 'Searching this frame'
-        : click.isPending
-          ? 'Outlining the selection'
+        : outliningBox.isPending
+          ? 'Outlining the item in the box'
           : null;
   const words = [...new Set(things.map((t) => t.name))];
   const paths: DrawnPath[] = things.map((t) => ({
@@ -469,48 +500,59 @@ function Choosing({ clip, frame, trackSeconds, onCancel, onFollowed }: { clip: C
     onSelect: running ? undefined : () => setSelected(t.id),
   }));
 
-  // A click off every outline asks for an outline of what is there, so something no word found can still be followed.
-  const onPictureClick = (event: MouseEvent<HTMLDivElement>) => {
-    if (busyLabel !== null || (event.target as Element).tagName === 'path' || !svg.current) return;
-    const matrix = svg.current.getScreenCTM();
-    if (!matrix) return;
-    const at = new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix.inverse());
-    const x = Math.floor(at.x);
-    const y = Math.floor(at.y);
-    if (x < 0 || y < 0 || x >= clip.width || y >= clip.height) return;
-    click.mutate({ x, y });
-  };
   const onSearch = (event: FormEvent) => {
     event.preventDefault();
     if (word.trim()) search.mutate(word.trim());
   };
+  const stopDrawing = () => {
+    setDrawing(false);
+    setBox(null);
+    setNote(null);
+  };
+  // A box under this size would be refused, and is more likely a stray touch than a choice.
+  const boxUsable = box !== null && box.right - box.left >= SMALLEST_BOX && box.bottom - box.top >= SMALLEST_BOX;
 
-  const error = name.error ?? search.error ?? click.error ?? start.error;
+  const error = name.error ?? search.error ?? outliningBox.error ?? start.error;
   return (
     <div className='space-y-4'>
-      <div onClick={onPictureClick} className={cn(busyLabel === null && 'cursor-crosshair')}>
-        <PictureFrame
-          src={clipPictureUrl(clip.id, frame)}
-          alt={`Frame ${frame} of ${clip.name}`}
-          paths={paths}
-          onPicture={(el) => {
-            svg.current = el;
-          }}
-        >
-          {busyLabel && <PictureBusy label={busyLabel} />}
-        </PictureFrame>
-      </div>
+      <PictureFrame src={clipPictureUrl(clip.id, frame)} alt={`Frame ${frame} of ${clip.name}`} paths={drawing ? [] : paths}>
+        {drawing && <BoxDrawer width={clip.width} height={clip.height} box={box} onChange={setBox} />}
+        {busyLabel && <PictureBusy label={busyLabel} />}
+      </PictureFrame>
 
       {running ? (
         <p className='text-muted-foreground text-xs'>
           {job?.framesSeen ? `Found on ${job.framesSeen.toLocaleString('en-GB')} frames so far. ` : ''}
           {trackSeconds === null ? 'This usually takes under a minute.' : `Tracking covers ${trackSeconds} seconds either side of this frame, and usually takes about a minute.`}
         </p>
+      ) : drawing ? (
+        <>
+          <p className='text-muted-foreground text-sm'>
+            {box
+              ? 'Drag the box to move it, or drag a corner or side to resize it. Fit it closely around one item. Streamatic outlines that one item only, and does not search for everything inside the box.'
+              : 'Drag on the picture to draw a box around one item.'}
+          </p>
+          {note && <Notice>{note}</Notice>}
+          {error && <Notice tone='error'>{error.message}</Notice>}
+          <div className='flex flex-wrap items-center gap-2'>
+            <Button size='sm' disabled={!boxUsable || busyLabel !== null} onClick={() => box && outliningBox.mutate(box)}>
+              <SquareDashed />
+              Outline this item
+            </Button>
+            <Button size='sm' variant='outline' disabled={!box || busyLabel !== null} onClick={() => setBox(null)}>
+              Clear box
+            </Button>
+            <Button size='sm' variant='outline' disabled={busyLabel !== null} onClick={stopDrawing}>
+              <X />
+              Cancel
+            </Button>
+          </div>
+        </>
       ) : (
         <>
           {!name.isPending && (
             <p className='text-muted-foreground text-sm'>
-              {things.length === 0 ? 'No items were outlined on this frame.' : 'Streamatic outlined these items on this frame. Select an outline to track it.'} If an item is not outlined, enter its name or select it on the picture.
+              {things.length === 0 ? 'No items were outlined on this frame.' : 'Streamatic outlined these items on this frame. Select an outline to track it.'} If an item is not outlined, enter its name or draw a box around it.
             </p>
           )}
           <form onSubmit={onSearch} className='flex flex-wrap items-end gap-2'>
@@ -538,6 +580,17 @@ function Choosing({ clip, frame, trackSeconds, onCancel, onFollowed }: { clip: C
             >
               <Crosshair />
               {!selectedThing ? 'Select an item to track' : trackSeconds === null ? `Track the ${selectedThing.name} through the clip` : `Track the ${selectedThing.name}`}
+            </Button>
+            <Button
+              size='sm'
+              variant='outline'
+              onClick={() => {
+                setDrawing(true);
+                setNote(null);
+              }}
+            >
+              <SquareDashed />
+              Draw a box
             </Button>
             <Button size='sm' variant='outline' onClick={onCancel}>
               <X />
