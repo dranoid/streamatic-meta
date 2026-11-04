@@ -6,6 +6,8 @@ after 10 pm", in plain English, on any camera. It runs today on an estate in Lag
 This repository is our entry to the Meta Global AI Developer Hackathon (Startup track, Build for Your
 World). It holds only the work built during the event, 26 October to 4 November 2026.
 
+**Try it: https://misc.streamatic.co**
+
 ## What existed before the event
 
 Streamatic's cameras, video storage, rules, alerts on Telegram and WhatsApp, and search over camera footage. None of
