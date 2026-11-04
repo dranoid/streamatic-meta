@@ -123,6 +123,7 @@ export interface PlanAttempt {
 export type PlanResult =
   | { status: 'ready'; plan: GuidePlan; attempts: PlanAttempt[] }
   | { status: 'search'; item: string; words: string[]; attempts: PlanAttempt[] }
+  | { status: 'question'; attempts: PlanAttempt[] }
   | { status: 'needs-person'; problems: string[]; attempts: PlanAttempt[] };
 
 // Another camera at the same place whose setup outlined what was asked about, when this one's did not.
@@ -145,6 +146,8 @@ export interface DemoCamera {
   name: string;
   hasClip: boolean;
   picture: string;
+  // Whether this visitor has set this camera up.
+  setUp: boolean;
 }
 
 export interface StoredEvent {
@@ -246,6 +249,8 @@ export interface DemoClipSummary extends Clip {
   alerts: number;
   // Sentences tested on this clip, which a visitor can run with one click.
   suggestions: string[];
+  // Whether this visitor has set this clip's camera up.
+  setUp: boolean;
 }
 
 export interface DemoEvent {
@@ -288,7 +293,18 @@ export interface DemoClip {
   lengthMs: number;
   zones: DemoZone[];
   suggestions: string[];
+  suggestedQuestions: string[];
   rules: DemoRule[];
+  // Whether this visitor has run setup on this camera.
+  setUpLive: boolean;
+  // Whether this copy has a detector, so the clip can be asked about.
+  canCount: boolean;
+  detection: 'none' | 'running' | 'ready' | 'failed' | null;
+}
+
+export interface ClipAnswer {
+  answer: string;
+  moments: Array<{ atMs: number; label: string }>;
 }
 
 export interface DemoSetup {
@@ -299,6 +315,8 @@ export interface DemoSetup {
   rules: string[];
   // Whether this visitor has renamed or deleted any of this camera's zones.
   edited: boolean;
+  // Whether these zones were found when this visitor ran setup.
+  live: boolean;
 }
 
 export interface DemoTick {
@@ -386,11 +404,13 @@ export const api = {
   demoClips: () => request<DemoClipSummary[]>('/api/demo/clips'),
   demoEvents: () => request<{ events: DemoEvent[] }>('/api/demo/events'),
   demoCameras: () => request<DemoCamera[]>('/api/demo/cameras'),
+  resetDemo: () => request<unknown>('/api/demo/reset', { method: 'POST', body: '{}' }),
   routeSentence: (sentence: string) => request<{ cameras: CameraOffer[] }>('/api/demo/route', { method: 'POST', body: JSON.stringify({ sentence }) }),
   routeFromClip: (clip: string, sentence: string) => request<{ elsewhere: CameraOffer[] }>(`/api/demo/clips/${encodeURIComponent(clip)}/route`, { method: 'POST', body: JSON.stringify({ sentence }) }),
   voiceNoteOnPage: (audio: Blob) => sendVoiceNote('/api/demo/voice-notes', audio),
   demoClip: (clip: string) => request<DemoClip>(`/api/demo/clips/${encodeURIComponent(clip)}`),
   demoSetup: (clip: string) => request<DemoSetup>(`/api/demo/clips/${encodeURIComponent(clip)}/setup`),
+  runDemoSetup: (clip: string) => request<DemoSetup>(`/api/demo/clips/${encodeURIComponent(clip)}/setup`, { method: 'POST', body: '{}' }),
   renameDemoZone: (clip: string, zone: string, name: string) =>
     request<DemoSetup>(`/api/demo/clips/${encodeURIComponent(clip)}/zones/${encodeURIComponent(zone)}`, { method: 'PUT', body: JSON.stringify({ name }) }),
   deleteDemoZone: (clip: string, zone: string) => request<DemoSetup>(`/api/demo/clips/${encodeURIComponent(clip)}/zones/${encodeURIComponent(zone)}`, { method: 'DELETE' }),
@@ -404,6 +424,7 @@ export const api = {
     request<{ sent: true }>(`/api/demo/clips/${encodeURIComponent(clip)}/telegram-alerts`, { method: 'POST', body: JSON.stringify({ rule, key }) }),
   voiceNoteOnCamera: (camera: string, audio: Blob) => sendVoiceNote(`/api/cameras/${encodeURIComponent(camera)}/voice-notes`, audio),
   voiceNoteOnClip: (clip: string, audio: Blob) => sendVoiceNote(`/api/demo/clips/${encodeURIComponent(clip)}/voice-notes`, audio),
+  askClip: (clip: string, sentence: string) => request<ClipAnswer | { status: 'detecting' }>(`/api/demo/clips/${encodeURIComponent(clip)}/questions`, { method: 'POST', body: JSON.stringify({ sentence }) }),
   planOnClip: (clip: string, sentence: string) => request<PlanResult>(`/api/demo/clips/${encodeURIComponent(clip)}/plans`, { method: 'POST', body: JSON.stringify({ sentence }) }),
   addToClip: (clip: string, rule: { text: string } | { plan: GuidePlan }) =>
     request<{ id: string }>(`/api/demo/clips/${encodeURIComponent(clip)}/rules`, { method: 'POST', body: JSON.stringify(rule) }),

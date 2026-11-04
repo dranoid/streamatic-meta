@@ -32,6 +32,14 @@ export function saveProgress(clip: string, progress: CameraProgress | null): voi
   }
 }
 
+export function forgetAllProgress(): void {
+  try {
+    localStorage.removeItem(KEY);
+  } catch {
+    // Nothing was kept in that case.
+  }
+}
+
 export function rulesChosenInSetup(clip: string): string[] {
   const { offered, added } = progressOf(clip);
   return [...offered, ...added];

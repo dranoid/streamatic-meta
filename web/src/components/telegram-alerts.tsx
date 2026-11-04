@@ -85,11 +85,11 @@ export function TelegramAlerts({ telegram, problem }: { telegram: ReturnType<typ
           <CircleCheck className='size-4 shrink-0' />
           Linked to Telegram
         </p>
-        <p className='text-muted-foreground text-xs leading-relaxed'>Alerts from this clip go to your Telegram chat as it plays. You can also send a voice note in English, or a sentence, in that chat to add a rule to the clip you last opened.</p>
+        <p className='text-muted-foreground text-xs leading-relaxed'>Alerts from the rules you select on any clip go to your Telegram chat as that clip plays. You can also send a voice note in English, or a sentence, in that chat to add a rule to the clip you last opened.</p>
         <Button size='sm' variant='outline' onClick={turnOff}>
           Stop sending alerts to Telegram
         </Button>
-        {problem && <p className='text-muted-foreground text-xs'>{problem}</p>}
+        {problem && <p role='alert' className='text-destructive text-sm'>{problem}</p>}
       </div>
     );
   }
@@ -106,7 +106,7 @@ export function TelegramAlerts({ telegram, problem }: { telegram: ReturnType<typ
       )}
       {openProblem && <p className='text-sm'>{openProblem}</p>}
       <p className='text-muted-foreground text-xs leading-relaxed'>
-        Your Telegram account is linked to this browser for a day. A voice note you send in that chat goes to Meta to be written out, under the hackathon’s credit terms, which allow Meta to use it for product improvement. This page keeps no copy.
+        A linked Telegram account stays linked to this browser for a day. A voice note you send in that chat goes to Meta to be written out, under the hackathon’s credit terms, which allow Meta to use it for product improvement. This page keeps no copy.
       </p>
     </div>
   );

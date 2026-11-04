@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { LabelledPicture, SetupPlanner, SuggestedRule, ZoneSummary } from '../setup/camera-setup.js';
-import type { SparkClient } from './client.js';
+import { SparkDeclined, type SparkClient } from './client.js';
 
 const MAX_ITEMS = 15;
 
@@ -36,15 +36,25 @@ Reply with JSON only: {"alternatives": {"<name>": ["...", "..."]}}`,
 
   async proposeRules(zones: ZoneSummary[], pictures: LabelledPicture[]): Promise<SuggestedRule[]> {
     const named = zones.map((z) => `${z.name} (seen: ${z.seenAt.join(', ')})`).join('\n');
-    const { rules } = await this.spark.json(
-      `This camera watches ${this.site}. These things were outlined in its pictures, with the times they were visible:
+    const ask = () =>
+      this.spark.json(
+        `This camera watches ${this.site}. These things were outlined in its pictures, with the times they were visible:
 ${named}
 Suggest three to five alert rules the site's manager would want, each one plain English sentence starting "Alert me if" or "Tell me when", about things a camera picture can show.
 Refer to things only by the names above, exactly as written (add "the" where English needs it), and list the names each rule uses.
 Reply with JSON only: {"rules": [{"sentence": "...", "zones": ["..."]}]}`,
-      pictures,
-      z.object({ rules: z.array(z.object({ sentence: z.string(), zones: z.array(z.string()) })) }),
-    );
-    return rules;
+        pictures,
+        z.object({ rules: z.array(z.object({ sentence: z.string(), zones: z.array(z.string()) })) }),
+      );
+    // Suggestions are the last step of setup and the model declines some runs and not others, so one decline must not lose the zones already paid for.
+    try {
+      return (await ask().catch((error: unknown) => {
+        if (error instanceof SparkDeclined) return ask();
+        throw error;
+      })).rules;
+    } catch (error) {
+      if (error instanceof SparkDeclined) return [];
+      throw error;
+    }
   }
 }

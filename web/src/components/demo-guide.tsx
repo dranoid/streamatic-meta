@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Check, Compass, Loader2, X } from 'lucide-react';
+import { Check, Compass, Loader2, Play, X } from 'lucide-react';
 import { NeedsKeys } from '@/components/needs-keys';
 import { PictureFrame } from '@/components/picture-frame';
 import { Button } from '@/components/ui/button';
@@ -10,12 +10,13 @@ import { Link } from '@/components/ui/link';
 import { Notice } from '@/components/ui/notice';
 import { VoiceNote } from '@/components/voice-note';
 import { useAbilities } from '@/lib/abilities';
-import { api, type CameraOffer, type DemoAlert, type DemoClip, type DemoRule, type DemoZone, type Follow, type GuidePlan, type PlanAttempt } from '@/lib/api';
+import { api, type CameraOffer, type ClipAnswer, type DemoAlert, type DemoClip, type DemoRule, type DemoZone, type Follow, type GuidePlan, type PlanAttempt } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { RULE_FINISHED } from '@/lib/setup-progress';
 import { clockTime, sentence as asSentence } from '@/lib/time';
 
 const POLL_MS = 1_500;
+const DETECTION_POLL_MS = 3_000;
 // Long enough to see where the zones are before the guide moves on.
 const ZONES_SHOWN_MS = 1_800;
 const OFFER_COLOUR = '#e8c547';
@@ -41,6 +42,8 @@ type Run =
   | { stage: 'planning'; sentence: string; stayed: boolean }
   | { stage: 'not-planned'; sentence: string; problems: string[]; attempts: number }
   | { stage: 'search'; sentence: string }
+  | { stage: 'asking' | 'detecting'; sentence: string }
+  | { stage: 'answered'; sentence: string; answer: ClipAnswer }
   | { stage: 'zones' | 'running'; sentence: string; plan: GuidePlan | null; attempts: PlanAttempt[] };
 
 // How the search for an item stands on the clip's own picture, which the guide reports stage by stage.
@@ -54,43 +57,59 @@ export type GuideFinding =
 const moment = (seconds: number) => `${Math.floor(Math.round(seconds) / 60)}:${String(Math.round(seconds) % 60).padStart(2, '0')}`;
 
 // The guide on a clip. One sentence, and it does the rest on this page: it checks this is the camera to use, plans the rule, shows the
-// zones on the player and runs the rule through Streamatic. The one thing it asks for is the confirmation to add the finished rule.
+// zones on the player and runs the rule through Streamatic, whose alerts reach the clip's timeline as they are found.
 export function DemoGuide({
   clip,
   cameraName,
   ask,
-  added,
   onShowZones,
-  onAdd,
+  onRuleRunning,
+  onRuleProgress,
+  onRuleDropped,
+  onPlayAlert,
   onTyped,
   finding,
   onFindItem,
   onStopFinding,
+  onMoment,
 }: {
   clip: DemoClip;
   cameraName: string;
   // A sentence brought from the page that chose this camera, run at once.
   ask: string | null;
-  added: (rule: string) => boolean;
   onShowZones: (zones: DemoZone[] | null) => void;
-  onAdd: (rule: string, firstAlert: DemoAlert | null) => void;
+  onRuleRunning: (rule: string) => void;
+  // How much of the clip the running rule has read, from 0 to 1, or null when no rule is running.
+  onRuleProgress: (share: number | null) => void;
+  onRuleDropped: (rule: string) => void;
+  onPlayAlert: (alert: DemoAlert) => void;
   onTyped: () => void;
   finding: GuideFinding | null;
   onFindItem: (item: string, words: string[]) => Promise<void>;
   onStopFinding: () => void;
+  onMoment: (atMs: number) => void;
 }) {
   const { models, rules: canRunRules } = useAbilities();
   const [text, setText] = useState(ask ?? '');
   const [run, setRun] = useState<Run | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [ruleId, setRuleId] = useState<string | null>(null);
+  const [played, setPlayed] = useState(false);
   // A newer sentence, or Stop, leaves an older run to finish with nobody listening.
   const current = useRef(0);
+  const unfinishedRule = useRef<string | null>(null);
+
+  const leaveRule = () => {
+    if (unfinishedRule.current) onRuleDropped(unfinishedRule.current);
+    unfinishedRule.current = null;
+    setRuleId(null);
+    setPlayed(false);
+  };
 
   const stop = () => {
     current.current += 1;
     setRun(null);
-    setRuleId(null);
+    leaveRule();
     setProblem(null);
     onShowZones(null);
     onStopFinding();
@@ -99,15 +118,17 @@ export function DemoGuide({
   const runRule = async (me: number, sentence: string, rule: { text: string } | { plan: GuidePlan }, plan: GuidePlan | null, attempts: PlanAttempt[]) => {
     const { id } = await api.addToClip(clip.id, rule);
     if (current.current !== me) return;
+    unfinishedRule.current = id;
     setRuleId(id);
     setRun({ stage: 'running', sentence, plan, attempts });
+    onRuleRunning(id);
   };
 
   const start = async (sentence: string, { stay = false } = {}) => {
     const me = (current.current += 1);
     const alive = () => current.current === me;
     setProblem(null);
-    setRuleId(null);
+    leaveRule();
     onShowZones(null);
     onStopFinding();
     try {
@@ -126,6 +147,23 @@ export function DemoGuide({
       if (planned.status === 'search') {
         setRun({ stage: 'search', sentence });
         await onFindItem(planned.item, planned.words);
+        return;
+      }
+      if (planned.status === 'question') {
+        setRun({ stage: 'asking', sentence });
+        let answer = await api.askClip(clip.id, sentence);
+        while (alive() && 'status' in answer) {
+          setRun({ stage: 'detecting', sentence });
+          await new Promise((done) => setTimeout(done, DETECTION_POLL_MS));
+          if (!alive()) return;
+          const { detection } = await api.demoClip(clip.id);
+          if (detection === 'failed') throw new Error('Streamatic could not detect what is on this clip. Please ask again.');
+          if (detection === 'ready') {
+            setRun({ stage: 'asking', sentence });
+            answer = await api.askClip(clip.id, sentence);
+          }
+        }
+        if (alive() && !('status' in answer)) setRun({ stage: 'answered', sentence, answer });
         return;
       }
       if (planned.status !== 'ready') {
@@ -163,23 +201,37 @@ export function DemoGuide({
   });
   const reading = rule.data;
   const ready = reading?.status === 'ready';
+  const finished = reading !== undefined && RULE_FINISHED.has(reading.status);
   const alertsFound = useQuery({
-    queryKey: ['guide-alerts', clip.id, ruleId],
+    queryKey: ['guide-alerts', clip.id, ruleId, ready],
     queryFn: () => api.demoAlerts(clip.id, [{ rule: ruleId!, armedMs: 0 }]),
-    enabled: ready,
+    enabled: ruleId !== null,
+    refetchInterval: finished ? false : POLL_MS,
+    placeholderData: (previous) => previous,
   });
   const alerts = [...(alertsFound.data?.alerts ?? [])].sort((a, b) => a.atMs - b.atMs);
   useEffect(() => {
     if (ready) onTyped();
   }, [ready, onTyped]);
-  const isAdded = ruleId !== null && added(ruleId);
+  const share = ruleId === null || finished ? null : reading?.progress.total ? reading.progress.done / reading.progress.total : 0;
   useEffect(() => {
-    if (isAdded) onShowZones(null);
+    onRuleProgress(share);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAdded]);
+  }, [share]);
+  useEffect(() => {
+    if (!finished || !ruleId) return;
+    unfinishedRule.current = null;
+    if (!ready) onRuleDropped(ruleId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [finished, ready, ruleId]);
+  const noneFound = ready && alertsFound.data !== undefined && alertsFound.data.alerts.length === 0;
+  useEffect(() => {
+    if (played || noneFound) onShowZones(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [played, noneFound]);
 
   const searchOver = finding?.stage === 'done' || finding?.stage === 'none';
-  const busy = run !== null && run.stage !== 'offer' && run.stage !== 'not-planned' && !(run.stage === 'search' && searchOver) && !(run.stage === 'running' && reading !== undefined && RULE_FINISHED.has(reading.status));
+  const busy = run !== null && run.stage !== 'offer' && run.stage !== 'not-planned' && run.stage !== 'answered' &&!(run.stage === 'search' && searchOver) && !(run.stage === 'running' && reading !== undefined && RULE_FINISHED.has(reading.status));
   const plan = run && (run.stage === 'zones' || run.stage === 'running') ? run.plan : null;
   const attempts = run && (run.stage === 'zones' || run.stage === 'running') ? run.attempts : [];
   const rejected = attempts.filter((a) => a.problems.length > 0);
@@ -194,9 +246,9 @@ export function DemoGuide({
         <div>
           <CardTitle className='flex items-center gap-2'>
             <Compass className='text-primary size-4' />
-            Guide
+            Add a rule
           </CardTitle>
-          <CardDescription>Say what this camera should monitor, or name an item to find in the clip. Streamatic does the rest on this page, and asks you only to confirm a finished rule or to select among the items found.</CardDescription>
+          <CardDescription>Say what this camera should monitor{clip.canCount ? ', name an item to find in the clip, or ask how many people passed a place' : ', or name an item to find in the clip'}. The rest runs automatically on this page, and you are asked only to select among the items found.</CardDescription>
         </div>
       </CardHeader>
       <CardContent className='space-y-3'>
@@ -208,7 +260,7 @@ export function DemoGuide({
             if (text.trim()) void start(text.trim());
           }}
         >
-          <Input aria-label='What should this camera monitor, or what should it find?'className='min-w-48 flex-1' maxLength={300} disabled={!models} value={text} onChange={(e) => setText(e.target.value)} placeholder='Tell me when someone stops by the entrance.' />
+          <Input aria-label='What should this camera monitor, or what should it find?' className='min-w-48 flex-1' maxLength={300} disabled={!models} value={text} onChange={(e) => setText(e.target.value)} placeholder='Tell me when someone stops by the entrance.' />
           <Button type='submit' disabled={!models || !canRunRules || text.trim().length < 3 || busy}>
             {busy ? <Loader2 className='animate-spin' /> : <Compass />}
             Start
@@ -222,27 +274,38 @@ export function DemoGuide({
         </form>
         <VoiceNote disabled={!models} read={(audio) => api.voiceNoteOnClip(clip.id, audio)} onText={setText} />
         {!models && <NeedsKeys />}
-        {models && !run && !problem && clip.suggestions.length > 0 && (
-          <div className='flex flex-wrap items-center gap-1.5'>
-            {clip.suggestions.slice(0, 3).map((s) => (
-              <Button
-                key={s}
-                type='button'
-                size='sm'
-                variant='outline'
-                className='h-auto max-w-full shrink whitespace-normal py-1 text-left text-xs'
-                disabled={!canRunRules}
-                onClick={() => {
-                  setText(s);
-                  // Each of these belongs to this clip, so no other camera is offered.
-                  void start(s, { stay: true });
-                }}
-              >
-                {s}
-              </Button>
+        {models &&
+          !run &&
+          !problem &&
+          [
+            { label: 'Suggested rules', sentences: clip.suggestions.slice(0, 3) },
+            { label: 'Suggested questions', sentences: clip.suggestedQuestions.slice(0, 3) },
+          ]
+            .filter(({ sentences }) => sentences.length > 0)
+            .map(({ label, sentences }) => (
+              <div key={label} className='space-y-1.5'>
+                <p className='text-muted-foreground text-xs'>{label}</p>
+                <div className='flex flex-wrap items-center gap-1.5'>
+                  {sentences.map((s) => (
+                    <Button
+                      key={s}
+                      type='button'
+                      size='sm'
+                      variant='outline'
+                      className='h-auto max-w-full shrink whitespace-normal py-1 text-left text-xs'
+                      disabled={!canRunRules}
+                      onClick={() => {
+                        setText(s);
+                        // Each of these belongs to this clip, so no other camera is offered.
+                        void start(s, { stay: true });
+                      }}
+                    >
+                      {s}
+                    </Button>
+                  ))}
+                </div>
+              </div>
             ))}
-          </div>
-        )}
         {problem && <Notice tone='error'>{problem}</Notice>}
 
         {run?.stage === 'offer' && (
@@ -262,7 +325,7 @@ export function DemoGuide({
         {run?.stage === 'not-planned' && (
           <div className='space-y-2'>
             <Notice>
-              The guide could not plan this rule on this camera’s zones after {run.attempts} attempts. {run.problems.join(' ')}
+              Streamatic could not plan this rule on this camera’s zones after {run.attempts} attempts. {run.problems.join(' ')}
             </Notice>
             <Button
               variant='outline'
@@ -279,8 +342,22 @@ export function DemoGuide({
 
         {isSearch && finding && <SearchStages cameraName={cameraName} finding={finding} />}
 
+        {run?.stage === 'asking' && (
+          <ol className='space-y-1.5 text-sm' aria-label='What Streamatic is doing' aria-live='polite'>
+            <Stage state='now' title='Counting from what was detected on this clip' />
+          </ol>
+        )}
+        {run?.stage === 'detecting' && (
+          <ol className='space-y-1.5 text-sm' aria-label='What Streamatic is doing' aria-live='polite'>
+            <Stage state='now' title='Detecting people and objects on this clip'>
+              Streamatic does this once for each clip when the server starts. It usually takes about two minutes, and your answer follows.
+            </Stage>
+          </ol>
+        )}
+        {run?.stage === 'answered' && <AnswerCard answer={run.answer} onMoment={onMoment} />}
+
         {stageIndex >= 0 && (
-          <ol className='space-y-1.5 text-sm' aria-label='What the guide is doing' aria-live='polite'>
+          <ol className='space-y-1.5 text-sm' aria-label='What Streamatic is doing' aria-live='polite'>
             <Stage state={stageIndex > 0 ? 'done' : 'now'} title='Choosing the camera'>
               {stageIndex > 0 ? `Using ${cameraName}.` : null}
             </Stage>
@@ -307,7 +384,11 @@ export function DemoGuide({
             {stageIndex >= 3 && (
               <Stage state={reading && RULE_FINISHED.has(reading.status) ? (ready ? 'done' : 'stopped') : 'now'} title='Running the rule through Streamatic'>
                 {!reading || !RULE_FINISHED.has(reading.status) ? (
-                  `${runningLine(reading)}. You can keep watching the clip meanwhile.`
+                  <>
+                    <p>{runningLine(reading)}.</p>
+                    {alerts.length > 0 && <p>{alerts.length === 1 ? '1 alert found so far.' : `${alerts.length} alerts found so far.`}</p>}
+                    <p>Alerts appear on the timeline as they are found, and you can keep watching the clip meanwhile.</p>
+                  </>
                 ) : ready ? (
                   <>
                     <p>Reads as: {reading.readsAs ?? reading.name}</p>
@@ -340,21 +421,47 @@ export function DemoGuide({
           </ol>
         )}
 
-        {ready && ruleId && !isAdded && alertsFound.data && (
+        {ready && ruleId && !played && alertsFound.data && (
           <div className='border-primary/50 bg-primary/5 space-y-2 rounded-lg border p-3'>
             <p className='text-sm font-medium'>
               {alerts.length === 0 ? 'This rule is ready. It raised no alert on this clip.' : `This rule is ready. It raised ${alerts.length === 1 ? '1 alert' : `${alerts.length} alerts`} on this clip.`}
             </p>
             <p className='text-muted-foreground text-xs'>A new rule waits 5 minutes after an alert before it can alert again, as it would on a live camera.</p>
-            <Button size='sm' onClick={() => onAdd(ruleId, alerts[0] ?? null)}>
-              <Check />
-              {alerts.length === 0 ? 'Add the rule' : 'Add the rule and play the alert'}
-            </Button>
+            {alerts[0] && (
+              <Button
+                size='sm'
+                onClick={() => {
+                  setPlayed(true);
+                  onPlayAlert(alerts[0]!);
+                }}
+              >
+                <Play />
+                Play the first alert
+              </Button>
+            )}
           </div>
         )}
-        {isAdded && <Notice>The rule is on this clip. {alerts.length === 0 ? 'It raised no alert here.' : 'Playing from just before its first alert.'}</Notice>}
+        {played && <Notice>Playing from just before the rule’s first alert.</Notice>}
       </CardContent>
     </Card>
+  );
+}
+
+function AnswerCard({ answer, onMoment }: { answer: ClipAnswer; onMoment: (atMs: number) => void }) {
+  return (
+    <div className='space-y-2 rounded-lg border p-3' aria-live='polite'>
+      <p className='text-sm font-medium'>{answer.answer}</p>
+      {answer.moments.length > 0 && (
+        <div className='flex flex-wrap gap-1.5'>
+          {answer.moments.map((m) => (
+            <Button key={`${m.atMs}-${m.label}`} type='button' size='sm' variant='outline' className='h-auto py-1 text-xs' onClick={() => onMoment(m.atMs)}>
+              {m.label}, {moment(m.atMs / 1000)}
+            </Button>
+          ))}
+        </div>
+      )}
+      <p className='text-muted-foreground text-xs'>Counts are approximate. A tracker can lose someone, mix people up or count someone twice, and Streamatic can make mistakes, so please check anything important on the clip.</p>
+    </div>
   );
 }
 
@@ -364,7 +471,7 @@ function SearchStages({ cameraName, finding }: { cameraName: string; finding: Gu
   const found = finding.stage === 'select' || finding.stage === 'tracking' || finding.stage === 'done';
   const percent = finding.stage === 'tracking' && finding.framesTotal > 0 ? Math.round((finding.framesDone / finding.framesTotal) * 100) : 0;
   return (
-    <ol className='space-y-1.5 text-sm' aria-label='What the guide is doing' aria-live='polite'>
+    <ol className='space-y-1.5 text-sm' aria-label='What Streamatic is doing' aria-live='polite'>
       <Stage state='done' title='Choosing the camera'>{`Using ${cameraName}.`}</Stage>
       <Stage state={found ? 'done' : finding.stage === 'none' ? 'stopped' : 'now'} title={`Searching the clip for the ${item}`}>
         {finding.stage === 'none' && `The ${item} was not found on the ${finding.looks} frames searched. Pause where it appears, select Search this frame and draw a box around it.`}

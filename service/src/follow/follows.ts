@@ -34,6 +34,7 @@ export interface FollowModel {
 // Tried live with four in one request; the API sets the real limit.
 export const MOST_TRACKED_AT_ONCE = 4;
 const JOB_ID_JOIN = '+';
+export const trackIdsOf = (jobId: string) => jobId.split(JOB_ID_JOIN);
 
 interface Running {
   state: 'running' | 'failed';

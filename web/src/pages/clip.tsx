@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowRight, BellRing, CircleAlert, Crosshair, Eye, EyeOff, LoaderCircle, Pause, Play, Search, SkipForward, SquareDashed, X } from 'lucide-react';
 import { BoxDrawer, type DrawnBox } from '@/components/box-drawer';
@@ -18,15 +18,18 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { api, clipPictureUrl, clipVideoUrl, type Clip, type DemoAlert, type DemoClip, type DemoRule, type DemoZone, type Follow, type FollowJob, type Thing } from '@/lib/api';
 import { useAbilities } from '@/lib/abilities';
 import { cn } from '@/lib/cn';
+import { navigate } from '@/lib/router';
 import { RULE_FINISHED, rulesChosenInSetup, useRefreshRulesBeingAdded } from '@/lib/setup-progress';
 import { sentence } from '@/lib/time';
 
 const POLL_MS = 1_000;
+const ALERTS_WHILE_READING_MS = 1_500;
 const FOLLOW_COLOUR = '#e8c547';
 // Gold first, then colours that stay apart on a picture by day or on infrared; red is kept for alerts.
 const FOLLOW_COLOURS = [FOLLOW_COLOUR, '#34d399', '#f472b6', '#22d3ee', '#fb923c', '#a78bfa', '#a3e635', '#94a3b8'];
 const MOST_TRACKED_AT_ONCE = 4;
-const ALERT_COLOUR = '#ef4444';
+// One per selected rule, red first, so that one rule alone stays alert red. All hold up on the timeline in both themes and under white words on the banner.
+const ALERT_COLOURS = ['#ef4444', '#3b82f6', '#16a34a', '#c026d3', '#ea580c', '#8b5cf6', '#0d9488', '#64748b'];
 const RULE_ZONE_COLOUR = '#538ee7';
 // How long an alert stays over the picture once it has reached the person.
 const ALERT_BANNER_MS = 6_000;
@@ -36,6 +39,19 @@ const LEAD_IN_MS = 3_000;
 const LONGEST_PLAYED_STEP_MS = 2_000;
 const REFRESH_LINKED_MS = 15_000;
 const SMALLEST_BOX = 8;
+
+// A rule keeps its colour while it stays selected, whichever others come and go, so the eye need not learn them again.
+function ruleColourSlots(held: Map<string, number>, selected: string[]): Map<string, number> {
+  if (selected.length === 1) return new Map([[selected[0]!, 0]]);
+  const slots = new Map([...held].filter(([rule]) => selected.includes(rule)));
+  for (const rule of selected) {
+    if (slots.has(rule)) continue;
+    let free = 0;
+    while ([...slots.values()].includes(free)) free += 1;
+    slots.set(rule, free);
+  }
+  return slots;
+}
 
 function duration(seconds: number): string {
   const whole = Math.max(0, Math.round(seconds));
@@ -47,6 +63,12 @@ export function ClipPage({ id, isPublic = false, trackSeconds = null }: { id: st
   const follows = useQuery({ queryKey: ['follows', id], queryFn: () => api.follows(id) });
   const demo = useQuery({ queryKey: ['demo-clip', id], queryFn: () => api.demoClip(id), enabled: isPublic });
   const clip = clips.data?.find((c) => c.id === id);
+  // Everything on a clip waits on its camera being set up, and the person is brought back to what they were doing.
+  const [cameFor] = useState(() => location.pathname + location.search);
+  const needsSetup = isPublic && demo.data?.setUpLive === false;
+  useEffect(() => {
+    if (needsSetup) navigate(`/setup/${encodeURIComponent(id)}?next=${encodeURIComponent(cameFor)}`, { replace: true });
+  }, [needsSetup, id, cameFor]);
   // A sentence sent here by the page that chose this camera. It leaves the address at once, so reloading does not spend on it again.
   const [ask] = useState(() => new URLSearchParams(location.search).get('ask'));
   // An alert selected on the events page: its rule, and the moment to open at.
@@ -60,7 +82,7 @@ export function ClipPage({ id, isPublic = false, trackSeconds = null }: { id: st
     if (location.search) history.replaceState(null, '', location.pathname);
   }, []);
 
-  if (clips.isPending) return <Skeleton className='h-[32rem] rounded-xl' />;
+  if (clips.isPending || (isPublic && (demo.isPending || needsSetup))) return <Skeleton className='h-[32rem] rounded-xl' />;
   if (!clip) return <Notice tone='error'>This clip could not be found.</Notice>;
   return (
     <>
@@ -68,7 +90,7 @@ export function ClipPage({ id, isPublic = false, trackSeconds = null }: { id: st
         trail={[{ href: '/clips', label: isPublic ? 'Clips' : 'Search' }]}
         icon={<Search />}
         title={clip.name}
-        description={isPublic ? 'Describe a rule to the guide, or select one, and play the clip. Pause on any frame to search it.' : 'Pause on a frame where it appears, then search for it.'}
+        description={isPublic ? 'Describe a rule, or select one, and play the clip. Pause on any frame to search it.' : 'Pause on a frame where it appears, then search for it.'}
       />
       <ClipWatch key={clip.id} clip={clip} follows={follows.data ?? []} demo={demo.data ?? null} trackSeconds={trackSeconds} ask={ask} opened={opened} />
     </>
@@ -98,13 +120,28 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask, opened }: { clip: C
   const [language, setLanguage] = useState<AlertLanguage>('english');
   const [guideZones, setGuideZones] = useState<DemoZone[] | null>(null);
   const tickList = useMemo(() => Object.entries(ticks).map(([rule, armedMs]) => ({ rule, armedMs })), [ticks]);
+  const colourSlots = useRef(new Map<string, number>());
+  const colourOfRule = useMemo(() => {
+    const slots = ruleColourSlots(colourSlots.current, tickList.map((t) => t.rule));
+    colourSlots.current = slots;
+    return (rule: string) => ALERT_COLOURS[(slots.get(rule) ?? 0) % ALERT_COLOURS.length]!;
+  }, [tickList]);
+  // How much of the clip a new rule has read so far, while one is running.
+  const [readShare, setReadShare] = useState<number | null>(null);
   const alertsFound = useQuery({
     queryKey: ['demo-alerts', clip.id, tickList],
     queryFn: () => api.demoAlerts(clip.id, tickList),
     enabled: demo !== null && tickList.length > 0,
     placeholderData: (previous) => previous,
+    refetchInterval: readShare !== null ? ALERTS_WHILE_READING_MS : false,
   });
   const alerts = useMemo(() => (tickList.length > 0 ? (alertsFound.data?.alerts ?? []) : []), [tickList, alertsFound.data]);
+  // The rule's final alerts are in place once it stops reading.
+  const wasReading = useRef(false);
+  useEffect(() => {
+    if (wasReading.current && readShare === null) void queryClient.invalidateQueries({ queryKey: ['demo-alerts', clip.id] });
+    wasReading.current = readShare !== null;
+  }, [readShare, queryClient, clip.id]);
 
   useEffect(() => {
     if (!playing) return;
@@ -187,7 +224,10 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask, opened }: { clip: C
       const id = `${alert.rule}:${alert.key}`;
       if (alert.shownMs < from || alert.shownMs > nowMs || sentToTelegram.current.has(id)) continue;
       sentToTelegram.current.add(id);
-      api.sendAlertToTelegram(clip.id, alert.rule, alert.key).catch((error: Error) => setTelegramProblem(error.message));
+      api.sendAlertToTelegram(clip.id, alert.rule, alert.key).then(
+        () => setTelegramProblem(null),
+        (error: Error) => setTelegramProblem(error.message),
+      );
     }
   }, [nowMs, telegram.linked, playing, alerts, clip.id]);
   // A rule added from the chat joins this page's list.
@@ -228,7 +268,19 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask, opened }: { clip: C
           clip={demo}
           cameraName={clip.name}
           ask={ask}
-          added={(rule) => ticks[rule] !== undefined}
+          onRuleRunning={(rule) => setTicks((all) => ({ ...all, [rule]: 0 }))}
+          onRuleProgress={setReadShare}
+          onRuleDropped={(rule) =>
+            setTicks((all) => {
+              const { [rule]: _gone, ...rest } = all;
+              return rest;
+            })
+          }
+          onPlayAlert={(firstAlert) => {
+            seek(Math.max(0, firstAlert.atMs - LEAD_IN_MS) / 1000);
+            void video.current?.play();
+            playerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+          }}
           onShowZones={(zones) => {
             setGuideZones(zones);
             if (zones) playerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -237,9 +289,8 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask, opened }: { clip: C
           finding={finding}
           onFindItem={findItem}
           onStopFinding={stopChoosing}
-          onAdd={(rule, firstAlert) => {
-            setTicks((all) => ({ ...all, [rule]: 0 }));
-            seek(firstAlert ? Math.max(0, firstAlert.atMs - LEAD_IN_MS) / 1000 : 0);
+          onMoment={(atMs) => {
+            seek(Math.max(0, atMs - LEAD_IN_MS) / 1000);
             void video.current?.play();
             playerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
           }}
@@ -247,7 +298,7 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask, opened }: { clip: C
       )}
       <Card ref={pictureCardRef} className='min-w-0'>
         <CardContent className='space-y-4'>
-          <div ref={playerRef} className={cn('relative aspect-video overflow-hidden rounded-lg bg-black', choosingAt !== null && 'hidden', banner && 'ring-destructive ring-4')}>
+          <div ref={playerRef} className={cn('relative aspect-video overflow-hidden rounded-lg bg-black', choosingAt !== null && 'hidden', banner && 'ring-4')} style={banner ? ({ '--tw-ring-color': colourOfRule(banner.rule) } as CSSProperties) : undefined}>
             <video
               ref={video}
               src={clipVideoUrl(clip.id)}
@@ -264,7 +315,7 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask, opened }: { clip: C
             />
             {overlays.length > 0 && <Outlines width={clip.width} height={clip.height} paths={overlays} stroke={Math.max(2, clip.width / 360)} passThrough onPathClick={togglePlaying} />}
             {banner && (
-              <div role='status' className='bg-destructive absolute inset-x-3 top-3 flex items-start gap-2 rounded-md px-3 py-2 text-sm font-medium text-white shadow'>
+              <div role='status' className='absolute inset-x-3 top-3 flex items-start gap-2 rounded-md px-3 py-2 text-sm font-medium text-white shadow' style={{ background: colourOfRule(banner.rule) }}>
                 <BellRing className='mt-0.5 size-4 shrink-0' />
                 <span>{inLanguage(banner, language) ?? ruleLabel(rulesById.get(banner.rule))}</span>
               </div>
@@ -294,14 +345,26 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask, opened }: { clip: C
               <Timeline length={length * 1000} play={time * 1000} onSeek={(ms) => seek(ms / 1000)} label={(ms) => duration(ms / 1000)}>
                 {(at) => (
                   <>
+                    {readShare !== null && (
+                      <div
+                        className='bg-muted/60 relative h-1.5 overflow-hidden rounded-full'
+                        role='progressbar'
+                        aria-label='How much of the clip the new rule has read'
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={Math.round(readShare * 100)}
+                      >
+                        <span className='bg-primary absolute inset-y-0 left-0 rounded-full transition-[width] duration-500 motion-reduce:transition-none' style={{ width: `${readShare * 100}%` }} />
+                      </div>
+                    )}
                     {alerts.length > 0 && (
-                      <div className='relative h-4' role='img' aria-label={`${alerts.length} alerts on this clip`}>
+                      <div className='relative h-4' role='img' aria-label={`${alerts.length} ${alerts.length === 1 ? 'alert' : 'alerts'} on this clip`}>
                         {alerts.map((a) => (
                           <span
                             key={`${a.rule}-${a.key}`}
                             title={`${duration(a.atMs / 1000)}: ${ruleLabel(rulesById.get(a.rule))}`}
                             className='absolute top-1/2 size-2.5 -translate-x-1/2 -translate-y-1/2 rotate-45'
-                            style={{ left: `${at(a.atMs)}%`, background: ALERT_COLOUR, opacity: a.shownMs <= nowMs ? 1 : 0.5 }}
+                            style={{ left: `${at(a.atMs)}%`, background: colourOfRule(a.rule), opacity: a.shownMs <= nowMs ? 1 : 0.5 }}
                           />
                         ))}
                       </div>
@@ -363,6 +426,7 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask, opened }: { clip: C
             <RulesCard
               rules={demo.rules}
               ticks={ticks}
+              colourOf={colourOfRule}
               onToggle={(rule, on) =>
                 setTicks((all) => {
                   const { [rule.id]: _gone, ...rest } = all;
@@ -440,7 +504,7 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask, opened }: { clip: C
 
 const ruleLabel = (rule: DemoRule | undefined) => (!rule ? 'Alert' : rule.kind === 'typed' ? rule.text : rule.name);
 
-function RulesCard({ rules, ticks, onToggle }: { rules: DemoRule[]; ticks: Record<string, number>; onToggle: (rule: DemoRule, on: boolean) => void }) {
+function RulesCard({ rules, ticks, colourOf, onToggle }: { rules: DemoRule[]; ticks: Record<string, number>; colourOf: (rule: string) => string; onToggle: (rule: DemoRule, on: boolean) => void }) {
   const usable = rules.filter((r) => r.status === 'ready');
   const notReady = rules.filter((r) => r.status !== 'ready');
   return (
@@ -457,6 +521,7 @@ function RulesCard({ rules, ticks, onToggle }: { rules: DemoRule[]; ticks: Recor
             <li key={rule.id}>
               <label className='hover:bg-accent flex cursor-pointer items-start gap-2.5 rounded-lg border p-3 text-sm transition-colors'>
                 <input type='checkbox' className='accent-primary mt-0.5 size-4' checked={ticks[rule.id] !== undefined} onChange={(e) => onToggle(rule, e.target.checked)} />
+                {ticks[rule.id] !== undefined && <span className='mt-1 size-2.5 shrink-0 rotate-45' style={{ background: colourOf(rule.id) }} aria-hidden />}
                 <span className='min-w-0'>
                   <span className='font-medium'>{rule.kind === 'typed' ? rule.text : rule.name}</span>
                   {rule.kind === 'typed' && <span className='text-muted-foreground block text-xs'>Your rule. It runs from the start of the clip.</span>}

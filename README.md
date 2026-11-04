@@ -21,7 +21,7 @@ sentence, check the camera can answer it, and ask the vision model on the camera
   (gate, wall, car, keke, person), by day and at night. Muse Spark picks what matters for that site and
   suggests the rules worth having, keeping SAM's own names so every rule is written in words SAM answers to.
 - **Zones you can change.** On the demo page, setup lists what is in view as one set of zones, each of which you can rename or delete. The page is shared, so this applies
-  only to what you see: the player, the guide's plan, routing to a camera and the linked chat all use your zones, and Reset returns them. A rule already using a deleted zone
+  only to what you see: the player, the plan for a rule, routing to a camera and the linked chat all use your zones, and Reset returns them. A rule already using a deleted zone
   keeps watching that place, since its sentence holds the place.
 - **What it found at night.** Setup reports, zone by zone, which of the day, dusk and night pictures found it. A zone the night
   picture missed is marked uncertain at night, and what was seen but could not be outlined is named. This is code over setup's
@@ -32,23 +32,29 @@ sentence, check the camera can answer it, and ask the vision model on the camera
   the alert, and is not asked whether the rule holds.
 - **One zone across day, dusk and night.** Each zone is matched across a camera's pictures by its place, and one that was not
   found on the night picture is marked as uncertain at night.
-- **A guide that finds an item from one sentence.** Say "Track the bag" and Muse Spark Open decides this is a search rather than a rule, in the
+- **Finding an item from one sentence.** Say "Track the bag" and Muse Spark Open decides this is a search rather than a rule, in the
   same call that would plan a rule, and gives up to three names for the item. Code then looks on the paused frame, and if the item is not there,
   every 30 seconds through the clip, nearest first, because SAM can miss a word on one frame and find it on the next. An item found on another frame
   is asked for again on the paused frame by its box, so the track runs around the moment you stopped at. One outline is tracked by itself; several
   wait on the picture for you to select one or more; the clip then plays from where the item comes into view.
-- **A guide that finishes the rule from one sentence.** Say what you want watched, on the home page or on one camera.
-  On the home page, code finds the camera whose setup outlined the most of what you asked about and the guide carries on there;
+- **Add a rule: finishing the rule from one sentence.** Say what you want watched, on the home page or on one camera.
+  On the home page, code finds the camera whose setup outlined the most of what you asked about and the page carries on there;
   when several outlined it, you choose. On one camera the rule stays on that camera, unless another camera at the same place
-  outlined more of it: the guide then offers that camera, with the thing outlined, beside "Stay on this camera". Code decides
-  this over the zones, not the model. The guide then runs by itself: Muse Spark Open drafts the plan, code checks it against
-  the camera's zones and hours, the zones appear on the player, and the rule runs through Streamatic. Code ticks each stage when
-  the page shows it done; the model never does. You are asked once, to add the finished rule, with how Streamatic read it and how
-  many alerts it raised, and the clip plays from just before the first. The plan also names what the alert is for, in your own
+  outlined more of it: the page then offers that camera, with the thing outlined, beside "Stay on this camera". Code decides
+  this over the zones, not the model. The rest then runs by itself: Muse Spark Open
+  drafts the plan, code checks it against the camera's zones and hours, the zones appear on the player, and the rule runs through
+  Streamatic. Code ticks each stage when the page shows it done; the model never does. A bar on the timeline shows how much of the
+  clip has been read, each alert appears as it is found, and the finished rule shows how Streamatic read it and how many alerts it
+  raised, with a button to play the first. The plan also names what the alert is for, in your own
   words, and code refuses a zone the rule is not about: "a keke parked by the gate" gets a box over the gate, not the gate's
   outline. A refused plan goes back to Muse Spark Open with what was wrong, up to three times, and then to you. The sentence can
   also be a voice note in English, recorded on the page: Muse Voice Transcribe writes it out, listening for the words setup
   outlined, and you read it before anything is planned.
+- **Questions about a clip.** Ask "How many people went through the front door?" in the same box. Muse Spark Open sees that this is a
+  question, chooses what to count and writes the answer, and code replaces the answer if its numbers are not the counts, or declines
+  if the counts do not fit. The counts come from a detector and tracker that are not Meta's: RF-DETR and ByteTrack go over each clip
+  once, on Modal, when the server starts, and the result is held in memory. A question takes seconds and uses your own zones. Counts
+  are approximate, since a tracker can lose someone, mix people up or count someone twice.
 - **Alerts in the resident's language.** Muse Spark Open says what a rule's alert means in Nigerian Pidgin and in Yoruba, from
   the rule alone, with a choice of language on the alert. It is written once per rule and kept, so playing a clip calls no model.
 - **Search that goes past words.** Pause a clip and search for anything: a word, a box drawn around it, or one of
@@ -62,12 +68,15 @@ sentence, check the camera can answer it, and ask the vision model on the camera
 - **Suggestions tested on the clip.** Each suggested sentence was run three times through the page's own path and raised a real alert each time. No
   result is kept: selecting a suggestion runs it live, with one click.
 - **A demo engine anyone can open.** Recorded clips with the alerts Streamatic's rules raised on them, rules to select, each
-  alert shown 3 seconds after its moment, a Setup page where you take each camera through its saved setup and add the rules you select to its clip, and the guide.
+  alert shown 3 seconds after its moment, a Setup page that sets up each camera live and adds the rules you select to its clip, and Add a rule.
   Clips and rules are kept in the page's own database and its videos are served from there, so playing a clip calls no
   model. A picture you upload goes through the same setup, and nothing is kept. Spending is limited per visitor and per day.
-- **Alerts on Telegram.** On a clip, "Send alerts to Telegram" links a chat to the page, and each alert of a ticked rule arrives there
-  as the clip plays through it, with its picture, in the language chosen. A voice note in English or a sentence sent in the chat becomes a rule
-  on that clip: Muse Voice Transcribe writes it out, the guide's checked plan is read back, and after Confirm the rule's alerts come
+  Each visitor starts at Setup: the rest of the page opens once they have set up a camera, and a clip, its alerts, its place in Events and its
+  searches wait until its own camera is set up. Reset in the top bar returns all of it to the start. Tracks are listed per visitor, and their
+  results are cached so that a repeat costs nothing.
+- **Alerts on Telegram.** On a clip, "Send alerts to Telegram" links a chat to the page, for every clip, and each alert of a ticked rule arrives there
+  as its clip plays through it, with its picture, in the language chosen. If the picture cannot be sent, the alert still arrives as words. A voice note in English or a sentence sent in the chat becomes a rule
+  on the clip last opened: Muse Voice Transcribe writes it out, the checked plan is read back, and after Confirm the rule's alerts come
   back to the chat. A person is told apart by Telegram's own number for them, and the page's daily limits apply to it.
 
 ## Meta models used
@@ -75,13 +84,17 @@ sentence, check the camera can answer it, and ask the vision model on the camera
 | Model | Where | Used for |
 |---|---|---|
 | SAM 3.1 | Meta Model API | Outlining the scene at setup and on each alert's pictures, tracking a selected object through video |
-| Muse Voice Transcribe | Meta Model API | Writing out a voice note as the sentence the guide plans from |
-| Muse Spark Open | Baseten | Listing what a camera sees, suggesting rules, deciding whether a sentence is a rule or a search, drafting the guide's plan, choosing the picture an alert carries, writing an alert in Pidgin and Yoruba, naming what can be tracked in a clip |
+| Muse Voice Transcribe | Meta Model API | Writing out a voice note as the sentence a rule is planned from |
+| Muse Spark Open | Baseten | Listing what a camera sees, suggesting rules, deciding whether a sentence is a rule, a search or a question, drafting the plan for a rule, choosing what to count for a question and writing the answer, choosing the picture an alert carries, writing an alert in Pidgin and Yoruba, naming what can be tracked in a clip |
+
+The detector and tracker behind questions are not Meta's: RF-DETR (Apache 2.0) and ByteTrack (MIT), run on Modal. They only count for questions and never decide an alert.
 
 ## Why the demo uses recorded clips
 
 This page uses recorded clips. The cameras Streamatic has deployed are on private property, so for reasons of permission and privacy they appear only in
 the submission video.
+
+Only the clips and their first rules are recorded. Setup, a new rule and a question run live, and detection runs when the server starts.
 
 ## Running it
 
@@ -93,14 +106,20 @@ cd web && npm ci && npm run build
 cd ../service && npm ci && npm run demo
 ```
 
-Then open http://127.0.0.1:8787. With nothing else set, the clips, rules, alerts and the searches already kept all work,
+Then open http://127.0.0.1:8787. With nothing else set, setup uses the result saved with this copy, the clips, rules and alerts all work,
 and no model is called. What needs more:
 
 | To use | Add |
 |---|---|
-| Searching and tracking anything new, the guide's plan, a voice note, your own picture | `META_MODEL_API_KEY` (Meta Model API) and `BASETEN_API_KEY` (Baseten) in `.env` at the repository root |
+| Searching and tracking anything new, planning a rule, a voice note, your own picture | `META_MODEL_API_KEY` (Meta Model API) and `BASETEN_API_KEY` (Baseten) in `.env` at the repository root |
 | Reading a new rule over a clip | Streamatic's backend, which is not public; this works on the hosted page |
 | Alerts on Telegram | `DEMO_TELEGRAM_TOKEN` in `.env`: a bot of your own, from Telegram's BotFather |
+| Questions about a clip | A detector of your own on Modal, as below, with its address and secret in `.env` as `DETECT_URL` and `DETECT_SECRET`. Each clip is then detected once each time the server starts, on your Modal account |
+
+```
+modal secret create streamatic-detect DETECT_SECRET=<a long random value>
+modal deploy service/modal/detect.py
+```
 
 `npm test` in `service/` runs the tests, with no keys and no network. `web/` is the app (React and Tailwind); `service/` is
 the API, the camera setup, the tracking and the copy of Streamatic's alerts.
@@ -123,7 +142,7 @@ hackathon's credit terms, which allow Meta to use them for product improvement; 
 ## Credits
 
 The clips and pictures in `demo-data/`: MEVA dataset by Kitware Inc. and IARPA,
-[CC BY 4.0](https://mevadata.org/resources/MEVA-data-license.txt), resized and re-encoded. Kitware and IARPA do not endorse this work.
+[CC BY 4.0](https://mevadata.org/resources/MEVA-data-license.txt), resized and re-encoded. This work is not affiliated with Kitware or IARPA.
 
 ## Licence
 

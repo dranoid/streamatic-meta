@@ -1,1 +1,1 @@
-{"name":"Waiting room","site":"a waiting room","baseWords":["bench","door"],"pictures":{"clip":"still.jpg"},"group":"meva","tested":["Tell me when someone walks across the room."]}
+{"name":"Waiting room","site":"a waiting room","baseWords":["bench","door"],"pictures":{"clip":"still.jpg"},"group":"meva","tested":["Tell me when someone uses the ATM.","Tell me when someone is sitting on a bench."],"questions":["What was the most people in the room at once?"]}

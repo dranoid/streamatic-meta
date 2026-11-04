@@ -8,6 +8,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { CameraFolder } from '../src/cameras/camera-folder.js';
 import { alertShownMs, DemoEngine, showing, type DemoEngineBackend } from '../src/demo/engine.js';
 import { DemoLimits } from '../src/demo/limits.js';
+import type { ToolAsker } from '../src/demo/clip-questions.js';
+import type { ClipDetection } from '../src/demo/clip-detection.js';
+import type { ClipDetections } from '../src/demo/detections.js';
 import { demoHandler, publicOnly, NEEDS_KEYS } from '../src/demo/routes.js';
 import { DemoStore } from '../src/demo/store.js';
 import { TelegramLinks } from '../src/telegram/links.js';
@@ -29,6 +32,7 @@ function fakeBackend() {
   const typed: string[] = [];
   const asked: Array<{ scenario: string; rules: unknown[] }> = [];
   let draftStatus = 'asking';
+  let readThrough = 2;
   const backend: DemoEngineBackend = {
     demoScenario: async (id) => ({
       id,
@@ -50,6 +54,20 @@ function fakeBackend() {
         alerts: rules.flatMap((rule) => {
           if ('ruleId' in rule && Date.parse(rule.armedAt) - FROM > 45_000) return [];
           return [
+            ...('soFar' in rule
+              ? [
+                  {
+                    key: 'key-so-far',
+                    draftRuleId: rule.draftRuleId,
+                    triggeredAt: iso(FROM + 10_000),
+                    shownAt: iso(FROM + 10_000),
+                    delayMs: 0,
+                    message: 'Only while reading.',
+                    severity: 'medium',
+                    evidenceFrame: { url: SIGNED, caption: 'a door' },
+                  },
+                ]
+              : []),
             {
               key: 'key-1',
               ...('ruleId' in rule ? { ruleId: rule.ruleId } : { draftRuleId: rule.draftRuleId }),
@@ -69,12 +87,12 @@ function fakeBackend() {
       id: draft,
       text: 't',
       status: draftStatus,
-      progress: { done: 2, total: 4 },
+      progress: { done: 2, total: 4, readThrough },
       rule: { name: 'Door', readsAs: 'Tell me if a door opens.' },
       refusal: draftStatus === 'refused' ? { rewrites: ['Tell me when someone opens a door.'], reason: 'Two things in order.' } : null,
     }),
   };
-  return { backend, typed, asked, setDraft: (status: string) => (draftStatus = status) };
+  return { backend, typed, asked, setDraft: (status: string) => (draftStatus = status), setReadThrough: (tars: number) => (readThrough = tars) };
 }
 
 const voiceKeywordsAsked: string[][] = [];
@@ -85,15 +103,23 @@ const planner = (over: Partial<GuidePlan> = {}): GuidePlanner => ({
   draft: async ({ sentence }) => ({ sentence, about: 'door', zones: ['door'], box: null, hours: null, ...over }),
 });
 
-async function start({ telegram = false, ceilingMicroUsd = 5_000_000, setUp = async () => SETUP, guide = planner(), setup = SETUP, abilities, heard = 'Tell me when someone opens the door.', writesCaptions = true, captionsFail = false }: { telegram?: boolean; writesCaptions?: boolean; captionsFail?: boolean;  ceilingMicroUsd?: number; setUp?: (bytes: Uint8Array) => Promise<unknown>; guide?: GuidePlanner; setup?: unknown; abilities?: { models: boolean; rules: boolean }; heard?: string } = {}) {
+const FOUND_NOW = {
+  zones: [{ name: 'gate', item: 'gate', seenAt: ['clip'], outlines: { clip: [{ word: 'gate', objectId: '1', box: { left: 10, top: 10, right: 200, bottom: 300 }, path: 'M10 10 Z' }] } }],
+  notOutlined: [],
+  rules: [{ sentence: 'Tell me when the gate is left open.', zones: ['gate'] }],
+};
+
+async function start({ asker, detection = null, telegram = false, ceilingMicroUsd = 5_000_000, setUp = async () => SETUP, setUpNow = async () => FOUND_NOW as never, guide = planner(), setup = SETUP, abilities, heard = 'Tell me when someone opens the door.', writesCaptions = true, captionsFail = false }: { asker?: ToolAsker; detection?: Pick<ClipDetection, 'state' | 'found' | 'ensure'> | null; telegram?: boolean; writesCaptions?: boolean; captionsFail?: boolean;  ceilingMicroUsd?: number; setUp?: (bytes: Uint8Array) => Promise<unknown>; setUpNow?: (camera: { id: string }, pictures: Array<{ label: string }>) => Promise<never>; guide?: GuidePlanner; setup?: unknown; abilities?: { models: boolean; rules: boolean }; heard?: string } = {}) {
   const fake = fakeBackend();
   const root = await mkdtemp(join(tmpdir(), 'demo-'));
   await mkdir(join(root, 'cameras', CLIP), { recursive: true });
+  await writeFile(join(root, 'cameras', CLIP, 'still.jpg'), new Uint8Array([0xff, 0xd8, 0xff]));
   await writeFile(join(root, 'cameras', CLIP, 'camera.json'), JSON.stringify({ name: 'Building entrance', site: 'a building', baseWords: [], pictures: { clip: 'still.jpg' } }));
   await writeFile(join(root, 'cameras', CLIP, 'setup.json'), JSON.stringify(setup));
   const store = new DemoStore(join(root, 'demo.db'));
   const written: Array<{ rule: string; language: string }> = [];
   let failing = captionsFail;
+  let picturesFetched = 0;
   const engine = new DemoEngine({
     store,
     backend: fake.backend,
@@ -107,11 +133,15 @@ async function start({ telegram = false, ceilingMicroUsd = 5_000_000, setUp = as
           },
         }
       : {}),
-    fetch: (async () => new Response(new Uint8Array([0xff, 0xd8, 0xff]), { status: 200 })) as unknown as typeof fetch,
+    fetch: (async () => ((picturesFetched += 1), new Response(new Uint8Array([0xff, 0xd8, 0xff]), { status: 200 }))) as unknown as typeof fetch,
   });
   await engine.copyClip({ id: CLIP, scenario: SCENARIO });
   const links = new TelegramLinks(':memory:');
   const delivered: Array<{ to: number; text: string }> = [];
+  let telegramReachable = true;
+  const unlessTelegramIsUnreachable = () => {
+    if (!telegramReachable) throw new TypeError('fetch failed');
+  };
   const clip = { id: CLIP, name: 'Building entrance', width: 1280, height: 720, fps: 10, frames: 600, video: join(root, 'clip.mp4') };
   const handle = demoHandler({
     engine,
@@ -120,7 +150,10 @@ async function start({ telegram = false, ceilingMicroUsd = 5_000_000, setUp = as
     clips: { get: async (id) => (id === CLIP ? clip : null) },
     cameras: new CameraFolder(root),
     guidePlanner: guide,
+    asker: asker ?? { withTools: async (_instruction, _tools, run) => (await run('count_in_view', { kind: 'person' }), 'About 1 person.') },
     setUp,
+    setUpNow,
+    detection,
     voiceNotes: { read: async (request, keywords, beforeAsking) => { for await (const _ of request) void _; await beforeAsking?.(); voiceKeywordsAsked.push(keywords); return { status: 200, body: { text: heard } }; } },
     folder: root,
     trackSeconds: 30,
@@ -131,8 +164,14 @@ async function start({ telegram = false, ceilingMicroUsd = 5_000_000, setUp = as
             links,
             botName: 'streamatic_demo_bot',
             chat: {
-              sendText: async (to: number, text: string) => void delivered.push({ to, text }),
-              sendPicture: async (to: number, _picture: Uint8Array, text: string) => void delivered.push({ to, text }),
+              sendText: async (to: number, text: string) => {
+                unlessTelegramIsUnreachable();
+                delivered.push({ to, text });
+              },
+              sendPicture: async (to: number, _picture: Uint8Array, text: string) => {
+                unlessTelegramIsUnreachable();
+                delivered.push({ to, text });
+              },
             },
           },
         }
@@ -150,7 +189,7 @@ async function start({ telegram = false, ceilingMicroUsd = 5_000_000, setUp = as
     const text = await res.text();
     return { status: res.status, text, body: text ? (JSON.parse(text) as any) : null };
   };
-  return { base, visitor, engine, root, links, delivered, written, failCaptions: (to: boolean) => (failing = to), ...fake };
+  return { base, visitor, engine, store, root, links, delivered, written, pictures: () => picturesFetched, failCaptions: (to: boolean) => (failing = to), cutOffTelegram: () => (telegramReachable = false), ...fake };
 }
 
 describe('the demo engine', () => {
@@ -190,6 +229,7 @@ describe('the demo engine', () => {
       zones: [{ name: 'door', item: 'door', seenAt: ['clip'], paths: ['M960 100 Z'], pathsBy: { clip: ['M960 100 Z'] } }],
       rules: ['Tell me when the door opens.'],
       edited: false,
+      live: false,
     });
     const still = await fetch(`${base}/demo-still/${CLIP}`);
     expect(still.status).toBe(200);
@@ -243,6 +283,8 @@ describe('routing a sentence to a camera', () => {
   it('names the cameras that outlined what was asked about, says which hold a clip, and spends nothing', async () => {
     const { visitor, root } = await start({ abilities: { models: false, rules: false } });
     await addCamera(root, 'road', null, 'shop');
+    await visitor('v1')(`/api/demo/clips/${CLIP}/setup`, {});
+    await visitor('v1')('/api/demo/clips/road/setup', {});
     const { status, body } = await visitor('v1')('/api/demo/route', { sentence: 'Tell me when someone is at the shop.' });
     expect(status).toBe(200);
     expect(body.cameras).toEqual([{ camera: 'road', name: 'road camera', zones: ['shop'], matched: 1, hasClip: false, picture: '/demo-still/road', paths: ['M1 1Z'] }]);
@@ -251,11 +293,23 @@ describe('routing a sentence to a camera', () => {
     expect((await visitor('v1')('/api/demo/route', { sentence: 'Tell me when it rains.' })).body.cameras).toEqual([]);
   });
 
+  it('chooses only among the cameras this visitor has set up', async () => {
+    const { visitor, root } = await start({ abilities: { models: false, rules: false } });
+    await addCamera(root, 'road', null, 'shop');
+    await visitor('v1')(`/api/demo/clips/${CLIP}/setup`, {});
+    expect((await visitor('v1')('/api/demo/route', { sentence: 'Tell me when someone is at the shop.' })).body.cameras).toEqual([]);
+    expect((await visitor('v1')('/api/demo/route', { sentence: 'Tell me when the door opens.' })).body.cameras).toMatchObject([{ camera: CLIP }]);
+    expect((await visitor('v2')('/api/demo/route', { sentence: 'Tell me when the door opens.' })).body.cameras).toEqual([]);
+  });
+
   it('offers another camera at the same place from a clip, and only when it outlined more', async () => {
-    const { visitor, root } = await start({ setup: SETUP });
+    const { visitor, root } = await start({ setup: SETUP, abilities: { models: false, rules: false } });
     await writeFile(join(root, 'cameras', CLIP, 'camera.json'), JSON.stringify({ name: 'Building entrance', site: 'a building', baseWords: [], pictures: { clip: 'still.jpg' }, group: 'site' }));
     await addCamera(root, 'road', 'site', 'shop');
     await addCamera(root, 'far', 'other', 'shop');
+    expect((await visitor('v1')(`/api/demo/clips/${CLIP}/route`, { sentence: 'Someone is at the shop.' })).body.elsewhere).toEqual([]);
+    await visitor('v1')('/api/demo/clips/road/setup', {});
+    await visitor('v1')('/api/demo/clips/far/setup', {});
     const offered = await visitor('v1')(`/api/demo/clips/${CLIP}/route`, { sentence: 'Someone is at the shop.' });
     expect(offered.body.elsewhere).toMatchObject([{ camera: 'road', zones: ['shop'], hasClip: false, picture: '/demo-still/road' }]);
     expect((await visitor('v1')(`/api/demo/clips/${CLIP}/route`, { sentence: 'The door opens.' })).body.elsewhere).toEqual([]);
@@ -267,8 +321,8 @@ describe('routing a sentence to a camera', () => {
     await writeFile(join(root, 'cameras', 'road', 'night.jpg'), new Uint8Array([0xff, 0xd8, 0xfe]));
     const { body } = await visitor('v1')('/api/demo/cameras');
     expect(body).toEqual([
-      { id: CLIP, name: 'Building entrance', hasClip: true, picture: `/demo-still/${CLIP}` },
-      { id: 'road', name: 'road camera', hasClip: false, picture: '/demo-still/road' },
+      { id: CLIP, name: 'Building entrance', hasClip: true, picture: `/demo-still/${CLIP}`, setUp: false },
+      { id: 'road', name: 'road camera', hasClip: false, picture: '/demo-still/road', setUp: false },
     ]);
     const setup = (await visitor('v1')('/api/demo/clips/road/setup')).body;
     expect(setup).toMatchObject({
@@ -293,8 +347,16 @@ describe('routing a sentence to a camera', () => {
 });
 
 describe('the events page', () => {
+  it('lists nothing from a camera this visitor has not set up', async () => {
+    const { visitor } = await start();
+    await visitor('v1')(`/api/demo/clips/${CLIP}/setup`, {});
+    expect((await visitor('v1')('/api/demo/events')).body.events).toHaveLength(1);
+    expect((await visitor('v2')('/api/demo/events')).body.events).toEqual([]);
+  });
+
   it('lists every alert the clips’ rules raised from the start of each clip, with its clip, rule, moment and picture', async () => {
     const { visitor } = await start();
+    await visitor('v1')(`/api/demo/clips/${CLIP}/setup`, {});
     const { body } = await visitor('v1')('/api/demo/events');
     expect(body.events).toMatchObject([{ clip: CLIP, camera: 'Building entrance', rule: 'rule-1', yours: false, key: 'key-1', atMs: 42_000, picture: `/demo-evidence/${CLIP}/key-1.jpg` }]);
     expect(typeof body.events[0].ruleName).toBe('string');
@@ -303,6 +365,7 @@ describe('the events page', () => {
   it('adds a visitor’s own rule once it is ready, and never shows it to anyone else', async () => {
     const { visitor, setDraft } = await start();
     const mine = visitor('v1');
+    await mine(`/api/demo/clips/${CLIP}/setup`, {});
     const { body: created } = await mine(`/api/demo/clips/${CLIP}/rules`, { text: 'Tell me when a door opens.' });
     expect((await mine('/api/demo/events')).body.events.filter((e: any) => e.yours)).toEqual([]);
     setDraft('ready');
@@ -331,6 +394,26 @@ describe('sentences offered to a visitor', () => {
     expect((await ask(`/api/demo/clips/${CLIP}/setup`)).body.rules).toEqual(['Tell me when the door opens.']);
     expect((await ask('/api/demo/clips')).body[0].suggestions).toEqual([]);
   });
+
+  it('says whether this visitor has set up each clip', async () => {
+    const { visitor } = await start();
+    await visitor('v1')(`/api/demo/clips/${CLIP}/setup`, {});
+    expect((await visitor('v1')('/api/demo/clips')).body[0].setUp).toBe(true);
+    expect((await visitor('v2')('/api/demo/clips')).body[0].setUp).toBe(false);
+  });
+
+  it('offers the camera’s tested questions only where a detector can answer them', async () => {
+    const asked = { questions: ['How many people were in view at once?'] };
+    const withDetector = await start({ detection: { state: () => 'running', found: () => null, ensure: () => undefined } });
+    const file = join(withDetector.root, 'cameras', CLIP, 'camera.json');
+    await writeFile(file, JSON.stringify({ ...JSON.parse(await readFile(file, 'utf8')), ...asked }));
+    expect((await withDetector.visitor('v1')(`/api/demo/clips/${CLIP}`)).body.suggestedQuestions).toEqual(asked.questions);
+
+    const without = await start();
+    const itsFile = join(without.root, 'cameras', CLIP, 'camera.json');
+    await writeFile(itsFile, JSON.stringify({ ...JSON.parse(await readFile(itsFile, 'utf8')), ...asked }));
+    expect((await without.visitor('v1')(`/api/demo/clips/${CLIP}`)).body.suggestedQuestions).toEqual([]);
+  });
 });
 
 describe('a typed rule', () => {
@@ -358,6 +441,58 @@ describe('a typed rule', () => {
     expect((await theirs(rule)).status).toBe(404);
     expect((await theirs(`/api/demo/clips/${CLIP}/alerts`, { ticks: [{ rule: created.body.id, armedMs: 0 }] })).body.alerts).toEqual([]);
     expect((await theirs(`/api/demo/clips/${CLIP}`)).body.rules.map((r: any) => r.id)).not.toContain(created.body.id);
+  });
+
+  it('shows its alerts as the clip is read, replaces them with the final ones, and fetches each picture once', async () => {
+    const { visitor, setDraft, setReadThrough, asked, pictures } = await start();
+    const mine = visitor('v1');
+    setReadThrough(0);
+    const created = await mine(`/api/demo/clips/${CLIP}/rules`, { text: 'Tell me when a door opens.' });
+    const rule = `/api/demo/clips/${CLIP}/rules/${created.body.id}`;
+    const shown = async () => (await mine(`/api/demo/clips/${CLIP}/alerts`, { ticks: [{ rule: created.body.id, armedMs: 0 }] })).body.alerts.map((a: any) => a.atMs);
+    const asks = () => asked.flatMap((a) => a.rules).filter((r: any) => r.draftRuleId === created.body.id);
+
+    expect((await mine(rule)).body).toMatchObject({ status: 'asking', progress: { done: 0, total: 4 } });
+    expect(asks()).toEqual([]);
+    expect(await shown()).toEqual([]);
+
+    const fetchedBefore = pictures();
+    setReadThrough(2);
+    expect((await mine(rule)).body).toMatchObject({ status: 'asking', progress: { done: 2, total: 4 } });
+    expect(asks()).toEqual([{ draftRuleId: created.body.id, soFar: true }]);
+    expect(await shown()).toEqual([10_000, 42_000]);
+    const fetched = pictures();
+    expect(fetched).toBe(fetchedBefore + 2);
+
+    // Nothing more has been read, so there is nothing to ask again.
+    await mine(rule);
+    expect(asks()).toHaveLength(1);
+
+    setReadThrough(3);
+    await mine(rule);
+    expect(asks()).toHaveLength(2);
+    expect(pictures()).toBe(fetched);
+
+    setReadThrough(4);
+    setDraft('ready');
+    expect((await mine(rule)).body).toMatchObject({ status: 'ready', progress: { done: 4, total: 4 } });
+    expect(asks().at(-1)).toEqual({ draftRuleId: created.body.id });
+    expect(await shown()).toEqual([42_000]);
+  });
+
+  it('keeps reading when the alerts so far could not be fetched', async () => {
+    const { visitor, setReadThrough, backend } = await start();
+    const mine = visitor('v1');
+    setReadThrough(0);
+    const created = await mine(`/api/demo/clips/${CLIP}/rules`, { text: 'Tell me when a door opens.' });
+    const rule = `/api/demo/clips/${CLIP}/rules/${created.body.id}`;
+    const schedule = backend.demoSchedule;
+    backend.demoSchedule = async () => {
+      throw new Error('The backend could not be reached');
+    };
+    setReadThrough(1);
+    expect(await mine(rule)).toMatchObject({ status: 200, body: { status: 'asking', progress: { done: 1, total: 4 } } });
+    backend.demoSchedule = schedule;
   });
 
   it('removes a rule for the visitor who added it, with its alerts, and for nobody else', async () => {
@@ -544,7 +679,40 @@ describe('a voice note on a clip', () => {
   });
 });
 
+describe('starting again', () => {
+  it('returns every camera to not set up and removes this visitor’s zone changes, rules and tracks, and nobody else’s', async () => {
+    const { visitor, base, store } = await start();
+    const mine = visitor('v1');
+    for (const who of [mine, visitor('v2')]) await who(`/api/demo/clips/${CLIP}/setup`, {});
+    await fetch(`${base}/api/demo/clips/${CLIP}/zones/gate`, { method: 'PUT', headers: { cookie: 'streamatic_demo=v1', 'content-type': 'application/json' }, body: JSON.stringify({ name: 'front gate' }) });
+    const { body: created } = await mine(`/api/demo/clips/${CLIP}/rules`, { text: 'Tell me when a door opens.' });
+    const { body: theirs } = await visitor('v2')(`/api/demo/clips/${CLIP}/rules`, { text: 'Tell me when a door shuts.' });
+    store.addTrack('v1', CLIP, 'track-1');
+    store.addTrack('v2', CLIP, 'track-2');
+
+    expect((await mine('/api/demo/reset', {})).status).toBe(200);
+
+    expect((await mine(`/api/demo/clips/${CLIP}`)).body).toMatchObject({ setUpLive: false });
+    expect((await mine(`/api/demo/clips/${CLIP}`)).body.rules.map((r: any) => r.id)).not.toContain(created.id);
+    expect((await mine(`/api/demo/clips/${CLIP}/setup`)).body.edited).toBe(false);
+    expect(store.tracks('v1', CLIP)).toEqual([]);
+    expect((await visitor('v2')(`/api/demo/clips/${CLIP}`)).body.setUpLive).toBe(true);
+    expect((await visitor('v2')(`/api/demo/clips/${CLIP}`)).body.rules.map((r: any) => r.id)).toContain(theirs.id);
+    expect(store.tracks('v2', CLIP)).toEqual(['track-2']);
+  });
+});
+
 describe('a copy of the page with no keys and no login', () => {
+  it('sets a camera up from the setup saved with this copy, spending nothing', async () => {
+    let asked = 0;
+    const { visitor } = await start({ abilities: { models: false, rules: false }, setUpNow: async () => ((asked += 1), FOUND_NOW as never) });
+    const { status, body } = await visitor('v1')(`/api/demo/clips/${CLIP}/setup`, {});
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ live: true, zones: [{ name: 'door' }] });
+    expect(asked).toBe(0);
+    expect((await visitor('v1')(`/api/demo/clips/${CLIP}`)).body.setUpLive).toBe(true);
+  });
+
   it('refuses a voice note as it refuses a plan', async () => {
     const { base } = await start({ abilities: { models: false, rules: false } });
     const res = await fetch(`${base}/api/demo/clips/${CLIP}/voice-notes`, { method: 'POST', body: new Uint8Array([1]) });
@@ -574,6 +742,94 @@ describe('a copy of the page with no keys and no login', () => {
     const ask = visitor('v1');
     expect((await ask(`/api/demo/clips/${CLIP}/plans`, { sentence: 'Tell me when the door opens.' })).body.status).toBe('ready');
     expect((await ask(`/api/demo/clips/${CLIP}/rules`, { text: 'Tell me when the door opens.' })).status).toBe(409);
+  });
+});
+
+describe('setting up a camera live', () => {
+  const zonesOf = (body: { zones: Array<{ name: string }> }) => body.zones.map((z) => z.name);
+  const setUp = (ask: ReturnType<Awaited<ReturnType<typeof start>>['visitor']>) => ask(`/api/demo/clips/${CLIP}/setup`, {});
+
+  it('runs on the camera’s own pictures when asked, and returns what it found just now', async () => {
+    const seen: Array<{ id: string; labels: string[] }> = [];
+    const { visitor } = await start({
+      setUpNow: async (camera, pictures) => {
+        seen.push({ id: camera.id, labels: pictures.map((p) => p.label) });
+        return FOUND_NOW as never;
+      },
+    });
+    const res = await setUp(visitor('v1'));
+    expect(res.status).toBe(200);
+    expect(seen).toEqual([{ id: CLIP, labels: ['clip'] }]);
+    expect(zonesOf(res.body)).toEqual(['gate']);
+    expect(res.body.live).toBe(true);
+  });
+
+  it('applies to the visitor who ran it, on the clip as on the setup page, and to nobody else', async () => {
+    const { visitor } = await start();
+    const ask = visitor('v1');
+    expect((await ask(`/api/demo/clips/${CLIP}`)).body).toMatchObject({ setUpLive: false });
+    await setUp(ask);
+    const clip = (await ask(`/api/demo/clips/${CLIP}`)).body;
+    expect(clip.setUpLive).toBe(true);
+    expect(zonesOf(clip)).toEqual(['gate']);
+    expect(zonesOf((await ask(`/api/demo/clips/${CLIP}/setup`)).body)).toEqual(['gate']);
+    const other = (await visitor('v2')(`/api/demo/clips/${CLIP}`)).body;
+    expect(other.setUpLive).toBe(false);
+    expect(zonesOf(other)).toEqual(['door']);
+  });
+
+  it('checks a plan against the zones found just now', async () => {
+    const { visitor } = await start({ guide: planner({ about: 'gate', zones: ['gate'] }) });
+    const ask = visitor('v1');
+    expect((await ask(`/api/demo/clips/${CLIP}/plans`, { sentence: 'Tell me when the gate opens.' })).body.status).not.toBe('ready');
+    await setUp(ask);
+    expect((await ask(`/api/demo/clips/${CLIP}/plans`, { sentence: 'Tell me when the gate opens.' })).body.status).toBe('ready');
+  });
+
+  it('lets the visitor rename a zone found just now, and running it again starts from what is found then', async () => {
+    const { visitor, base } = await start();
+    const ask = visitor('v1');
+    await setUp(ask);
+    const renamed = await fetch(`${base}/api/demo/clips/${CLIP}/zones/gate`, { method: 'PUT', headers: { cookie: 'streamatic_demo=v1', 'content-type': 'application/json' }, body: JSON.stringify({ name: 'front gate' }) });
+    expect(zonesOf((await renamed.json()) as { zones: Array<{ name: string }> })).toEqual(['front gate']);
+    expect(zonesOf((await setUp(ask)).body)).toEqual(['gate']);
+  });
+
+  it('runs once when pressed twice at the same moment', async () => {
+    let runs = 0;
+    const { visitor } = await start({
+      setUpNow: async () => {
+        runs += 1;
+        await new Promise((done) => setTimeout(done, 20));
+        return FOUND_NOW as never;
+      },
+    });
+    const ask = visitor('v1');
+    await Promise.all([setUp(ask), setUp(ask)]);
+    expect(runs).toBe(1);
+  });
+
+  it('offers what survived testing first, then what it suggested just now, each once', async () => {
+    const { visitor, root } = await start();
+    await writeFile(join(root, 'cameras', CLIP, 'camera.json'), JSON.stringify({ name: 'Building entrance', site: 'a building', baseWords: [], pictures: { clip: 'still.jpg' }, tested: ['Tell me when someone sits down.', 'Tell me when the gate is left open.'] }));
+    const ask = visitor('v1');
+    expect((await setUp(ask)).body.rules).toEqual(['Tell me when someone sits down.', 'Tell me when the gate is left open.']);
+  });
+
+  it('counts against the visitor’s daily limit', async () => {
+    const { visitor } = await start();
+    const ask = visitor('v1');
+    for (let i = 0; i < 8; i++) expect((await setUp(ask)).status).toBe(200);
+    expect((await setUp(ask)).status).toBe(429);
+  });
+
+  it('forgets what was found on Reset', async () => {
+    const { visitor, base } = await start();
+    const ask = visitor('v1');
+    await setUp(ask);
+    const reset = await fetch(`${base}/api/demo/clips/${CLIP}/zones`, { method: 'DELETE', headers: { cookie: 'streamatic_demo=v1' } });
+    expect(zonesOf((await reset.json()) as { zones: Array<{ name: string }> })).toEqual(['door']);
+    expect((await ask(`/api/demo/clips/${CLIP}`)).body.setUpLive).toBe(false);
   });
 });
 
@@ -612,8 +868,19 @@ describe('alerts on Telegram', () => {
     expect(res.status).toBe(200);
     expect(delivered).toHaveLength(1);
     expect(delivered[0]!.to).toBe(PERSON);
-    expect(delivered[0]!.text.split('\n')[0]).toBe('Building entrance');
+    expect(delivered[0]!.text.split('\n')[0]).toBe('🚨 <b>ALERT: BUILDING ENTRANCE</b>');
     expect(delivered[0]!.text).toContain('pidgin: ');
+  });
+
+  it('tells the page plainly when an alert could not reach Telegram at all, and what to do', async () => {
+    const { visitor, links, delivered, cutOffTelegram } = await start({ telegram: true });
+    const ask = visitor('v1');
+    links.claim(links.token('v1', CLIP), PERSON);
+    cutOffTelegram();
+    const res = await alertOf(ask);
+    expect(res.status).toBe(502);
+    expect(res.body.error).toBe('An alert could not be sent to Telegram. Play that moment of the clip again to send it.');
+    expect(delivered).toEqual([]);
   });
 
   it('sends nothing for a visitor who has not linked', async () => {
@@ -754,9 +1021,10 @@ describe('a visitor’s zones', () => {
   });
 
   it('plans and routes on the visitor’s own zones', async () => {
-    const { visitor, base } = await start({ guide: planner({ about: 'entrance', zones: ['entrance'] }) });
+    const { visitor, base } = await start({ guide: planner({ about: 'entrance', zones: ['entrance'] }), setUpNow: async (camera) => (camera as unknown as { setup: never }).setup });
     const sentence = 'Tell me when the entrance opens.';
     const plan = (who: string) => visitor(who)(`/api/demo/clips/${CLIP}/plans`, { sentence });
+    for (const who of ['v1', 'v2']) await visitor(who)(`/api/demo/clips/${CLIP}/setup`, {});
     expect((await plan('v1')).body.status).toBe('needs-person');
     await call(base, 'v1', 'PUT', '/door', { name: 'entrance' });
     expect((await plan('v1')).body).toMatchObject({ status: 'ready', plan: { zones: ['entrance'] } });
@@ -766,7 +1034,8 @@ describe('a visitor’s zones', () => {
   });
 
   it('no longer plans or routes on a zone the visitor deleted', async () => {
-    const { visitor, base } = await start();
+    const { visitor, base } = await start({ setUpNow: async (camera) => (camera as unknown as { setup: never }).setup });
+    await visitor('v1')(`/api/demo/clips/${CLIP}/setup`, {});
     await call(base, 'v1', 'DELETE', '/door');
     const sentence = 'Tell me when the door opens.';
     expect((await visitor('v1')(`/api/demo/clips/${CLIP}/plans`, { sentence })).body.status).toBe('needs-person');
@@ -817,5 +1086,78 @@ describe('a visitor’s zones', () => {
     expect(reset.status).toBe(200);
     expect((await mine(`/api/demo/clips/${CLIP}/setup`)).body).toMatchObject({ edited: false, zones: [{ name: 'door 1' }, { name: 'door 2' }] });
     expect((await mine(`/api/demo/clips/${CLIP}`)).body.rules.find((r: any) => r.id === id).zones.map((z: any) => z.name)).toEqual(['door 1']);
+  });
+});
+
+describe('a question about a clip', () => {
+  const detections = {
+    fps: 2,
+    width: 1280,
+    height: 720,
+    tracks: [{ id: 1, kind: 'person', points: [[0, 500, 400, 520, 450], [500, 500, 400, 520, 450], [1000, 1000, 200, 1040, 300], [1500, 1000, 200, 1040, 300]] }],
+  };
+  const detected = { state: () => 'ready' as const, found: () => detections as ClipDetections, ensure: () => undefined };
+  const zoneOf = async (ask: (path: string, body?: unknown) => Promise<{ status: number; body: any }>) => ask(`/api/demo/clips/${CLIP}/questions`, { sentence: 'How many people went through the door?' });
+
+  it('answers from what was detected, with the moments found, under the visitor’s own name for the zone', async () => {
+    const seen: unknown[] = [];
+    const asker: ToolAsker = {
+      withTools: async (_instruction, tools, run) => {
+        seen.push((tools[1]!.parameters as any).properties.zone.enum);
+        await run('zone_crossings', { kind: 'person', zone: 'Front door' });
+        return 'About 1 person moved onto it at 0:01.';
+      },
+    };
+    const { visitor, base } = await start({ asker, detection: detected });
+    await fetch(`${base}/api/demo/clips/${CLIP}/zones/door`, { method: 'PUT', headers: { cookie: 'streamatic_demo=v1', 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Front door' }) });
+    const { status, body } = await zoneOf(visitor('v1'));
+    expect(status).toBe(200);
+    expect(body).toEqual({ answer: 'About 1 person moved onto it at 0:01.', moments: [{ atMs: 1000, label: 'Moved onto' }] });
+    expect(seen).toEqual([['Front door']]);
+  });
+
+  it('says on the clip whether it can be asked about', async () => {
+    const without = await start();
+    expect((await without.visitor('v1')(`/api/demo/clips/${CLIP}`)).body).toMatchObject({ canCount: false, detection: null });
+    const withDetector = await start({ detection: detected });
+    expect((await withDetector.visitor('v1')(`/api/demo/clips/${CLIP}`)).body).toMatchObject({ canCount: true, detection: 'ready' });
+  });
+
+  it('asks for keys on a copy with no detector, whatever files its folder holds', async () => {
+    const { visitor, root } = await start();
+    await mkdir(join(root, 'clips', CLIP), { recursive: true });
+    await writeFile(join(root, 'clips', CLIP, 'detections.json'), JSON.stringify(detections));
+    const { status, body } = await zoneOf(visitor('v1'));
+    expect(status).toBe(409);
+    expect(body.error).toBe(NEEDS_KEYS);
+  });
+
+  it('starts detection for a question on a clip not yet detected, tells the page to wait, and spends nothing', async () => {
+    const asked: string[] = [];
+    const { visitor } = await start({
+      ceilingMicroUsd: 1,
+      detection: { state: () => 'running', found: () => null, ensure: (clip: string) => void asked.push(clip) },
+    });
+    const { status, body } = await zoneOf(visitor('v1'));
+    expect(status).toBe(202);
+    expect(body).toEqual({ status: 'detecting' });
+    expect(asked).toEqual([CLIP]);
+  });
+
+  it('asks for keys on a copy without them, and spends nothing', async () => {
+    const { visitor } = await start({ abilities: { models: false, rules: false }, detection: detected });
+    const { status, body } = await zoneOf(visitor('v1'));
+    expect(status).toBe(409);
+    expect(body.error).toBe(NEEDS_KEYS);
+  });
+
+  it('counts a question against the visitor’s plans', async () => {
+    const { visitor } = await start({ ceilingMicroUsd: 1, detection: detected });
+    expect((await zoneOf(visitor('v1'))).status).toBe(429);
+  });
+
+  it('tells the page a sentence is a question, for the page to ask', async () => {
+    const { visitor } = await start({ guide: { draft: async () => ({ question: true }) } });
+    expect((await visitor('v1')(`/api/demo/clips/${CLIP}/plans`, { sentence: 'How many people came in?' })).body).toMatchObject({ status: 'question' });
   });
 });

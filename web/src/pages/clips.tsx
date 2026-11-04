@@ -29,7 +29,9 @@ const WHAT_TO_TRY = [
 function AskAnyCamera({ clips }: { clips: Array<Clip & Partial<DemoClipSummary>> }) {
   const { models, rules } = useAbilities();
   const [text, setText] = useState('');
-  const tested = models && rules ? clips.flatMap((clip) => (clip.suggestions ?? []).slice(0, 2).map((sentence) => ({ clip, sentence }))) : [];
+  const setUp = clips.filter((clip) => clip.setUp);
+  // A sentence tested on two cameras is offered once and goes to the first, so the page chooses the camera without asking.
+  const tested = (models && rules ? setUp.flatMap((clip) => (clip.suggestions ?? []).slice(0, 1).map((sentence) => ({ clip, sentence }))) : []).filter(({ sentence }, i, all) => all.findIndex((t) => t.sentence === sentence) === i);
   const choosing = useMutation({
     mutationFn: (sentence: string) => api.routeSentence(sentence),
     onSuccess: ({ cameras }, sentence) => {
@@ -53,7 +55,7 @@ function AskAnyCamera({ clips }: { clips: Array<Clip & Partial<DemoClipSummary>>
             if (text.trim()) choosing.mutate(text.trim());
           }}
         >
-          <Label htmlFor='ask-any-camera'>What should your cameras watch?</Label>
+          <Label htmlFor='ask-any-camera'>Add a rule</Label>
           <div className='flex flex-wrap items-center gap-2'>
             <Input id='ask-any-camera' className='min-w-48 flex-1' maxLength={300} disabled={!models} value={text} onChange={(e) => setText(e.target.value)} placeholder='Tell me when someone opens the door of the building.' />
             <Button type='submit' disabled={!models || !rules || text.trim().length < 3 || choosing.isPending}>
@@ -64,7 +66,7 @@ function AskAnyCamera({ clips }: { clips: Array<Clip & Partial<DemoClipSummary>>
         </form>
         {tested.length > 0 && !found && (
           <div className='space-y-1.5'>
-            <p className='text-muted-foreground text-xs'>Or select one of these. Each was tested on its clip, and runs there live.</p>
+            <p className='text-muted-foreground text-xs'>Suggested rules</p>
             <div className='flex flex-wrap items-center gap-1.5'>
               {tested.map(({ clip, sentence }) => (
                 <Link
@@ -72,7 +74,7 @@ function AskAnyCamera({ clips }: { clips: Array<Clip & Partial<DemoClipSummary>>
                   href={`/clips/${encodeURIComponent(clip.id)}?ask=${encodeURIComponent(sentence)}`}
                   className='hover:bg-accent inline-flex max-w-full items-center rounded-md border px-2.5 py-1 text-left text-xs'
                 >
-                  {sentence} ({clip.name})
+                  {sentence}
                 </Link>
               ))}
             </div>
@@ -84,7 +86,7 @@ function AskAnyCamera({ clips }: { clips: Array<Clip & Partial<DemoClipSummary>>
           <div className='space-y-2'>
             <Notice>No camera outlined what you asked about by name. Select the camera to use.</Notice>
             <div className='flex flex-wrap gap-2'>
-              {clips.map((clip) => (
+              {setUp.map((clip) => (
                 <Link key={clip.id} href={`/clips/${encodeURIComponent(clip.id)}?ask=${encodeURIComponent(asked)}`} className='hover:bg-accent inline-flex h-8 items-center rounded-md border px-2.5 text-sm font-medium'>
                   {clip.name}
                 </Link>
@@ -122,7 +124,7 @@ export function ClipsPage({ isPublic = false, app }: { isPublic?: boolean; app?:
         }
       />
       {app?.models === false && (
-        <Notice className='mb-6'>Provide your keys for the full experience. The README says which to add. The clips, rules, alerts and kept searches work without them.</Notice>
+        <Notice className='mb-6'>Provide your keys for the full experience. The README says which to add. The clips, their first rules and their alerts work without them.</Notice>
       )}
       {app?.credit === 'meva' && <Notice className='mb-6'>{RECORDED_CLIPS_NOTE}</Notice>}
       {isPublic && (
@@ -154,7 +156,7 @@ export function ClipsPage({ isPublic = false, app }: { isPublic?: boolean; app?:
         {clips.data?.map((clip) => (
           <Link
             key={clip.id}
-            href={`/clips/${encodeURIComponent(clip.id)}`}
+            href={clip.setUp === false ? `/setup/${encodeURIComponent(clip.id)}` : `/clips/${encodeURIComponent(clip.id)}`}
             className='group bg-card hover:border-primary/50 focus-visible:ring-ring/50 flex flex-col overflow-hidden rounded-xl border shadow-sm transition-colors outline-none focus-visible:ring-[3px]'
           >
             <PictureFrame src={clipPictureUrl(clip.id, 0)} alt={clip.name} className='rounded-none' />
@@ -165,6 +167,7 @@ export function ClipsPage({ isPublic = false, app }: { isPublic?: boolean; app?:
                 <div className='mt-2 flex flex-wrap gap-1.5'>
                   <Badge variant='outline'>{length(clip.frames / clip.fps)}</Badge>
                   {clip.rules !== undefined && <Badge variant='outline'>{clip.rules} {clip.rules === 1 ? 'rule' : 'rules'}</Badge>}
+                  {clip.setUp === false && <Badge variant='outline'>Not set up</Badge>}
                 </div>
               </div>
               <ArrowRight className='text-muted-foreground group-hover:text-foreground mt-0.5 size-4 shrink-0 transition-colors' />

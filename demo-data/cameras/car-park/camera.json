@@ -1,1 +1,1 @@
-{"name":"Car park","site":"a car park","baseWords":["car","road"],"pictures":{"clip":"still.jpg"},"group":"meva","tested":["Tell me when someone gets out of a vehicle."]}
+{"name":"Car park","site":"a car park","baseWords":["car","road"],"pictures":{"clip":"still.jpg"},"group":"meva","tested":["Tell me when someone gets out of a vehicle."],"questions":["How many vehicles were in view at once?"]}

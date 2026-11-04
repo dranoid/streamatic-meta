@@ -73,13 +73,13 @@ const demoTypedRule = z.looseObject({
   id: z.string(),
   text: z.string(),
   status: z.string(),
-  progress: z.looseObject({ done: z.number(), total: z.number().nullable() }),
+  progress: z.looseObject({ done: z.number(), total: z.number().nullable(), readThrough: z.number() }),
   rule: z.looseObject({ name: z.string(), readsAs: z.string().nullish() }).nullish(),
   refusal: z.looseObject({ rewrites: z.array(z.string()).nullish(), reason: z.string().nullish() }).nullish(),
   probe: z.looseObject({ warns: z.boolean().nullish() }).nullish(),
 });
 export type DemoTypedRule = z.infer<typeof demoTypedRule>;
-export type DemoScheduleRule = { ruleId: string; armedAt: string } | { draftRuleId: string };
+export type DemoScheduleRule = { ruleId: string; armedAt: string } | { draftRuleId: string; soFar?: boolean };
 
 // The backend writes its refusals for the person, so they are shown as they are.
 export class BackendError extends Error {

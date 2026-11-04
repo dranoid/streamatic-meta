@@ -12,7 +12,8 @@ const planShape = z.object({
   hours: z.object({ from: hour, to: hour }).nullable(),
 });
 const searchShape = z.object({ search: z.object({ item: z.string().min(1), words: z.array(z.string()) }) });
-const draftShape = z.union([searchShape, planShape]);
+const questionShape = z.object({ question: z.literal(true) });
+const draftShape = z.union([questionShape, searchShape, planShape]);
 
 // Spark Open drafts the plan; the guide checks it in code before anything is done in the app.
 export class SparkGuidePlanner implements GuidePlanner {
@@ -32,6 +33,8 @@ ${listed || '- none'}
 
 First decide what the person wants. If they want an item found or tracked in the footage now, with no alert to come ("Track the ladder", "Where is the blue van?", "Find the person in the red cap"), reply with JSON only:
 {"search": {"item": "the item in the person's own words", "words": ["up to 3 short everyday names for that item, plainest first, that SAM 3.1 could outline it by"]}}
+If they ask a question about what happened in the footage, such as how many or whether something passed a place ("How many forklifts drove in?", "Did anyone use the side stairs?"), reply with JSON only:
+{"question": true}
 Otherwise they want an alert, and you plan the rule as follows.
 
 A zone marks that thing itself, for a rule about it: it opens, moves, or is no longer there. To watch for something

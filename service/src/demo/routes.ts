@@ -13,17 +13,20 @@ import type { BotChat } from '../telegram/api.js';
 import { sendDemoAlert } from '../telegram/demo-alert.js';
 import type { TelegramLinks } from '../telegram/links.js';
 import { voiceKeywords, type VoiceNotes } from '../voice/voice-note.js';
+import { answerClipQuestion, type ToolAsker } from './clip-questions.js';
+import type { ClipDetection } from './clip-detection.js';
 import type { DemoEngine } from './engine.js';
 import type { DemoLimits, Spending } from './limits.js';
 import { placedBox, ruleFromPlan, zonePaths } from './rule-plan.js';
 import type { DemoRule, DemoStore } from './store.js';
-import { nameFromSetup, withZoneEdits } from './visitor-zones.js';
+import { asVisitorSees, nameFromSetup } from './visitor-zones.js';
+import type { CameraSetup, LabelledPicture } from '../setup/camera-setup.js';
 
 export const NEEDS_KEYS = 'Provide your keys for the full experience. The README says which to add. The clips and their alerts work without them.';
 export const NEEDS_BACKEND = 'Reading a new rule needs Streamatic’s backend, which this copy is not connected to. It works on the hosted page, whose address is in the README.';
 
 // What each kind of request is counted as against the day's ceiling, a little above what was measured, so the ceiling errs early.
-export const COST_MICRO_USD: Record<Spending, number> = { rule: 100_000, plan: 20_000, look: 20_000, track: 150_000, upload: 80_000, send: 0 };
+export const COST_MICRO_USD: Record<Spending, number> = { rule: 100_000, plan: 20_000, look: 20_000, track: 150_000, upload: 80_000, setup: 80_000, send: 0 };
 const MAX_UPLOAD_BYTES = 8_000_000;
 const MAX_JSON_BYTES = 4_000;
 const VISITOR_COOKIE = 'streamatic_demo';
@@ -103,7 +106,10 @@ export function demoHandler({
   clips,
   cameras,
   guidePlanner,
+  asker,
   setUp,
+  setUpNow,
+  detection = null,
   voiceNotes,
   folder,
   trackSeconds,
@@ -115,9 +121,13 @@ export function demoHandler({
   store: DemoStore;
   limits: DemoLimits;
   clips: Pick<ClipFolder, 'get'>;
-  cameras: Pick<CameraFolder, 'get' | 'list'>;
+  cameras: Pick<CameraFolder, 'get' | 'list' | 'labelledPictures'>;
   guidePlanner: GuidePlanner;
+  asker: ToolAsker;
   setUp: (bytes: Uint8Array) => Promise<unknown>;
+  setUpNow: (camera: Camera, pictures: LabelledPicture[]) => Promise<CameraSetup>;
+  // Null on a copy with no detector, which cannot answer questions about a clip.
+  detection?: Pick<ClipDetection, 'state' | 'found' | 'ensure'> | null;
   voiceNotes: Pick<VoiceNotes, 'read'>;
   folder: string;
   trackSeconds: number;
@@ -144,12 +154,15 @@ export function demoHandler({
     return shown;
   };
 
-  const edited = (camera: Camera, visitor: string) => withZoneEdits(camera, store.zoneEdits(visitor, camera.id));
+  const edited = (camera: Camera, visitor: string) => asVisitorSees(camera, store, visitor);
+  const settingUp = new Map<string, Promise<CameraSetup>>();
   const cameraFor = async (id: string, visitor: string) => {
     const camera = await cameras.get(id);
     return camera && edited(camera, visitor);
   };
   const camerasFor = async (visitor: string) => (await cameras.list()).map((c) => edited(c, visitor));
+  const isSetUp = (visitor: string, camera: string) => store.liveSetup(visitor, camera) !== null;
+  const camerasSetUpBy = async (visitor: string) => (await camerasFor(visitor)).filter((c) => isSetUp(visitor, c.id));
   const planned = async (clip: string, visitor: string, plan: Parameters<typeof ruleFromPlan>[0]) => {
     const camera = await cameraFor(clip, visitor);
     const size = await clips.get(clip);
@@ -177,8 +190,10 @@ export function demoHandler({
       paths: zonePaths(z),
       pathsBy: Object.fromEntries(Object.entries(z.outlines).map(([label, outlines]) => [label, outlines.map((o) => o.path)])),
     })),
-    rules: offeredSentences(camera),
+    // What survived testing comes first, so a rule chosen without thinking is one that holds up.
+    rules: store.liveSetup(visitor, camera.id) ? [...new Set([...camera.tested, ...(camera.setup?.rules ?? []).map((r) => r.sentence)])] : offeredSentences(camera),
     edited: store.zoneEdits(visitor, camera.id).length > 0,
+    live: store.liveSetup(visitor, camera.id) !== null,
   });
   const setUpCamera = async (id: string) => {
     const camera = await cameras.get(id);
@@ -199,7 +214,13 @@ export function demoHandler({
       send(response, 200, { public: true, trackSeconds, ...abilities, telegram: telegram !== null, credit });
       return true;
     }
+    if (method === 'POST' && path === '/api/demo/reset') {
+      store.forgetVisitor(visitorOf(request, response));
+      send(response, 200, {});
+      return true;
+    }
     if (method === 'GET' && path === '/api/demo/clips') {
+      const visitor = visitorOf(request, response);
       const shown = await Promise.all(
         store.clips().map(async (row) => ({
           ...(await withVideo(row.id)),
@@ -207,6 +228,7 @@ export function demoHandler({
           rules: store.rules(row.id, '').length,
           alerts: store.alertCount(row.id),
           suggestions: (await cameras.get(row.id))?.tested ?? [],
+          setUp: isSetUp(visitor, row.id),
         })),
       );
       send(response, 200, shown);
@@ -214,7 +236,7 @@ export function demoHandler({
     }
     if (method === 'GET' && path === '/api/demo/events') {
       const visitor = visitorOf(request, response);
-      const events = store.clips().flatMap((row) =>
+      const events = store.clips().filter((row) => isSetUp(visitor, row.id)).flatMap((row) =>
         store
           .rules(row.id, visitor)
           .filter((rule) => rule.status === 'ready')
@@ -245,18 +267,23 @@ export function demoHandler({
         lengthMs: row.lengthMs,
         zones: (camera?.zones ?? []).map((z) => ({ name: z.name, paths: zonePaths(z) })),
         suggestions: camera ? offeredSentences(camera) : [],
+        suggestedQuestions: detection ? (camera?.questions ?? []) : [],
         rules: store.rules(id, visitor).map(viewOf),
+        setUpLive: store.liveSetup(visitor, id) !== null,
+        canCount: detection !== null,
+        detection: detection?.state(id) ?? null,
       });
       return true;
     }
     if (method === 'GET' && path === '/api/demo/cameras') {
-      send(response, 200, (await cameras.list()).filter((c) => c.setup !== null).map((c) => ({ id: c.id, name: c.name, hasClip: store.clip(c.id) !== null, picture: stillOf(c.id) })));
+      const visitor = visitorOf(request, response);
+      send(response, 200, (await cameras.list()).filter((c) => c.setup !== null).map((c) => ({ id: c.id, name: c.name, hasClip: store.clip(c.id) !== null, picture: stillOf(c.id), setUp: isSetUp(visitor, c.id) })));
       return true;
     }
     if (method === 'POST' && path === '/api/demo/route') {
       const parsed = planAsked.safeParse(await readJson(request));
       if (!parsed.success) throw new Refusal(400, 'Please describe the rule in a sentence.');
-      const all = await camerasFor(visitorOf(request, response));
+      const all = await camerasSetUpBy(visitorOf(request, response));
       send(response, 200, { cameras: camerasForSentence(parsed.data.sentence, all).map((found) => offerOf(found, all)) });
       return true;
     }
@@ -266,7 +293,7 @@ export function demoHandler({
       if (!here) throw new Refusal(404, 'No such clip.');
       const parsed = planAsked.safeParse(await readJson(request));
       if (!parsed.success) throw new Refusal(400, 'Please describe the rule in a sentence.');
-      const all = await camerasFor(visitor);
+      const all = await camerasSetUpBy(visitor);
       send(response, 200, { elsewhere: camerasThatOutlined(parsed.data.sentence, here, all).map((found) => offerOf(found, all)) });
       return true;
     }
@@ -283,6 +310,36 @@ export function demoHandler({
       send(response, 200, setupOf(edited(await setUpCamera(id), visitor), visitor));
       return true;
     }
+    if (method === 'POST' && (match = /^\/api\/demo\/clips\/([^/]+)\/setup$/.exec(path))) {
+      const id = decodeURIComponent(match[1]!);
+      const camera = await setUpCamera(id);
+      const visitor = visitorOf(request, response);
+      // A copy with no keys goes through the same steps on the setup saved with it, and spends nothing.
+      if (!abilities.models) {
+        store.clearZoneEdits(visitor, id);
+        store.saveLiveSetup(visitor, id, camera.setup!);
+        send(response, 200, setupOf(edited(camera, visitor), visitor));
+        return true;
+      }
+      // Two presses in the same moment are one setup, charged once.
+      const key = `${visitor}\n${id}`;
+      let running = settingUp.get(key);
+      if (!running) {
+        running = charge(visitor, 'setup')
+          .then(() => cameras.labelledPictures(camera))
+          .then((pictures) => setUpNow(camera, pictures))
+          .then((setup) => {
+            store.clearZoneEdits(visitor, id);
+            store.saveLiveSetup(visitor, id, setup);
+            return setup;
+          })
+          .finally(() => settingUp.delete(key));
+        settingUp.set(key, running);
+      }
+      await running;
+      send(response, 200, setupOf(edited(camera, visitor), visitor));
+      return true;
+    }
     if (method === 'DELETE' && (match = /^\/api\/demo\/clips\/([^/]+)\/zones$/.exec(path))) {
       const id = decodeURIComponent(match[1]!);
       const camera = await setUpCamera(id);
@@ -291,6 +348,7 @@ export function demoHandler({
         if (name !== null) store.renameZoneOnRules(id, visitor, name, zone);
       }
       store.clearZoneEdits(visitor, id);
+      store.clearLiveSetup(visitor, id);
       send(response, 200, setupOf(camera, visitor));
       return true;
     }
@@ -300,7 +358,7 @@ export function demoHandler({
       const camera = await setUpCamera(id);
       const visitor = visitorOf(request, response);
       const edits = store.zoneEdits(visitor, id);
-      const shown = withZoneEdits(camera, edits);
+      const shown = edited(camera, visitor);
       if (!shown.zones.some((z) => z.name === asked)) throw new Refusal(404, 'This zone is no longer on this camera.');
       if (method === 'DELETE') {
         store.saveZoneEdit(visitor, id, { zone: nameFromSetup(asked, edits), name: null });
@@ -337,6 +395,25 @@ export function demoHandler({
       await charge(visitor, 'plan');
       const result = await planRule({ sentence: parsed.data.sentence, site: camera.site, zones: camera.zones, planner: guidePlanner });
       send(response, 200, result.status === 'ready' ? { ...result, plan: placedBox(result.plan, camera.zones) } : result);
+      return true;
+    }
+    if (method === 'POST' && (match = /^\/api\/demo\/clips\/([^/]+)\/questions$/.exec(path))) {
+      const id = decodeURIComponent(match[1]!);
+      const row = clipRow(id);
+      const parsed = planAsked.safeParse(await readJson(request));
+      if (!parsed.success) throw new Refusal(400, 'Please ask the question in a sentence.');
+      if (!abilities.models || !detection) throw new Refusal(409, NEEDS_KEYS);
+      const detections = detection.found(id);
+      if (!detections) {
+        // Normally already running since the server started; this starts it if that run failed.
+        detection.ensure(id);
+        send(response, 202, { status: 'detecting' });
+        return true;
+      }
+      const visitor = visitorOf(request, response);
+      const camera = await cameraFor(id, visitor);
+      await charge(visitor, 'plan');
+      send(response, 200, await answerClipQuestion({ question: parsed.data.sentence, lengthMs: row.lengthMs, detections, zones: camera?.zones ?? [], spark: asker }));
       return true;
     }
     if (method === 'POST' && (match = /^\/api\/demo\/clips\/([^/]+)\/voice-notes$/.exec(path))) {
@@ -417,7 +494,10 @@ export function demoHandler({
       const clip = await clips.get(id);
       if (!rule || !alert || !clip) throw new Refusal(404, 'No such alert.');
       await charge(visitor, 'send');
-      await sendDemoAlert({ chat, to: link.person, folder, clip, rule, alert, language: link.language });
+      await sendDemoAlert({ chat, to: link.person, folder, clip, rule, alert, language: link.language }).catch((error: unknown) => {
+        console.error(`Telegram alert: ${error instanceof Error ? error.message : String(error)}`);
+        throw new Refusal(502, 'An alert could not be sent to Telegram. Play that moment of the clip again to send it.');
+      });
       send(response, 200, { sent: true });
       return true;
     }

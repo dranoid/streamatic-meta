@@ -87,6 +87,32 @@ describe('SparkSetupPlanner', () => {
     expect(prompt).toContain('gate (seen: day, night)');
     expect(rules).toEqual([{ sentence: 'Alert me if the gate is open after 10 pm.', zones: ['gate'] }]);
   });
+
+  const proposing = (replies: Response[]) => {
+    let asked = 0;
+    const spark = new SparkClient({ apiKey: 'test', fetch: async () => (asked++, replies.shift()!) });
+    return { asked: () => asked, rules: () => new SparkSetupPlanner(spark, 'a site').proposeRules([{ name: 'gate', seenAt: ['day'] }], pictures) };
+  };
+
+  it('asks again when the model answers in words instead of suggesting rules', async () => {
+    const run = proposing([reply('I cannot help with that.'), reply('{"rules":[{"sentence":"Tell me when the gate opens.","zones":["gate"]}]}')]);
+
+    await expect(run.rules()).resolves.toEqual([{ sentence: 'Tell me when the gate opens.', zones: ['gate'] }]);
+    expect(run.asked()).toBe(2);
+  });
+
+  it('suggests nothing when the model declines twice, so the zones already found are not lost', async () => {
+    const run = proposing([reply('I cannot help with that.'), reply('I cannot help with that.')]);
+
+    await expect(run.rules()).resolves.toEqual([]);
+    expect(run.asked()).toBe(2);
+  });
+
+  it('still fails when the model cannot be reached', async () => {
+    const run = proposing([reply('', 500), reply('', 500), reply('', 500), reply('', 500), reply('', 500)]);
+
+    await expect(run.rules()).rejects.toThrow(/returned 500/);
+  });
 });
 
 describe('SparkAlertCaption', () => {

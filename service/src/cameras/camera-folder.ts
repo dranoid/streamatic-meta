@@ -22,6 +22,8 @@ export interface Camera {
   group: string | null;
   // Sentences run through the page three times that raised a real alert each time, offered ahead of setup's own suggestions.
   tested: string[];
+  // Questions whose counts held up against the clip by eye, over several rounds.
+  questions: string[];
 }
 
 // One folder per camera under <root>/cameras: camera.json, its pictures, setup.json once setup has run, zone-names.json,
@@ -41,11 +43,11 @@ export class CameraFolder {
     const config = await readFile(join(dir, 'camera.json'), 'utf8').catch(() => null);
     if (config === null) return null;
     const saved = await readFile(join(dir, 'setup.json'), 'utf8').catch(() => null);
-    const { name, site, baseWords, pictures, backend = null, group = null, tested = [] } = JSON.parse(config) as Pick<Camera, 'name' | 'site' | 'baseWords' | 'pictures'> & { backend?: Camera['backend']; group?: string; tested?: string[] };
+    const { name, site, baseWords, pictures, backend = null, group = null, tested = [], questions = [] } = JSON.parse(config) as Pick<Camera, 'name' | 'site' | 'baseWords' | 'pictures'> & { backend?: Camera['backend']; group?: string; tested?: string[]; questions?: string[] };
     const folder = async (name: string) => ((await stat(join(dir, name)).catch(() => null))?.isDirectory() ? join(dir, name) : null);
     const episode = await folder('episode');
     const setup = saved === null ? null : (JSON.parse(saved) as CameraSetup);
-    return { id, name, site, baseWords, pictures, setup, zones: setup ? cameraZones(setup, await this.zoneNames(id)) : [], episode, backend, group, tested };
+    return { id, name, site, baseWords, pictures, setup, zones: setup ? cameraZones(setup, await this.zoneNames(id)) : [], episode, backend, group, tested, questions };
   }
 
   async zoneNames(id: string): Promise<ZoneName[]> {

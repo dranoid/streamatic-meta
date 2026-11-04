@@ -30,9 +30,11 @@ export function parse(path: string): Route {
   return { page: 'cameras' };
 }
 
-export function navigate(path: string): void {
+// `replace` is for a page that sends the person elsewhere, so Back does not return them to it and send them on again.
+export function navigate(path: string, { replace = false }: { replace?: boolean } = {}): void {
   if (path === location.pathname) return;
-  history.pushState(null, '', path);
+  if (replace) history.replaceState(null, '', path);
+  else history.pushState(null, '', path);
   window.dispatchEvent(new PopStateEvent('popstate'));
   window.scrollTo({ top: 0 });
 }

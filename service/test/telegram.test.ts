@@ -47,6 +47,82 @@ describe('TelegramApi', () => {
     expect((failure as TelegramError).status).toBe(403);
   });
 
+  // A dropped connection reaches the caller as fetch's TypeError, with the socket's reason as its cause.
+  const droppedThenAccepted = (drops: number) => {
+    const calls: string[] = [];
+    const fake = (async (url: string) => {
+      calls.push(new URL(url).pathname);
+      if (calls.length <= drops) throw new TypeError('fetch failed', { cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }) });
+      return new Response(JSON.stringify({ ok: true, result: {} }));
+    }) as unknown as typeof fetch;
+    return { calls, fake };
+  };
+
+  it('sends a picture again when the connection drops, since Telegram never answered', async () => {
+    const { calls, fake } = droppedThenAccepted(2);
+    const waits: number[] = [];
+    const api = new TelegramApi({ token: TOKEN, fetch: fake, wait: async (ms) => void waits.push(ms) });
+    await api.sendPicture(PERSON, new Uint8Array([1, 2, 3]), 'Door');
+    expect(calls).toEqual(Array(3).fill(`/bot${TOKEN}/sendPhoto`));
+    expect(waits).toHaveLength(2);
+    expect(waits.every((ms) => ms > 0)).toBe(true);
+  });
+
+  it('sends words again when the connection drops', async () => {
+    const { calls, fake } = droppedThenAccepted(1);
+    const api = new TelegramApi({ token: TOKEN, fetch: fake, wait: async () => undefined });
+    await api.sendText(PERSON, 'Door');
+    expect(calls).toHaveLength(2);
+  });
+
+  it('stops trying after a few dropped connections, and lets the caller know, with no token in the error', async () => {
+    const { calls, fake } = droppedThenAccepted(50);
+    const api = new TelegramApi({ token: TOKEN, fetch: fake, wait: async () => undefined });
+    const failure = await api.sendPicture(PERSON, new Uint8Array([1]), 'Door').catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(String((failure as Error).message)).not.toContain(TOKEN);
+    expect(calls.length).toBeGreaterThan(1);
+    expect(calls.length).toBeLessThan(6);
+  });
+
+  it('does not send again when Telegram itself refused', async () => {
+    let calls = 0;
+    const api = new TelegramApi({
+      token: TOKEN,
+      wait: async () => undefined,
+      fetch: (async () => {
+        calls += 1;
+        return new Response(JSON.stringify({ ok: false, description: 'Forbidden: bot was blocked by the user' }), { status: 403 });
+      }) as unknown as typeof fetch,
+    });
+    await expect(api.sendPicture(PERSON, new Uint8Array([1]), 'Door')).rejects.toBeInstanceOf(TelegramError);
+    expect(calls).toBe(1);
+  });
+
+  const sentBody = () => {
+    const bodies: Array<{ url: string; body: unknown }> = [];
+    const fake = (async (url: string, init: RequestInit) => {
+      bodies.push({ url, body: init.body });
+      return new Response(JSON.stringify({ ok: true, result: {} }));
+    }) as unknown as typeof fetch;
+    return { bodies, fake };
+  };
+
+  it('asks Telegram to show bold words on an alert’s picture and on an alert sent as words', async () => {
+    const { bodies, fake } = sentBody();
+    const api = new TelegramApi({ token: TOKEN, fetch: fake });
+    await api.sendPicture(PERSON, new Uint8Array([1]), '<b>Door</b>');
+    await api.sendText(PERSON, '<b>Door</b>', undefined, { html: true });
+    expect((bodies[0]!.body as FormData).get('parse_mode')).toBe('HTML');
+    expect(JSON.parse(bodies[1]!.body as string).parse_mode).toBe('HTML');
+  });
+
+  it('sends every other message as plain words, since a person’s own sentence may hold any character', async () => {
+    const { bodies, fake } = sentBody();
+    await new TelegramApi({ token: TOKEN, fetch: fake }).sendText(PERSON, 'You said: 3 < 4');
+    expect(JSON.parse(bodies[0]!.body as string).parse_mode).toBeUndefined();
+  });
+
   it('asks only for the messages and button presses it handles, after the last update seen', async () => {
     const asked: string[] = [];
     const api = new TelegramApi({
@@ -108,7 +184,7 @@ describe('an alert of the private app', () => {
     await writeFile(join(root, 'door.jpg'), plain);
     const { chat, sent } = fakeChat();
     await sendEventAlert({ chat, to: PERSON, mediaDir: root, event: { camera: 'Table parlour', picture: 'door.jpg', outline: 'M0 0H32V18H0Z' }, words: 'Pesin dey open front door' });
-    expect(sent[0]!.text).toBe('Table parlour\nPesin dey open front door');
+    expect(sent[0]!.text).toBe('🚨 <b>ALERT: TABLE PARLOUR</b>\n<b>Pesin dey open front door</b>');
     expect(Buffer.compare(Buffer.from(sent[0]!.picture!), Buffer.from(plain))).not.toBe(0);
   });
 
@@ -119,6 +195,17 @@ describe('an alert of the private app', () => {
     const { chat, sent } = fakeChat();
     await sendEventAlert({ chat, to: PERSON, mediaDir: root, event: { camera: 'Table parlour', picture: 'door.jpg', outline: null }, words: 'w' });
     expect(Buffer.compare(Buffer.from(sent[0]!.picture!), Buffer.from(plain))).toBe(0);
+  });
+
+  it('still arrives as words when its picture cannot be sent', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'event-'));
+    await writeFile(join(root, 'door.jpg'), await picture());
+    const { chat, sent } = fakeChat();
+    chat.sendPicture = async () => {
+      throw new TypeError('fetch failed');
+    };
+    await sendEventAlert({ chat, to: PERSON, mediaDir: root, event: { camera: 'Table parlour', picture: 'door.jpg', outline: null }, words: 'Pesin dey open front door' });
+    expect(sent).toEqual([{ to: PERSON, text: '🚨 <b>ALERT: TABLE PARLOUR</b>\n<b>Pesin dey open front door</b>' }]);
   });
 });
 
@@ -176,17 +263,28 @@ describe('TelegramLinks', () => {
 
 describe('an alert on Telegram', () => {
   it('names only the camera it stands for and what happened, in the language chosen', () => {
-    expect(alertText('Building entrance', RULE.name, ALERT, 'pidgin')).toBe('Building entrance\nSomebody don open di door');
+    expect(alertText('Building entrance', RULE.name, ALERT, 'pidgin')).toBe('🚨 <b>ALERT: BUILDING ENTRANCE</b>\n<b>Somebody don open di door</b>\n⏱ 0:42');
   });
 
-  it('says the rule in English, never the scene the model described, since that describes a sampled frame', () => {
+  it('says the rule in English as what happened, never the scene the model described, since that describes a sampled frame', () => {
     const text = alertText('Building entrance', RULE.name, ALERT, 'english');
-    expect(text).toBe('Building entrance\nAlert when someone opens the door');
+    expect(text).toBe('🚨 <b>ALERT: BUILDING ENTRANCE</b>\n<b>Someone opens the door</b>\n⏱ 0:42');
     expect(text).not.toContain(ALERT.caption);
   });
 
   it('falls back to the rule when a language was not written', () => {
-    expect(alertText('Building entrance', RULE.name, ALERT, 'yoruba')).toBe('Building entrance\nAlert when someone opens the door');
+    expect(alertText('Building entrance', RULE.name, ALERT, 'yoruba')).toContain('<b>Someone opens the door</b>');
+  });
+
+  it('drops the asking from a sentence someone typed, so the alert states what happened', () => {
+    expect(alertText('Gate', 'Tell me when a car stops by the gate.', ALERT, 'english')).toContain('<b>A car stops by the gate</b>');
+    expect(alertText('Gate', 'Let me know if someone climbs the wall', ALERT, 'english')).toContain('<b>Someone climbs the wall</b>');
+  });
+
+  it('keeps a person’s own characters from being read as formatting', () => {
+    const text = alertText('Gate & yard', 'Tell me when <b>3 & 4</b> arrive', ALERT, 'english');
+    expect(text).toContain('ALERT: GATE &amp; YARD');
+    expect(text).toContain('&lt;b&gt;3 &amp; 4&lt;/b&gt; arrive');
   });
 
   it('carries the kept picture, with the rule’s zones drawn on it in the clip’s own pixels', async () => {
@@ -197,7 +295,7 @@ describe('an alert on Telegram', () => {
     const { chat, sent } = fakeChat();
     const zones = [{ name: 'door', paths: ['M0 0H640V360H0Z'] }];
     await sendDemoAlert({ chat, to: PERSON, folder: root, clip: { id: CLIP, name: 'Building entrance', width: 1280, height: 720 }, rule: { ...RULE, zones }, alert: ALERT, language: 'pidgin' });
-    expect(sent[0]).toMatchObject({ to: PERSON, text: 'Building entrance\nSomebody don open di door' });
+    expect(sent[0]).toMatchObject({ to: PERSON, text: '🚨 <b>ALERT: BUILDING ENTRANCE</b>\n<b>Somebody don open di door</b>\n⏱ 0:42' });
     expect(Buffer.compare(Buffer.from(sent[0]!.picture!), Buffer.from(plain))).not.toBe(0);
     const { width } = await sharp(sent[0]!.picture!).metadata();
     expect(width).toBe(64);
@@ -206,8 +304,33 @@ describe('an alert on Telegram', () => {
   it('is sent as words when no picture was kept', async () => {
     const { chat, sent } = fakeChat();
     await sendDemoAlert({ chat, to: PERSON, folder: '/nowhere', clip: { id: CLIP, name: 'Building entrance', width: 1280, height: 720 }, rule: RULE, alert: { ...ALERT, picture: null }, language: 'english' });
-    expect(sent[0]).toMatchObject({ text: 'Building entrance\nAlert when someone opens the door' });
+    expect(sent[0]).toMatchObject({ text: '🚨 <b>ALERT: BUILDING ENTRANCE</b>\n<b>Someone opens the door</b>\n⏱ 0:42' });
     expect(sent[0]!.picture).toBeUndefined();
+  });
+
+  it('still arrives as words when its picture cannot be sent, so an alert is never lost to the picture', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'alert-'));
+    await mkdir(join(root, 'clips', CLIP, 'evidence'), { recursive: true });
+    await writeFile(join(root, 'clips', CLIP, 'evidence', 'k1.jpg'), await picture());
+    const { chat, sent } = fakeChat();
+    chat.sendPicture = async () => {
+      throw new TypeError('fetch failed');
+    };
+    await sendDemoAlert({ chat, to: PERSON, folder: root, clip: { id: CLIP, name: 'Building entrance', width: 1280, height: 720 }, rule: RULE, alert: ALERT, language: 'english' });
+    expect(sent).toEqual([{ to: PERSON, text: '🚨 <b>ALERT: BUILDING ENTRANCE</b>\n<b>Someone opens the door</b>\n⏱ 0:42' }]);
+  });
+
+  it('reports a failure when the words cannot be sent either', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'alert-'));
+    await mkdir(join(root, 'clips', CLIP, 'evidence'), { recursive: true });
+    await writeFile(join(root, 'clips', CLIP, 'evidence', 'k1.jpg'), await picture());
+    const { chat } = fakeChat();
+    const offline = async () => {
+      throw new TypeError('fetch failed');
+    };
+    chat.sendPicture = offline;
+    chat.sendText = offline;
+    await expect(sendDemoAlert({ chat, to: PERSON, folder: root, clip: { id: CLIP, name: 'Building entrance', width: 1280, height: 720 }, rule: RULE, alert: ALERT, language: 'english' })).rejects.toThrow();
   });
 });
 
@@ -287,7 +410,9 @@ describe('the demo bot', () => {
     const b = bot();
     await b.instance.handle(message({ text: `/start ${b.links.token(VISITOR, CLIP)}` }));
     expect(b.links.ofPerson(PERSON)?.visitor).toBe(VISITOR);
-    expect(b.sent[0]!.text).toContain('Building entrance');
+    expect(b.sent[0]!.text).toContain('any clip');
+    expect(b.sent[0]!.text).not.toMatch(/^Linked to Building entrance/);
+    expect(b.sent[0]!.text).toContain('the clip you last opened, which is Building entrance at the moment');
   });
 
   it('sends someone who found the bot on their own to the page, and spends nothing on them', async () => {
@@ -367,7 +492,7 @@ describe('the demo bot', () => {
     expect(b.typed[0]).toMatchObject({ visitor: VISITOR, text: 'Tell me when the door opens.' });
     expect(b.typed[0]!.sent).toContain('right');
     expect(b.charged.at(-1)).toEqual({ who: `telegram:${PERSON}`, kind: 'rule' });
-    expect(b.sent.at(-1)!.text).toBe('Building entrance\nTell me when the door opens.');
+    expect(b.sent.at(-1)!.text).toContain('🚨 <b>ALERT: BUILDING ENTRANCE</b>\n<b>The door opens</b>');
   });
 
   it('spends one rule however many times Confirm is pressed', async () => {
@@ -417,6 +542,14 @@ describe('the demo bot', () => {
     b.store.saveZoneEdit(VISITOR, CLIP, { zone: 'door', name: 'entrance' });
     await b.instance.handle(message({ text: 'Tell me when the entrance opens.' }));
     expect(b.sent.at(-1)!.text).toContain('Zones: entrance');
+  });
+
+  it('sends a question about the clip to the page, and plans no rule', async () => {
+    const b = bot({ draft: { draft: async () => ({ question: true }) } });
+    await linked(b);
+    await b.instance.handle(message({ text: 'How many people came in?' }));
+    expect(b.sent.at(-1)!.text).toContain('Questions about a clip are answered on the page');
+    expect(b.sent.at(-1)!.buttons).toBeUndefined();
   });
 
   it('asks for other words when no plan fits the clip, showing what it holds and no model’s reasoning', async () => {

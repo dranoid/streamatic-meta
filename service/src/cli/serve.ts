@@ -17,6 +17,7 @@ import { requireMediaTools } from '../cameras/media-tools.js';
 import { AlertCopier } from '../backend/alert-copier.js';
 import { BackendClient } from '../backend/client.js';
 import { Trials } from '../backend/trials.js';
+import { ClipDetection, detectionClient } from '../demo/clip-detection.js';
 import { DemoEngine } from '../demo/engine.js';
 import { DemoLimits } from '../demo/limits.js';
 import { COST_MICRO_USD, demoHandler, NEEDS_KEYS, publicOnly, visitorOf } from '../demo/routes.js';
@@ -142,6 +143,7 @@ if (backend && !isPublic) {
 }
 
 const limits = new DemoLimits({ file: join(folder, 'limits.json'), ceilingMicroUsd: Number(process.env.DEMO_CEILING_USD ?? 10) * 1_000_000 });
+const demoStore = isPublic ? new DemoStore(join(folder, 'demo.db')) : null;
 const app = appHandler({
   events,
   rules,
@@ -168,6 +170,14 @@ const app = appHandler({
     nameThing: async (picture, box) => followPlanner.nameThing(await cropAround(picture, box)),
     outlineAll: (picture, words) => sam.outlineAll(picture, words),
     outlineIn: (picture, size, box, name) => sam.outlineIn(picture, size, box, name),
+    ...(demoStore
+      ? {
+          tracksOf: {
+            add: (request: IncomingMessage, response: ServerResponse, clip: string, ids: string[]) => ids.forEach((id) => demoStore.addTrack(visitorOf(request, response), clip, id)),
+            list: (request: IncomingMessage, response: ServerResponse, clip: string) => demoStore.tracks(visitorOf(request, response), clip),
+          },
+        }
+      : {}),
   },
   timeZone,
   playing: (id) => {
@@ -183,7 +193,7 @@ const app = appHandler({
 });
 
 async function publicHandler() {
-  const store = new DemoStore(join(folder!, 'demo.db'));
+  const store = demoStore!;
   // Without a login nothing asks the engine for the backend: the route refuses first, and the copy already holds its clips.
   const engine = new DemoEngine({
     store,
@@ -222,6 +232,12 @@ async function publicHandler() {
     }
   }
   const footage = JSON.parse(await readFile(join(folder!, 'footage.json'), 'utf8').catch(() => '{}')) as { credit?: 'meva' };
+  const detection =
+    process.env.DETECT_URL && process.env.DETECT_SECRET
+      ? new ClipDetection({ client: detectionClient({ url: process.env.DETECT_URL, secret: process.env.DETECT_SECRET }), videoOf: (clip) => join(folder!, 'clips', clip, 'clip.mp4') })
+      : null;
+  // Every clip is detected as the server starts, so a visitor's question is answered in seconds.
+  if (detection) for (const clip of store.clips()) detection.ensure(clip.id);
   const demo = demoHandler({
     credit: footage.credit ?? null,
     engine,
@@ -230,6 +246,7 @@ async function publicHandler() {
     clips,
     cameras,
     guidePlanner,
+    asker: spark,
     voiceNotes,
     setUp: (bytes) =>
       setUpCamera({
@@ -238,6 +255,8 @@ async function publicHandler() {
         sam,
         spark: new SparkSetupPlanner(spark, 'a place someone wants to keep an eye on'),
       }),
+    setUpNow: (camera, pictures) => setUpCamera({ pictures, baseWords: camera.baseWords, sam, spark: new SparkSetupPlanner(spark, camera.site) }),
+    detection,
     folder: folder!,
     trackSeconds: TRACK_SECONDS,
     abilities,

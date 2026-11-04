@@ -21,7 +21,12 @@ export interface GuideSearch {
   search: { item: string; words: string[] };
 }
 
-export type GuideDraft = GuidePlan | GuideSearch;
+// The person asked about what happened in the clip, which the counting tools answer; no rule and no search.
+export interface GuideQuestion {
+  question: true;
+}
+
+export type GuideDraft = GuidePlan | GuideSearch | GuideQuestion;
 
 export interface GuidePlanner {
   // Each refused plan comes back with what was wrong with it, so the next draft can put it right.
@@ -31,6 +36,7 @@ export interface GuidePlanner {
 export type PlanResult =
   | { status: 'ready'; plan: GuidePlan; attempts: PlanAttempt[] }
   | { status: 'search'; item: string; words: string[]; attempts: PlanAttempt[] }
+  | { status: 'question'; attempts: PlanAttempt[] }
   | { status: 'needs-person'; problems: string[]; attempts: PlanAttempt[] };
 
 const MAX_ZONES = 4;
@@ -104,6 +110,7 @@ export async function planRule({
   const attempts: PlanAttempt[] = [];
   for (let tries = 0; tries < MAX_TRIES; tries++) {
     const plan = await planner.draft({ sentence, site, zones }, attempts.slice());
+    if ('question' in plan) return { status: 'question', attempts };
     if ('search' in plan) {
       const item = bareName(plan.search.item);
       return { status: 'search', item, words: searchWords(item, plan.search.words), attempts };

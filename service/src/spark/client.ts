@@ -12,7 +12,24 @@ const CHAT_URL = 'https://inference.baseten.co/v1/chat/completions';
 const MODEL = 'meta-models/muse-spark-open-1026';
 const MAX_ATTEMPTS = 6;
 
+// How many rounds of tool calls before tools are withdrawn and the model must answer.
+const MOST_TOOL_ROUNDS = 4;
+
 export class SparkError extends Error {}
+
+// The model answered in words where JSON was asked for, which is how it declines a request.
+export class SparkDeclined extends SparkError {}
+
+export interface SparkTool {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+interface SparkMessage {
+  content?: string;
+  tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>;
+}
 
 export class SparkClient {
   readonly #apiKey: string;
@@ -40,7 +57,7 @@ export class SparkClient {
     try {
       parsed = JSON.parse(content.slice(content.indexOf('{'), content.lastIndexOf('}') + 1));
     } catch {
-      throw new SparkError(`Muse Spark Open did not reply with JSON: ${content.slice(0, 200)}`);
+      throw new SparkDeclined(`Muse Spark Open did not reply with JSON: ${content.slice(0, 200)}`);
     }
     const result = shape.safeParse(parsed);
     if (!result.success) {
@@ -49,9 +66,39 @@ export class SparkClient {
     return result.data;
   }
 
+  // Each tool call is run here and its result sent back, until the model answers in words.
+  async withTools(instruction: string, tools: SparkTool[], run: (name: string, args: unknown) => Promise<unknown>): Promise<string> {
+    const messages: unknown[] = [{ role: 'user', content: instruction }];
+    const offered = tools.map((tool) => ({ type: 'function', function: tool }));
+    for (let round = 0; ; round++) {
+      const canCall = round < MOST_TOOL_ROUNDS;
+      const reply = await this.#send({ model: MODEL, messages, ...(canCall ? { tools: offered } : {}) });
+      if (!canCall || !reply.tool_calls?.length) return reply.content ?? '';
+      messages.push(reply);
+      for (const call of reply.tool_calls) {
+        const result = await this.#runTool(call.function, run);
+        messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) });
+      }
+    }
+  }
+
+  async #runTool({ name, arguments: args }: { name: string; arguments: string }, run: (name: string, args: unknown) => Promise<unknown>): Promise<unknown> {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(args);
+    } catch {
+      return { error: 'The arguments could not be read.' };
+    }
+    return run(name, parsed);
+  }
+
   async #ask(content: unknown[]): Promise<string> {
+    return (await this.#send({ model: MODEL, messages: [{ role: 'user', content }] })).content ?? '';
+  }
+
+  async #send(request: unknown): Promise<SparkMessage> {
     // Spark Open always reasons; no effort setting reliably shortens it, so none is sent.
-    const body = JSON.stringify({ model: MODEL, messages: [{ role: 'user', content }] });
+    const body = JSON.stringify(request);
     for (let attempt = 1; ; attempt++) {
       const response = await this.#fetch(CHAT_URL, {
         method: 'POST',
@@ -65,8 +112,8 @@ export class SparkClient {
       if (!response.ok) {
         throw new SparkError(`Muse Spark Open returned ${response.status}.`);
       }
-      const reply = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
-      return reply.choices?.[0]?.message?.content ?? '';
+      const reply = (await response.json()) as { choices?: Array<{ message?: SparkMessage }> };
+      return reply.choices?.[0]?.message ?? {};
     }
   }
 }

@@ -53,7 +53,9 @@ async function start({
   connected = true,
   spend,
   planned,
+  tracksOf,
 }: {
+  tracksOf?: { add: (request: IncomingMessage, response: ServerResponse, clip: string, ids: string[]) => void; list: (request: IncomingMessage, response: ServerResponse, clip: string) => string[] };
   // What the guide's planner drafts, in place of its plain plan on the door.
   planned?: Partial<GuidePlan>;
   plan?: Plan;
@@ -176,6 +178,7 @@ async function start({
         nameThing: async () => 'bag',
         outlineAll: async (_picture, words) => Object.fromEntries(words.map((w) => [w, w === 'nothing' ? [] : [{ word: w, objectId: '0', box: w === 'car' ? carBox : { left: 40, top: 5, right: 60, bottom: 30 }, path: 'M1 1Z' }]])),
         outlineIn: async (_picture, _size, box, name) => (box.left === 2 ? null : { word: name, objectId: '1', box, path: 'M2 2Z' }),
+        ...(tracksOf ? { tracksOf } : {}),
       },
       timeZone: 'Africa/Lagos',
       now: () => AT + 60_000,
@@ -705,6 +708,25 @@ describe('following a thing in a clip', () => {
     expect(job).toMatchObject({ state: 'done', framesTotal: 20, follows: [{ name: 'car', spans: [{ from: 3, to: 3 }] }] });
     expect(followCalls.tracks).toEqual([{ frame: 3, targets: [{ box: { left: 5, top: 5, right: 20, bottom: 20 } }] }]);
     expect(((await (await fetch(`${base}/api/clips/yard/follows`)).json()) as unknown[]).length).toBe(1);
+  });
+
+  it('lists only what this person tracked, and tracks once however many ask', async () => {
+    const owned = new Map<string, string[]>();
+    const who = (request: IncomingMessage) => String(request.headers['x-who']);
+    const { base, followCalls } = await start({
+      clip: true,
+      tracksOf: { add: (request, _response, _clip, ids) => void owned.set(who(request), [...(owned.get(who(request)) ?? []), ...ids]), list: (request) => owned.get(who(request)) ?? [] },
+    });
+    const { things } = (await (await post(base, '/api/clips/yard/frames/3/things', {})).json()) as { things: Array<{ id: string }> };
+    const track = (person: string) => fetch(`${base}/api/clips/yard/follows`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-who': person }, body: JSON.stringify({ frame: 3, things: [things[0]!.id] }) });
+    const listed = async (person: string) => (await (await fetch(`${base}/api/clips/yard/follows`, { headers: { 'x-who': person } })).json()) as Array<{ id: string }>;
+    const { id } = (await (await track('one')).json()) as { id: string };
+    await vi.waitFor(async () => expect(((await (await fetch(`${base}/api/clips/yard/follows/${encodeURIComponent(id)}`)).json()) as { state: string }).state).toBe('done'));
+    expect((await listed('one')).map((f) => f.id)).toEqual([id]);
+    expect(await listed('two')).toEqual([]);
+    await track('two');
+    expect((await listed('two')).map((f) => f.id)).toEqual([id]);
+    expect(followCalls.tracks).toHaveLength(1);
   });
 
   it('follows the things selected, not another on the same frame, and charges one track for the request', async () => {

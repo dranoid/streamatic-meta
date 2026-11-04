@@ -4,7 +4,7 @@ import { COST_MICRO_USD, NEEDS_BACKEND, NEEDS_KEYS } from '../demo/routes.js';
 import type { DemoEngine } from '../demo/engine.js';
 import type { DemoLimits, Spending } from '../demo/limits.js';
 import { placedBox, ruleFromPlan } from '../demo/rule-plan.js';
-import { withZoneEdits } from '../demo/visitor-zones.js';
+import { asVisitorSees } from '../demo/visitor-zones.js';
 import type { DemoAlert, DemoStore } from '../demo/store.js';
 import type { ClipFolder } from '../follow/clips.js';
 import { planRule, type GuidePlan, type GuidePlanner } from '../guide/plan.js';
@@ -32,7 +32,7 @@ interface Held {
 export interface DemoBotOptions {
   chat: BotChat;
   links: TelegramLinks;
-  store: Pick<DemoStore, 'clip' | 'rule' | 'zoneEdits'>;
+  store: Pick<DemoStore, 'clip' | 'rule' | 'zoneEdits' | 'liveSetup'>;
   engine: Pick<DemoEngine, 'type' | 'typed'>;
   limits: Pick<DemoLimits, 'charge'>;
   cameras: Pick<CameraFolder, 'get'>;
@@ -124,13 +124,13 @@ export class DemoBot {
   async #greet(person: number): Promise<void> {
     const link = this.#options.links.ofPerson(person)!;
     const name = (await this.#options.clips.get(link.clip))?.name ?? 'the clip';
-    await this.#say(person, `Linked to ${name}. Alerts from the rules you tick on the page will arrive here as the clip plays. You can also send a voice note in English, or a sentence, here to add a rule to this clip. Send /stop to end this.`);
+    await this.#say(person, `This chat is now linked to Streamatic. Alerts from the rules you select on any clip will arrive here as that clip plays. You can also send a voice note in English, or a sentence, here to add a rule to the clip you last opened, which is ${name} at the moment. Send /stop to end this.`);
   }
 
   // The camera with the zones as the person's page shows them.
   async #camera(link: TelegramLink) {
     const camera = await this.#options.cameras.get(link.clip);
-    return camera && withZoneEdits(camera, this.#options.store.zoneEdits(link.visitor, link.clip));
+    return camera && asVisitorSees(camera, this.#options.store, link.visitor);
   }
 
   async #heard(person: number, link: TelegramLink, file: string): Promise<string> {
@@ -150,6 +150,9 @@ export class DemoBot {
     const result = await planRule({ sentence, site: camera.site, zones: camera.zones, planner });
     if (result.status === 'search') {
       return this.#say(person, `You said: ${sentence}\n\nFinding and tracking an item is done on the page, on the clip. In this chat, please say what ${clip.name} should alert you about.`);
+    }
+    if (result.status === 'question') {
+      return this.#say(person, `You said: ${sentence}\n\nQuestions about a clip are answered on the page. In this chat, please say what ${clip.name} should alert you about.`);
     }
     if (result.status !== 'ready') {
       return this.#say(person, `You said: ${sentence}\n\nA rule for this could not be planned on ${clip.name}. It holds: ${camera.zones.map((z) => z.name).join(', ')}. Please say it another way.`);

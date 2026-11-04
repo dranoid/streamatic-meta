@@ -12,6 +12,13 @@ const zones: CameraZone[] = [
 const asked = 'Alert me if the main gate is open after 10 pm.';
 const gatePlan: GuidePlan = { sentence: asked, about: 'main gate', zones: ['Main gate'], box: null, hours: { from: 22, to: 6 } };
 
+describe('a question about the clip', () => {
+  it('is handed on at once, with no plan to check', async () => {
+    const result = await planRule({ sentence: 'How many people came in?', site: 's', zones, planner: { draft: async () => ({ question: true }) } });
+    expect(result).toEqual({ status: 'question', attempts: [] });
+  });
+});
+
 describe('checkPlan', () => {
   it('passes a plan whose zones are on the camera and whose hours are on the clock', () => {
     expect(checkPlan(gatePlan, zones, asked)).toEqual({ passed: true, problems: [] });

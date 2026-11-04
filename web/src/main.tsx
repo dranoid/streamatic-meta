@@ -22,13 +22,17 @@ const queryClient = new QueryClient({ defaultOptions: { queries: { refetchOnWind
 function App() {
   const parsed = useRoute();
   const app = useQuery({ queryKey: ['app'], queryFn: api.app, staleTime: Infinity });
-  if (app.isPending) return null;
   const isPublic = app.data?.public ?? false;
+  const cameras = useQuery({ queryKey: ['demo-cameras'], queryFn: api.demoCameras, enabled: isPublic });
+  if (app.isPending || (isPublic && cameras.isPending)) return null;
   // The public page has no cameras of its own, so those paths open its clips. The private app sets up its cameras on their own pages.
-  const route = isPublic && ['cameras', 'camera', 'event'].includes(parsed.page) ? ({ page: 'clips' } as const) : !isPublic && (parsed.page === 'setup' || parsed.page === 'setup-camera') ? ({ page: 'cameras' } as const) : parsed;
+  const opened = isPublic && ['cameras', 'camera', 'event'].includes(parsed.page) ? ({ page: 'clips' } as const) : !isPublic && (parsed.page === 'setup' || parsed.page === 'setup-camera') ? ({ page: 'cameras' } as const) : parsed;
+  // Until this visitor has set up a camera, the public page is Setup and About. A clip's address stays open, since its page sends them to set up that camera and keeps what they came to do.
+  const nothingSetUp = isPublic && cameras.data !== undefined && !cameras.data.some((camera) => camera.setUp);
+  const route = nothingSetUp && !['setup', 'setup-camera', 'clip', 'about'].includes(opened.page) ? ({ page: 'setup' } as const) : opened;
   return (
     <AbilitiesProvider value={app.data ?? null}>
-    <AppShell route={route} isPublic={isPublic} credit={app.data?.credit ?? null}>
+    <AppShell route={route} isPublic={isPublic} nothingSetUp={nothingSetUp} credit={app.data?.credit ?? null}>
       {route.page === 'cameras' && <CamerasPage />}
       {route.page === 'camera' && <CameraPage id={route.id} />}
       {route.page === 'events' && (isPublic ? <DemoEventsPage /> : <EventsPage />)}

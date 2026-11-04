@@ -1,9 +1,13 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { BellRing, Cctv, Clapperboard, ImageUp, Info, Menu, Moon, Search, Sun, Wand2, X } from 'lucide-react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { BellRing, Cctv, Clapperboard, ImageUp, Info, LoaderCircle, Menu, Moon, RotateCcw, Search, Sun, Wand2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Link } from '@/components/ui/link';
+import { Notice } from '@/components/ui/notice';
+import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import type { Route } from '@/lib/router';
+import { navigate, type Route } from '@/lib/router';
+import { forgetAllProgress } from '@/lib/setup-progress';
 
 // Said only over the public clips: on the footage of a deployed camera it would be untrue.
 export const RECORDED_CLIPS_NOTE = 'This page uses recorded clips. The cameras Streamatic has deployed are on private property, so for reasons of permission and privacy they appear only in the submission video.';
@@ -23,9 +27,20 @@ const PUBLIC_NAV = [
   { href: '/about', label: 'About', icon: Info, pages: ['about'] },
 ];
 
-export function AppShell({ route, isPublic = false, credit = null, children }: { route: Route; isPublic?: boolean; credit?: 'meva' | null; children: ReactNode }) {
+export function AppShell({ route, isPublic = false, nothingSetUp = false, credit = null, children }: { route: Route; isPublic?: boolean; nothingSetUp?: boolean; credit?: 'meva' | null; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   useEffect(() => setOpen(false), [route]);
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  const queryClient = useQueryClient();
+  const reset = useMutation({
+    mutationFn: api.resetDemo,
+    onSuccess: async () => {
+      forgetAllProgress();
+      setConfirmingReset(false);
+      await queryClient.invalidateQueries();
+      navigate('/setup');
+    },
+  });
 
   const sidebar = (
     <div className='flex h-full flex-col gap-2 p-3'>
@@ -39,7 +54,7 @@ export function AppShell({ route, isPublic = false, credit = null, children }: {
       <nav aria-label='Main' className='mt-2'>
         <p className='text-muted-foreground px-2 pb-1.5 text-xs font-medium'>Camera intelligence</p>
         <ul className='space-y-1'>
-          {(isPublic ? PUBLIC_NAV : PRIVATE_NAV).map(({ href, label, icon: Icon, pages }) => {
+          {(isPublic ? PUBLIC_NAV.filter(({ href }) => !nothingSetUp || href === '/setup') : PRIVATE_NAV).map(({ href, label, icon: Icon, pages }) => {
             const active = pages.includes(route.page);
             return (
               <li key={href}>
@@ -90,9 +105,34 @@ export function AppShell({ route, isPublic = false, credit = null, children }: {
           <Button variant='ghost' size='icon' className='md:hidden' aria-label='Open the menu' onClick={() => setOpen(true)}>
             <Menu />
           </Button>
-          <span className='text-muted-foreground text-sm'>Camera intelligence</span>
-          <ThemeSwitch />
+          <span className='text-muted-foreground min-w-0 truncate text-sm'>Camera intelligence</span>
+          <div className='ml-auto flex shrink-0 items-center gap-1'>
+            {isPublic && !nothingSetUp && (
+              <Button variant='ghost' size='sm' onClick={() => setConfirmingReset(true)}>
+                <RotateCcw />
+                Reset
+              </Button>
+            )}
+            <ThemeSwitch />
+          </div>
         </header>
+        {confirmingReset && (
+          <div className='mx-auto w-full max-w-[90rem] px-4 pt-4 md:px-6'>
+            <Notice>
+              <p>Reset everything? Every camera returns to not set up, and your zone changes, rules and tracks are removed.</p>
+              {reset.isError && <p className='text-destructive mt-1 text-xs'>{reset.error.message}</p>}
+              <div className='mt-2 flex flex-wrap gap-2'>
+                <Button size='sm' disabled={reset.isPending} onClick={() => reset.mutate()}>
+                  {reset.isPending && <LoaderCircle className='animate-spin' />}
+                  Reset
+                </Button>
+                <Button size='sm' variant='outline' onClick={() => setConfirmingReset(false)}>
+                  Cancel
+                </Button>
+              </div>
+            </Notice>
+          </div>
+        )}
         <main className='mx-auto w-full max-w-[90rem] flex-1 px-4 py-6 md:px-6'>{children}</main>
         {isPublic && <SmallPrint credit={credit} />}
       </div>
@@ -111,7 +151,7 @@ function SmallPrint({ credit }: { credit: 'meva' | null }) {
           <a className='underline underline-offset-2' href='https://mevadata.org/resources/MEVA-data-license.txt' target='_blank' rel='noreferrer'>
             CC BY 4.0
           </a>
-          , resized and re-encoded for this page. Kitware and IARPA do not endorse this work.
+          , resized and re-encoded for this page. This work is not affiliated with Kitware or IARPA.
         </p>
       )}
     </footer>
@@ -131,7 +171,7 @@ function ThemeSwitch() {
     setDark(next);
   };
   return (
-    <Button variant='ghost' size='icon' className='ml-auto' aria-label={dark ? 'Use the light theme' : 'Use the dark theme'} onClick={toggle}>
+    <Button variant='ghost' size='icon' aria-label={dark ? 'Use the light theme' : 'Use the dark theme'} onClick={toggle}>
       {dark ? <Sun /> : <Moon />}
     </Button>
   );

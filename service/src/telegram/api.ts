@@ -32,20 +32,39 @@ export interface Update {
 }
 
 export interface BotChat {
-  sendText(to: number, text: string, buttons?: Button[]): Promise<void>;
+  sendText(to: number, text: string, buttons?: Button[], options?: { html: boolean }): Promise<void>;
+  // Only an alert carries a picture, and its caption is written as Telegram's HTML with the person's own words escaped.
   sendPicture(to: number, jpeg: Uint8Array, caption: string): Promise<void>;
   answer(buttonPress: string): Promise<void>;
   download(file: string): Promise<Uint8Array>;
 }
 
+const SEND_ATTEMPTS = 3;
+const BETWEEN_ATTEMPTS_MS = 1_000;
+
 // The token is part of every address here, so an address never goes into an error or a log.
 export class TelegramApi implements BotChat {
   readonly #token: string;
   readonly #fetch: typeof fetch;
+  readonly #wait: (ms: number) => Promise<void>;
 
-  constructor({ token, fetch: fetchImpl = fetch }: { token: string; fetch?: typeof fetch }) {
+  constructor({ token, fetch: fetchImpl = fetch, wait = (ms: number) => new Promise<void>((done) => setTimeout(done, ms)) }: { token: string; fetch?: typeof fetch; wait?: (ms: number) => Promise<void> }) {
     this.#token = token;
     this.#fetch = fetchImpl;
+    this.#wait = wait;
+  }
+
+  // Only a connection that dropped is tried again: a refusal from Telegram would be refused again.
+  async #sent(send: () => Promise<unknown>): Promise<void> {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await send();
+        return;
+      } catch (error) {
+        if (error instanceof TelegramError || attempt === SEND_ATTEMPTS) throw error;
+        await this.#wait(BETWEEN_ATTEMPTS_MS * attempt);
+      }
+    }
   }
 
   async #result<T>(method: string, init?: RequestInit, query = ''): Promise<T> {
@@ -68,20 +87,24 @@ export class TelegramApi implements BotChat {
     return this.#result('getUpdates', undefined, `?${query}`);
   }
 
-  async sendText(to: number, text: string, buttons?: Button[]): Promise<void> {
-    await this.#json('sendMessage', {
-      chat_id: to,
-      text,
-      ...(buttons ? { reply_markup: { inline_keyboard: [buttons.map((b) => ({ text: b.text, callback_data: b.data }))] } } : {}),
-    });
+  async sendText(to: number, text: string, buttons?: Button[], options?: { html: boolean }): Promise<void> {
+    await this.#sent(() =>
+      this.#json('sendMessage', {
+        chat_id: to,
+        text,
+        ...(options?.html ? { parse_mode: 'HTML' } : {}),
+        ...(buttons ? { reply_markup: { inline_keyboard: [buttons.map((b) => ({ text: b.text, callback_data: b.data }))] } } : {}),
+      }),
+    );
   }
 
   async sendPicture(to: number, jpeg: Uint8Array, caption: string): Promise<void> {
     const form = new FormData();
     form.set('chat_id', String(to));
     form.set('caption', caption);
+    form.set('parse_mode', 'HTML');
     form.set('photo', new Blob([new Uint8Array(jpeg)], { type: 'image/jpeg' }), 'alert.jpg');
-    await this.#result('sendPhoto', { method: 'POST', body: form });
+    await this.#sent(() => this.#result('sendPhoto', { method: 'POST', body: form }));
   }
 
   async answer(buttonPress: string): Promise<void> {

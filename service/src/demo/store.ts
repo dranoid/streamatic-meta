@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import type { CameraSetup } from '../setup/camera-setup.js';
 import type { CaptionLanguage } from '../spark/alert-caption.js';
 
 export interface DemoClipRow {
@@ -139,6 +140,14 @@ export class DemoStore {
         visitor TEXT NOT NULL, camera TEXT NOT NULL, zone TEXT NOT NULL, name TEXT,
         PRIMARY KEY (visitor, camera, zone)
       );
+      CREATE TABLE IF NOT EXISTS demo_live_setups (
+        visitor TEXT NOT NULL, camera TEXT NOT NULL, setup TEXT NOT NULL,
+        PRIMARY KEY (visitor, camera)
+      );
+      CREATE TABLE IF NOT EXISTS demo_tracks (
+        visitor TEXT NOT NULL, clip TEXT NOT NULL, track TEXT NOT NULL,
+        PRIMARY KEY (visitor, clip, track)
+      );
     `);
   }
 
@@ -193,6 +202,36 @@ export class DemoStore {
     this.#db.prepare('DELETE FROM demo_rules WHERE id = ?').run(id);
   }
 
+  liveSetup(visitor: string, camera: string): CameraSetup | null {
+    const row = this.#db.prepare('SELECT setup FROM demo_live_setups WHERE visitor = ? AND camera = ?').get(visitor, camera) as { setup: string } | undefined;
+    return row ? (JSON.parse(row.setup) as CameraSetup) : null;
+  }
+
+  saveLiveSetup(visitor: string, camera: string, setup: CameraSetup): void {
+    this.#db.prepare('INSERT OR REPLACE INTO demo_live_setups (visitor, camera, setup) VALUES (?, ?, ?)').run(visitor, camera, JSON.stringify(setup));
+  }
+
+  clearLiveSetup(visitor: string, camera: string): void {
+    this.#db.prepare('DELETE FROM demo_live_setups WHERE visitor = ? AND camera = ?').run(visitor, camera);
+  }
+
+  addTrack(visitor: string, clip: string, track: string): void {
+    this.#db.prepare('INSERT OR IGNORE INTO demo_tracks (visitor, clip, track) VALUES (?, ?, ?)').run(visitor, clip, track);
+  }
+
+  tracks(visitor: string, clip: string): string[] {
+    return (this.#db.prepare('SELECT track FROM demo_tracks WHERE visitor = ? AND clip = ?').all(visitor, clip) as unknown as Array<{ track: string }>).map((row) => row.track);
+  }
+
+  // Everything this visitor did on the page; what the clips themselves hold stays.
+  forgetVisitor(visitor: string): void {
+    const typed = this.#db.prepare(`SELECT id FROM demo_rules WHERE kind = 'typed' AND visitor = ?`).all(visitor) as unknown as Array<{ id: string }>;
+    for (const { id } of typed) this.removeRule(id);
+    this.#db.prepare('DELETE FROM demo_zone_edits WHERE visitor = ?').run(visitor);
+    this.#db.prepare('DELETE FROM demo_live_setups WHERE visitor = ?').run(visitor);
+    this.#db.prepare('DELETE FROM demo_tracks WHERE visitor = ?').run(visitor);
+  }
+
   zoneEdits(visitor: string, camera: string): ZoneEdit[] {
     return this.#db.prepare('SELECT zone, name FROM demo_zone_edits WHERE visitor = ? AND camera = ?').all(visitor, camera) as unknown as ZoneEdit[];
   }
@@ -219,15 +258,25 @@ export class DemoStore {
 
   // A rule's alerts for each piece of the clip it could be ticked in, all at once, so a half-finished copy is never read.
   saveAlerts(rule: string, byPiece: Array<{ piece: number; alerts: Array<Omit<DemoAlert, 'rule' | 'captions'>> }>): void {
+    this.#writeAlerts(rule, byPiece, true);
+  }
+
+  // What a rule still reading the clip has raised so far: it replaces what was shown, and the rule is not yet copied.
+  saveAlertsSoFar(rule: string, alerts: Array<Omit<DemoAlert, 'rule' | 'captions'>>): void {
+    this.#writeAlerts(rule, [{ piece: 0, alerts }], false);
+  }
+
+  #writeAlerts(rule: string, byPiece: Array<{ piece: number; alerts: Array<Omit<DemoAlert, 'rule' | 'captions'>> }>, copied: boolean): void {
     const insert = this.#db.prepare(
       'INSERT OR REPLACE INTO demo_alerts (rule, piece, key, at_ms, shown_ms, delay_ms, message, severity, picture, caption) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     );
     this.#db.exec('BEGIN');
     try {
+      this.#db.prepare('DELETE FROM demo_alerts WHERE rule = ?').run(rule);
       for (const { piece, alerts } of byPiece) {
         for (const a of alerts) insert.run(rule, piece, a.key, a.atMs, a.shownMs, a.delayMs, a.message, a.severity, a.picture, a.caption);
       }
-      this.#db.prepare('UPDATE demo_rules SET copied = 1 WHERE id = ?').run(rule);
+      if (copied) this.#db.prepare('UPDATE demo_rules SET copied = 1 WHERE id = ?').run(rule);
       this.#db.exec('COMMIT');
     } catch (error) {
       this.#db.exec('ROLLBACK');

@@ -113,17 +113,25 @@ export class DemoEngine {
 
   async #refresh(clip: { id: string; scenario: string; startsAt: number; lengthMs: number }, rule: DemoRule): Promise<void> {
     const latest = await this.#backend.demoRule(clip.scenario, rule.id);
+    const { readThrough, total } = latest.progress;
     // The alerts are in place before the rule says it is ready.
     if (latest.status === 'ready' && !this.#store.isCopied(rule.id)) {
       const { alerts } = await this.#backend.demoSchedule(clip.scenario, [{ draftRuleId: rule.id }]);
-      this.#store.saveAlerts(rule.id, [{ piece: 0, alerts: await this.#kept(clip.id, clip.startsAt, clip.lengthMs, alerts) }]);
+      this.#store.saveAlerts(rule.id, [{ piece: 0, alerts: await this.#kept(clip.id, clip.startsAt, clip.lengthMs, alerts, rule.id) }]);
       await this.#writeCaptions(rule.id, latest.rule?.name ?? rule.name);
+    } else if (latest.status === 'asking' && readThrough > rule.progress.done) {
+      // What has been read so far is a courtesy to the page: the rule goes on, and the next part read asks again.
+      await this.#backend
+        .demoSchedule(clip.scenario, [{ draftRuleId: rule.id, soFar: true }])
+        .then(async ({ alerts }) => this.#store.saveAlertsSoFar(rule.id, await this.#kept(clip.id, clip.startsAt, clip.lengthMs, alerts, rule.id)))
+        .catch((error: unknown) => console.error(`Reading a rule's alerts so far: ${error instanceof Error ? error.message : String(error)}`));
     }
     this.#store.updateRule(rule.id, {
       name: latest.rule?.name ?? rule.name,
       readsAs: latest.rule?.readsAs ?? null,
       status: latest.status,
-      progress: latest.progress,
+      // Only the unbroken stretch from the clip's start, since that is how far its alerts can be known.
+      progress: { done: readThrough, total },
       rewrites: latest.refusal?.rewrites ?? [],
       reason: latest.refusal?.reason ?? null,
       canAnswer: !latest.probe?.warns,
@@ -131,7 +139,8 @@ export class DemoEngine {
   }
 
   // Each alert on the clip's own clock, with its evidence picture fetched here, since the backend's address lapses within the hour.
-  async #kept(clip: string, startsAt: number, lengthMs: number, alerts: BackendAlert[]): Promise<Array<Omit<DemoAlert, 'rule' | 'captions'>>> {
+  async #kept(clip: string, startsAt: number, lengthMs: number, alerts: BackendAlert[], rule?: string): Promise<Array<Omit<DemoAlert, 'rule' | 'captions'>>> {
+    const held = new Map(rule ? this.#store.alerts(rule, 0).map((a) => [a.key, a.picture]) : []);
     return Promise.all(
       alerts.map(async (a) => {
         const atMs = Date.parse(a.triggeredAt) - startsAt;
@@ -143,7 +152,7 @@ export class DemoEngine {
           delayMs: shownMs - atMs,
           message: a.message,
           severity: a.severity,
-          picture: a.evidenceFrame ? await this.#keepPicture(clip, a.key, a.evidenceFrame.url) : null,
+          picture: held.get(a.key) ?? (a.evidenceFrame ? await this.#keepPicture(clip, a.key, a.evidenceFrame.url) : null),
           caption: a.evidenceFrame?.caption ?? null,
         };
       }),

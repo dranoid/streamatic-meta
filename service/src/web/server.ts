@@ -16,7 +16,7 @@ import { keepStretch } from '../events/copy-alert.js';
 import type { EventStore } from '../events/store.js';
 import type { ClipFolder } from '../follow/clips.js';
 import { findItem } from '../follow/find-item.js';
-import { MOST_TRACKED_AT_ONCE, type Follows } from '../follow/follows.js';
+import { MOST_TRACKED_AT_ONCE, trackIdsOf, type Follows } from '../follow/follows.js';
 import type { ClipThings, Thing } from '../follow/things.js';
 import { planRule, type GuidePlanner } from '../guide/plan.js';
 import { answerQuestion, type QuestionPlanner } from '../questions/answer.js';
@@ -149,6 +149,11 @@ export function appHandler({
     nameThing: (picture: Picture, box: Box) => Promise<string>;
     outlineAll: (picture: Picture, words: string[]) => Promise<Record<string, Outline[]>>;
     outlineIn: (picture: Picture, size: MediaSize, box: Box, name: string) => Promise<Outline | null>;
+    // On the public page a person sees only what they tracked, though a result is kept for whoever asks for it next.
+    tracksOf?: {
+      add: (request: IncomingMessage, response: ServerResponse, clip: string, ids: string[]) => void;
+      list: (request: IncomingMessage, response: ServerResponse, clip: string) => string[];
+    };
   };
   timeZone: string;
   now?: () => number;
@@ -271,8 +276,16 @@ export function appHandler({
     }
     if ((match = /^\/api\/clips\/([^/]+)\/follows$/.exec(path))) {
       const id = decodeURIComponent(match[1]!);
-      if (method === 'GET') return send(response, 200, await following.follows.list(id));
-      if (method === 'POST') return send(response, 202, { id: await startFollow(id, await readJson(request), charge) });
+      if (method === 'GET') {
+        const all = await following.follows.list(id);
+        const mine = following.tracksOf?.list(request, response, id);
+        return send(response, 200, mine ? all.filter((track) => mine.includes(track.id)) : all);
+      }
+      if (method === 'POST') {
+        const job = await startFollow(id, await readJson(request), charge);
+        following.tracksOf?.add(request, response, id, trackIdsOf(job));
+        return send(response, 202, { id: job });
+      }
     }
     if (method === 'GET' && (match = /^\/api\/clips\/([^/]+)\/follows\/([^/]+)$/.exec(path))) {
       const job = await following.follows.get(decodeURIComponent(match[1]!), decodeURIComponent(match[2]!));
@@ -296,7 +309,7 @@ export function appHandler({
       const camera = await cameras.get(parsed.data.camera);
       if (!camera) throw new RequestError(404, 'No such camera.');
       const drafted = await planRule({ sentence: parsed.data.sentence, site: camera.site, zones: camera.zones, planner: guidePlanner });
-      const planned = drafted.status === 'search' ? { status: 'needs-person', problems: ['Finding and tracking an item is done on a clip, under Search.'], attempts: [] } : drafted;
+      const planned = drafted.status === 'search' || drafted.status === 'question' ? { status: 'needs-person', problems: ['Finding, tracking and questions about a clip are done on a clip, under Search.'], attempts: [] } : drafted;
       return send(response, 200, { ...planned, elsewhere: camerasThatOutlined(parsed.data.sentence, camera, await cameras.list()) });
     }
     if (method === 'POST' && (match = /^\/api\/cameras\/([^/]+)\/voice-notes$/.exec(path))) {
@@ -439,7 +452,7 @@ export function appHandler({
 
   // Each zone with the rules that watch it, found by place, so the camera page can tell active zones from the rest.
   async function withRules(full: Camera) {
-    const { episode, backend: linked, group: _group, tested: _tested, ...camera } = full;
+    const { episode, backend: linked, group: _group, tested: _tested, questions: _questions, ...camera } = full;
     const onCamera = rules.list(camera.id);
     return {
       ...camera,

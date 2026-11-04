@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, ArrowRight, Check, CircleAlert, CircleCheck, LoaderCircle, Pencil, RotateCcw, Trash2, Wand2 } from 'lucide-react';
 import { PageHeader } from '@/components/layout/page-header';
@@ -26,11 +26,10 @@ const STEPS = [
 const ZONES_STEP = 1;
 const LAST_STEP = STEPS.length - 1;
 
-const READING_MS = 1_200;
 const ZONE_MS = 320;
 const LONGEST_REVEAL_MS = 6_000;
 
-// Counts up to `total`, one every `everyMs`, so a saved result is shown as it was found. Nothing is sent anywhere meanwhile.
+// Counts up to `total`, one every `everyMs`, so that many zones can be taken in one at a time. Nothing is sent anywhere meanwhile.
 function useReveal(total: number, everyMs: number, startKey: unknown): number {
   const [shown, setShown] = useState(0);
   useEffect(() => {
@@ -69,7 +68,7 @@ export function SetupPage() {
               <div className='min-w-0'>
                 <p className='font-semibold'>{camera.name}</p>
                 <Badge variant='outline' className='mt-2'>
-                  {progressOf(camera.id).ready ? 'Ready' : 'Not set up'}
+                  {camera.setUp ? 'Ready' : 'Not set up'}
                 </Badge>
               </div>
               <ArrowRight className='text-muted-foreground group-hover:text-foreground size-4 shrink-0 transition-colors' />
@@ -91,11 +90,28 @@ export function SetupCameraPage({ id }: { id: string }) {
   const clip = useQuery({ queryKey: ['demo-clip', id], queryFn: () => api.demoClip(id), enabled: hasClip });
   const name = cameras.data?.find((c) => c.id === id)?.name ?? 'Camera';
   const [progress, setProgress] = useState(() => progressOf(id));
-  const [stage, setStage] = useState<Stage>(() => (progress.ready ? 'ready' : 'start'));
+  const [stage, setStage] = useState<Stage>('start');
   const [problem, setProblem] = useState<string | null>(null);
   const [confirmingReset, setConfirmingReset] = useState(false);
+  // Where the person was going when they were sent here to set this camera up.
+  const [next] = useState(() => new URLSearchParams(location.search).get('next'));
+  const asked = next ? new URLSearchParams(next.split('?')[1] ?? '').get('ask') : null;
   const refreshClip = useCallback(() => void queryClient.invalidateQueries({ queryKey: ['demo-clip', id] }), [queryClient, id]);
+  const refreshWhatIsSetUp = useCallback(() => {
+    for (const queryKey of [['clips-list'], ['demo-cameras'], ['demo-events']]) void queryClient.invalidateQueries({ queryKey });
+  }, [queryClient]);
   useRefreshRulesBeingAdded(id, clip.data?.rules ?? [], refreshClip);
+  // The server says what this person has set up; what this browser remembers only says how far through the steps they got.
+  const placed = useRef(false);
+  useEffect(() => {
+    if (!setup.data || placed.current) return;
+    placed.current = true;
+    if (setup.data.live) setStage(progress.ready ? 'ready' : 0);
+    else if (progress.ready) {
+      saveProgress(id, null);
+      setProgress(progressOf(id));
+    }
+  }, [setup.data, progress.ready, id]);
 
   const finish = (offered: string[], added: string[], failed: string | null) => {
     const next = { ready: true, offered, added: [...progress.added, ...added] };
@@ -125,9 +141,19 @@ export function SetupCameraPage({ id }: { id: string }) {
       setProblem(null);
       setStage('start');
       refreshClip();
+      refreshWhatIsSetUp();
     },
   });
-  const hasProgress = progress.ready || progress.added.length > 0 || setup.data?.edited === true;
+  const { models } = useAbilities();
+  const running = useMutation({
+    mutationFn: () => api.runDemoSetup(id),
+    onSuccess: (found) => {
+      zonesChanged(found);
+      refreshWhatIsSetUp();
+      setStage(0);
+    },
+  });
+  const hasProgress = progress.ready || progress.added.length > 0 || setup.data?.edited === true || setup.data?.live === true;
 
   return (
     <div className='mx-auto max-w-4xl'>
@@ -135,7 +161,7 @@ export function SetupCameraPage({ id }: { id: string }) {
         trail={[{ href: '/setup', label: 'Setup' }]}
         icon={<Wand2 />}
         title={name}
-        badges={<Badge variant='outline'>{progress.ready ? 'Ready' : 'Not set up'}</Badge>}
+        badges={<Badge variant='outline'>{setup.data?.live ? 'Ready' : 'Not set up'}</Badge>}
         actions={
           <Button size='sm' variant='outline' disabled={!hasProgress || reset.isPending} onClick={() => setConfirmingReset(true)}>
             <RotateCcw />
@@ -160,25 +186,29 @@ export function SetupCameraPage({ id }: { id: string }) {
           </div>
         </Notice>
       )}
+      {next && !setup.data?.live && <Notice className='mb-4'>{asked ? `Set this camera up first. “${asked}” continues on its clip afterwards.` : 'Set this camera up first. Its clip opens afterwards.'}</Notice>}
       {setup.isError && <Notice tone='error'>{setup.error.message}</Notice>}
       {setup.isPending && <Skeleton className='aspect-video rounded-xl' />}
       {setup.data && stage === 'start' && (
         <Card>
           <CardContent className='space-y-4'>
-            <PictureFrame src={setup.data.picture} alt={`The view from ${name}`} />
+            <PictureFrame src={setup.data.picture} alt={`The view from ${name}`}>
+              {running.isPending && <PictureBusy label='Finding what is in view' />}
+            </PictureFrame>
             <div>
-              <p className='text-sm'>Setup finds what is in view on this camera, outlines each item as a zone, and suggests rules for you to add.</p>
-              <p className='text-muted-foreground mt-1 text-xs'>This recording was set up in advance, so each step shows its saved result.</p>
+              <p className='text-sm'>Setup runs now on this picture. Streamatic finds what is in view, outlines each item as a zone, and suggests rules for you to add. This usually takes about a minute, and the result can differ a little from one run to the next.</p>
+              {!models && <p className='text-muted-foreground mt-1 text-xs'>Without keys, each step shows the result saved with this copy.</p>}
             </div>
-            <Button onClick={() => setStage(0)}>
-              <Wand2 />
-              Set up this camera
+            {running.isError && <Notice tone='error'>{running.error.message}</Notice>}
+            <Button disabled={running.isPending} onClick={() => running.mutate()}>
+              {running.isPending ? <LoaderCircle className='animate-spin' /> : <Wand2 />}
+              {running.isPending ? 'Setting up this camera' : 'Set up this camera'}
             </Button>
           </CardContent>
         </Card>
       )}
       {setup.data && typeof stage === 'number' && <Steps key={id} setup={setup.data} step={stage} onStep={setStage} clipRules={clip.data?.rules ?? []} chosenBefore={progress.offered} clip={id} onFinish={finish} name={name} onZonesChanged={zonesChanged} />}
-      {setup.data && stage === 'ready' && <Ready id={id} setup={setup.data} rules={clip.data?.rules ?? []} offered={progress.offered} added={progress.added} problem={problem} />}
+      {setup.data && stage === 'ready' && <Ready id={id} next={next} setup={setup.data} rules={clip.data?.rules ?? []} offered={progress.offered} added={progress.added} problem={problem} />}
     </div>
   );
 }
@@ -204,13 +234,6 @@ function Steps({
   name: string;
   onZonesChanged: (next: DemoSetup) => void;
 }) {
-  const [readingDone, setReadingDone] = useState(false);
-  useEffect(() => {
-    if (step !== 0) return;
-    setReadingDone(false);
-    const done = setTimeout(() => setReadingDone(true), window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : READING_MS);
-    return () => clearTimeout(done);
-  }, [step]);
   // The zones are revealed once, as many as setup found, so renaming or deleting one does not start the reveal again.
   const [zonesToReveal] = useState(setup.zones.length);
   const revealed = useReveal(step === ZONES_STEP ? zonesToReveal : 0, Math.min(ZONE_MS, LONGEST_REVEAL_MS / Math.max(1, zonesToReveal)), step);
@@ -218,7 +241,7 @@ function Steps({
   const [pointedAt, setPointedAt] = useState<string | null>(null);
   const allRevealed = revealed >= zonesToReveal;
   const zones = allRevealed ? setup.zones : setup.zones.slice(0, revealed);
-  const stepDone = step === 0 ? readingDone : step === ZONES_STEP ? allRevealed : true;
+  const stepDone = step === ZONES_STEP ? allRevealed : true;
   const [label, setLabel] = useState(setup.pictures[0]!.label);
   const manyPictures = setup.pictures.length > 1;
   const lastLabel = setup.pictures[setup.pictures.length - 1]!.label;
@@ -258,25 +281,21 @@ function Steps({
           <div className='grid gap-2 sm:grid-cols-3'>
             {setup.pictures.map((picture) => (
               <figure key={picture.label} className='space-y-1'>
-                <PictureFrame src={picture.src} alt={`The view from ${name}: ${picture.label}`}>
-                  {!readingDone && <PictureBusy label='Reading' />}
-                </PictureFrame>
+                <PictureFrame src={picture.src} alt={`The view from ${name}: ${picture.label}`} />
                 <figcaption className='text-muted-foreground text-xs'>{sentence(picture.label)}</figcaption>
               </figure>
             ))}
           </div>
         ) : (
           step < LAST_STEP && (
-            <PictureFrame src={step === ZONES_STEP ? setup.pictures.find((p) => p.label === label)!.src : setup.picture} alt={`The view from ${name}`} paths={paths}>
-              {step === 0 && !readingDone && <PictureBusy label='Reading the picture' />}
-            </PictureFrame>
+            <PictureFrame src={step === ZONES_STEP ? setup.pictures.find((p) => p.label === label)!.src : setup.picture} alt={`The view from ${name}`} paths={paths} />
           )
         )}
         {step === ZONES_STEP && manyPictures && <Segmented label='Picture' value={label} options={setup.pictures.map((p) => ({ value: p.label, label: sentence(p.label) }))} onChange={setLabel} />}
         {step === ZONES_STEP && (
           <>
             <p className='text-muted-foreground text-xs' role='status'>
-              {!allRevealed ? `Outlining ${revealed + 1} of ${zonesToReveal}: ${sentence(setup.zones[revealed]?.name ?? '')}` : zonesInPlace(setup.zones.length)}
+              {!allRevealed ? `Found ${revealed + 1} of ${zonesToReveal}: ${sentence(setup.zones[revealed]?.name ?? '')}` : zonesInPlace(setup.zones.length)}
             </p>
             <ul aria-label='Zones' className='grid max-h-80 min-h-16 content-start items-start gap-2 overflow-y-auto sm:grid-cols-2' onMouseLeave={() => setPointedAt(null)} onBlur={() => setPointedAt(null)}>
               {zones.map((zone, i) => (
@@ -461,7 +480,7 @@ function RuleChoice({ label, checked, disabled, onChange }: { label: string; che
   );
 }
 
-function Ready({ id, setup, rules, offered, added, problem }: { id: string; setup: DemoSetup; rules: DemoRule[]; offered: string[]; added: string[]; problem: string | null }) {
+function Ready({ id, next, setup, rules, offered, added, problem }: { id: string; next: string | null; setup: DemoSetup; rules: DemoRule[]; offered: string[]; added: string[]; problem: string | null }) {
   const chosen = [...offered, ...added].flatMap((rule) => rules.filter((r) => r.id === rule));
   const paths = useMemo<DrawnPath[]>(
     () => setup.zones.flatMap((zone, i) => (zone.pathsBy[setup.pictures[0]!.label] ?? []).map((d, j) => ({ key: `${zone.name}-${j}`, d, colour: ZONE_COLOURS[i % ZONE_COLOURS.length]!, style: 'fill' as const, title: sentence(zone.name), group: zone.name }))),
@@ -509,8 +528,8 @@ function Ready({ id, setup, rules, offered, added, problem }: { id: string; setu
         {hasAdded && <p className='text-muted-foreground text-xs'>A new rule waits 5 minutes after an alert before it can alert again, as it would on a live camera.</p>}
         <div className='flex flex-wrap items-center gap-2'>
           {setup.hasClip && (
-          <Link href={`/clips/${encodeURIComponent(id)}`} className='bg-primary text-primary-foreground hover:bg-primary/90 inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium [&_svg]:size-4'>
-            Go to the clip
+          <Link href={next?.startsWith('/clips/') ? next : `/clips/${encodeURIComponent(id)}`} className='bg-primary text-primary-foreground hover:bg-primary/90 inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium [&_svg]:size-4'>
+            {next ? 'Continue' : 'Go to the clip'}
             <ArrowRight />
           </Link>
           )}

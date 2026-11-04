@@ -1,10 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 
-export type Spending = 'rule' | 'plan' | 'track' | 'look' | 'upload' | 'send';
+export type Spending = 'rule' | 'plan' | 'track' | 'look' | 'upload' | 'setup' | 'send';
 
 // What one visitor may start in a day. What is already kept costs nothing and is never counted.
-const PER_VISITOR: Record<Spending, number> = { rule: 10, plan: 20, track: 8, look: 30, upload: 8, send: 30 };
+const PER_VISITOR: Record<Spending, number> = { rule: 10, plan: 20, track: 8, look: 30, upload: 8, setup: 8, send: 30 };
 
 interface Day {
   day: string;
