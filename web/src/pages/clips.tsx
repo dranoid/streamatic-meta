@@ -111,6 +111,9 @@ function AskAnyCamera({ clips }: { clips: Array<Clip & Partial<DemoClipSummary>>
 
 export function ClipsPage({ isPublic = false, app }: { isPublic?: boolean; app?: AppInfo }) {
   const clips = useQuery<Array<Clip & Partial<DemoClipSummary>>>({ queryKey: ['clips-list', isPublic], queryFn: isPublic ? api.demoClips : api.clips });
+  // A camera's clip appears once this visitor has set it up; Setup lists the rest.
+  const shown = clips.data?.filter((clip) => clip.setUp !== false);
+  const moreToSetUp = clips.data?.some((clip) => clip.setUp === false) ?? false;
 
   return (
     <>
@@ -135,7 +138,7 @@ export function ClipsPage({ isPublic = false, app }: { isPublic?: boolean; app?:
           {WHAT_TO_TRY.map(({ icon: Icon, title, text, href }) => (
             <Link
               key={title}
-              href={href ?? (clips.data?.[0] ? `/clips/${encodeURIComponent(clips.data[0].id)}` : '/clips')}
+              href={href ?? (shown?.[0] ? `/clips/${encodeURIComponent(shown[0].id)}` : '/clips')}
               className='bg-card hover:border-primary/50 focus-visible:ring-ring/50 flex min-w-0 items-center gap-3 rounded-lg border p-3 transition-colors outline-none focus-visible:ring-[3px]'
             >
               <span className='bg-primary/10 text-primary flex size-9 shrink-0 items-center justify-center rounded-lg [&_svg]:size-4'>
@@ -153,10 +156,10 @@ export function ClipsPage({ isPublic = false, app }: { isPublic?: boolean; app?:
       {isPublic && <h2 className='mb-3 text-sm font-semibold'>Recorded clips</h2>}
       <div className='grid gap-4 sm:grid-cols-2 xl:grid-cols-3'>
         {clips.isPending && [0, 1].map((i) => <Skeleton key={i} className='aspect-[4/3] rounded-xl' />)}
-        {clips.data?.map((clip) => (
+        {shown?.map((clip) => (
           <Link
             key={clip.id}
-            href={clip.setUp === false ? `/setup/${encodeURIComponent(clip.id)}` : `/clips/${encodeURIComponent(clip.id)}`}
+            href={`/clips/${encodeURIComponent(clip.id)}`}
             className='group bg-card hover:border-primary/50 focus-visible:ring-ring/50 flex flex-col overflow-hidden rounded-xl border shadow-sm transition-colors outline-none focus-visible:ring-[3px]'
           >
             <PictureFrame src={clipPictureUrl(clip.id, 0)} alt={clip.name} className='rounded-none' />
@@ -167,7 +170,6 @@ export function ClipsPage({ isPublic = false, app }: { isPublic?: boolean; app?:
                 <div className='mt-2 flex flex-wrap gap-1.5'>
                   <Badge variant='outline'>{length(clip.frames / clip.fps)}</Badge>
                   {clip.rules !== undefined && <Badge variant='outline'>{clip.rules} {clip.rules === 1 ? 'rule' : 'rules'}</Badge>}
-                  {clip.setUp === false && <Badge variant='outline'>Not set up</Badge>}
                 </div>
               </div>
               <ArrowRight className='text-muted-foreground group-hover:text-foreground mt-0.5 size-4 shrink-0 transition-colors' />
@@ -175,7 +177,12 @@ export function ClipsPage({ isPublic = false, app }: { isPublic?: boolean; app?:
           </Link>
         ))}
       </div>
-      {clips.data?.length === 0 && <Notice>No clips are available yet.</Notice>}
+      {shown?.length === 0 && <Notice>No clips are available yet.</Notice>}
+      {isPublic && moreToSetUp && (
+        <p className='text-muted-foreground mt-4 text-sm'>
+          To see another camera’s clip here, set it up first in <Link href='/setup' className='text-primary hover:underline'>Setup</Link>.
+        </p>
+      )}
     </>
   );
 }

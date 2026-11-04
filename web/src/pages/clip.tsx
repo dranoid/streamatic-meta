@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowRight, BellRing, CircleAlert, Crosshair, Eye, EyeOff, LoaderCircle, Pause, Play, RotateCcw, Search, SkipForward, SquareDashed, X } from 'lucide-react';
+import { ArrowRight, BellRing, CircleAlert, Crosshair, Eye, EyeOff, LoaderCircle, Pause, Play, RotateCcw, Search, SkipForward, SquareDashed, Trash2, X } from 'lucide-react';
 import { BoxDrawer, type DrawnBox } from '@/components/box-drawer';
 import { Outlines, PictureBusy, PictureFrame, ZONE_COLOURS, type DrawnPath } from '@/components/picture-frame';
 import { DemoGuide, type GuideFinding } from '@/components/demo-guide';
@@ -161,6 +161,7 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask, opened }: { clip: C
   const [ticks, setTicks] = useState<Record<string, number>>(() => (opened ? { [opened.rule]: 0 } : {}));
   const [showZones, setShowZones] = useState(false);
   const [showTracked, setShowTracked] = useState(true);
+  const [showRuleOutlines, setShowRuleOutlines] = useState(true);
   const [language, setLanguage] = useState<AlertLanguage>('english');
   const [guideZones, setGuideZones] = useState<DemoZone[] | null>(null);
   const tickList = useMemo(() => Object.entries(ticks).map(([rule, armedMs]) => ({ rule, armedMs })), [ticks]);
@@ -297,10 +298,13 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask, opened }: { clip: C
   const rulesById = new Map(demo?.rules.map((r) => [r.id, r]));
   const goToAlert = (alert: DemoAlert) => seek(Math.max(0, alert.atMs - LEAD_IN_MS) / 1000);
   const zoneOverlay = (z: DemoZone, prefix: string, colour: string): DrawnPath[] => z.paths.map((d, j) => ({ key: `${prefix}-${j}`, d, colour, style: 'fill', title: sentence(z.name), group: prefix }));
-  const overlays: DrawnPath[] = [
-    ...(showZones ? (demo?.zones ?? []).flatMap((z, i) => zoneOverlay(z, `zone-${i}`, ZONE_COLOURS[i % ZONE_COLOURS.length]!)) : []),
+  const ruleOutlines: DrawnPath[] = [
     ...(demo?.rules ?? []).filter((r) => ticks[r.id] !== undefined).flatMap((r) => r.zones.flatMap((z, i) => zoneOverlay(z, `${r.id}-${i}`, RULE_ZONE_COLOUR))),
     ...(guideZones ?? []).flatMap((z, i) => zoneOverlay(z, `guide-${i}`, FOLLOW_COLOUR)),
+  ];
+  const overlays: DrawnPath[] = [
+    ...(showZones ? (demo?.zones ?? []).flatMap((z, i) => zoneOverlay(z, `zone-${i}`, ZONE_COLOURS[i % ZONE_COLOURS.length]!)) : []),
+    ...(showRuleOutlines ? ruleOutlines : []),
   ];
   const togglePlaying = () => (video.current?.paused ? void video.current.play() : video.current?.pause());
 
@@ -449,6 +453,12 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask, opened }: { clip: C
                     {showZones ? 'Hide what setup outlined' : 'Show what setup outlined'}
                   </Button>
                 )}
+                {ruleOutlines.length > 0 && (
+                  <Button size='sm' variant='outline' aria-pressed={showRuleOutlines} onClick={() => setShowRuleOutlines((v) => !v)}>
+                    {showRuleOutlines ? <EyeOff /> : <Eye />}
+                    {showRuleOutlines ? 'Hide the rule’s outline' : 'Show the rule’s outline'}
+                  </Button>
+                )}
                 {shown.length > 0 && (
                   <Button size='sm' variant='outline' aria-pressed={showTracked} onClick={() => setShowTracked((v) => !v)}>
                     {showTracked ? <EyeOff /> : <Eye />}
@@ -478,6 +488,12 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask, opened }: { clip: C
                   return on ? { ...rest, [rule.id]: rule.kind === 'typed' ? 0 : nowMs } : rest;
                 })
               }
+              clip={clip.id}
+              onDeleted={(rule) => {
+                setTicks(({ [rule]: _gone, ...rest }) => rest);
+                setGuideZones(null);
+                refreshDemo();
+              }}
             />
             <Card>
               <CardHeader>
@@ -548,7 +564,37 @@ function ClipWatch({ clip, follows, demo, trackSeconds, ask, opened }: { clip: C
 
 const ruleLabel = (rule: DemoRule | undefined) => (!rule ? 'Alert' : rule.kind === 'typed' ? rule.text : rule.name);
 
-function RulesCard({ rules, ticks, colourOf, onToggle }: { rules: DemoRule[]; ticks: Record<string, number>; colourOf: (rule: string) => string; onToggle: (rule: DemoRule, on: boolean) => void }) {
+// Only a visitor's own rule can be deleted, once it has finished; the rules the clip comes with are simply left unselected.
+function DeleteRule({ clip, rule, onDeleted }: { clip: string; rule: DemoRule; onDeleted: (rule: string) => void }) {
+  const [confirming, setConfirming] = useState(false);
+  const remove = useMutation({ mutationFn: () => api.removeClipRule(clip, rule.id), onSuccess: () => onDeleted(rule.id) });
+  if (rule.kind !== 'typed' || !RULE_FINISHED.has(rule.status)) return null;
+  if (!confirming) {
+    return (
+      <Button size='sm' variant='ghost' className='text-muted-foreground mt-1 h-7 px-2 text-xs' onClick={() => setConfirming(true)}>
+        <Trash2 />
+        Delete
+      </Button>
+    );
+  }
+  return (
+    <div className='mt-1 space-y-1.5 px-1'>
+      <p className='text-xs'>Delete this rule? Its alerts are removed too.</p>
+      {remove.isError && <p className='text-destructive text-xs'>{remove.error.message}</p>}
+      <div className='flex flex-wrap gap-2'>
+        <Button size='sm' className='h-7 text-xs' disabled={remove.isPending} onClick={() => remove.mutate()}>
+          {remove.isPending && <LoaderCircle className='animate-spin' />}
+          Delete
+        </Button>
+        <Button size='sm' variant='outline' className='h-7 text-xs' disabled={remove.isPending} onClick={() => setConfirming(false)}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function RulesCard({ rules, ticks, colourOf, onToggle, clip, onDeleted }: { rules: DemoRule[]; ticks: Record<string, number>; colourOf: (rule: string) => string; onToggle: (rule: DemoRule, on: boolean) => void; clip: string; onDeleted: (rule: string) => void }) {
   const usable = rules.filter((r) => r.status === 'ready');
   const notReady = rules.filter((r) => r.status !== 'ready');
   return (
@@ -572,15 +618,19 @@ function RulesCard({ rules, ticks, colourOf, onToggle }: { rules: DemoRule[]; ti
                   {rule.readsAs && <span className='text-muted-foreground mt-0.5 block text-xs'>Reads as: {rule.readsAs}</span>}
                 </span>
               </label>
+              <DeleteRule clip={clip} rule={rule} onDeleted={onDeleted} />
             </li>
           ))}
           {notReady.map((rule) => (
-            <li key={rule.id} className='flex items-start gap-2.5 rounded-lg border border-dashed p-3 text-sm'>
+            <li key={rule.id}>
+            <div className='flex items-start gap-2.5 rounded-lg border border-dashed p-3 text-sm'>
               {RULE_FINISHED.has(rule.status) ? <CircleAlert className='text-muted-foreground mt-0.5 size-4 shrink-0' /> : <LoaderCircle className='text-primary mt-0.5 size-4 shrink-0 animate-spin' />}
               <span className='min-w-0'>
                 <span className='font-medium'>{rule.text}</span>
                 <span className='text-muted-foreground mt-0.5 block text-xs'>{RULE_FINISHED.has(rule.status) ? (rule.reason ?? 'This rule could not be added.') : 'Streamatic is running this rule over the clip. It will be selected when it is ready.'}</span>
               </span>
+            </div>
+              <DeleteRule clip={clip} rule={rule} onDeleted={onDeleted} />
             </li>
           ))}
         </ul>
