@@ -85,6 +85,10 @@ sentence, check the camera can answer it, and ask the vision model on the camera
   searches wait until its own camera is set up. Reset in the top bar returns all of it to the start. Tracks are listed per visitor, and their
   results are cached so that a repeat costs nothing.
 
+## What surprised us
+
+SAM 3.1 tracked better from a box alone than from a word, which changed what we built. On one clip, a search for "backpack" found nothing on the frame we stopped at, yet a box on the bag followed it off an armchair, onto a person's back and out of the door. On others, a car's word track ballooned while its box track did not, a bag was tracked from frame 0 when the word only found it at frame 68, and a person in a crowd was followed who had no word track at all. So tracking here starts from the selected outline's box. It needs no word, and we wrote no code of our own to match outlines between frames.
+
 ## Meta models used
 
 | Model | Where | Used for |
@@ -113,7 +117,7 @@ cd ../service && npm ci && npm run demo
 ```
 
 Then open http://127.0.0.1:8787. With nothing else set, setup uses the result saved with this copy, the clips, rules and alerts all work,
-and no model is called. What needs more:
+and no model is called. What needs more, which goes in a `.env` copied from `.env.example`:
 
 | To use | Add |
 |---|---|
