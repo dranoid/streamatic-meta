@@ -8,6 +8,8 @@ World). It holds only the work built during the event, 26 October to 4 November 
 
 **Try it: https://misc.streamatic.co**
 
+**Watch the 3-minute film: https://youtu.be/qKZNiEtSriY**
+
 ## What existed before the event
 
 Streamatic's cameras, video storage, rules, alerts on Telegram and WhatsApp, and search over camera footage. None of
